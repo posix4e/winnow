@@ -58,3 +58,8 @@ These are gaps in required evidence and remain release-blocking under epic
 | 2026-08-21 | `15c9c25` + S4 suite | `swift test --sanitize thread` | 347 tests / 62 suites passed under ThreadSanitizer; zero data-race reports |
 | 2026-08-21 | S4 suite, mutation 1 | `partialSign` nonce-zeroing `defer` removed, then `swift test --filter MuSig2SessionSafetyTests` | 4 tests failed with 7 issues, including a second message signed with an already-used nonce. Confirms the suite detects the catastrophic case rather than passing vacuously |
 | 2026-08-21 | S4 suite, mutation 2 | `partialSign` signer-binding guard removed, then same filter | 2 tests failed; one cosigner's nonce was accepted for another cosigner's key. Implementation restored pristine after both mutations |
+| 2026-08-21 | `74290ab` + S3 suites | `swift test` | 363 tests / 64 suites passed (16 new cosigner-identity and vault-draft tests) |
+| 2026-08-21 | `74290ab` + S3 suites | `swift test --sanitize address --filter` on the three new suites | 24 tests / 3 suites passed under AddressSanitizer |
+| 2026-08-21 | S3 suites, mutation 1 | duplicate-identity guard removed from `Vault.multiADescriptor`, then the identity suite | 4 tests failed; a vault was built from one account key wearing two origin labels |
+| 2026-08-21 | S3 suites, mutation 2 | origin depth/child consistency guard removed from `VaultCosignerKey`, then the identity suite | 2 tests failed; origin labels describing a different key were accepted |
+| 2026-08-21 | S3 suites, mutation 3 | duplicate guard removed from `VaultDraft.add`, then the draft suite | 1 test failed with 3 issues; the creation screen accepted a third cosigner that was the first key relabelled. Sources restored pristine after all three |
