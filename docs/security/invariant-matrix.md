@@ -51,6 +51,7 @@ Status vocabulary:
 | 2026-08-21 | `98d9056` | Phase 0 inventory and baseline test classification | Codex first pass | 310 tests pass; gaps above remain open |
 | 2026-08-21 | `9c07d37` | Release-artifact verification legs: clean-DerivedData app build and tests, unsigned device archive, E2E exclusion with negative control, canary-controlled secret scan, ThreadSanitizer suite | Same-project agent pass, **not independent** | All legs passed; `SEC-006` raised. Does not satisfy the independent-review requirement |
 | 2026-08-21 | `2bf7a65` | Workflow secret scope, token permissions, artifact retention, action pinning | Same-project agent pass, **not independent** | Six of seven prior findings closed; `SEC-005` remains open |
+| 2026-08-21 | `2bf7a65` | Full line-by-line review of PR #125: all 11 changed files, scripts and workflows | Same-project agent pass, **not independent** | Sound apart from `SEC-005` and `SEC-017`. XcodeGen pin verified by independent download; SBOM determinism and warnings-gate scoping confirmed |
 
 Independent review rows must name the reviewer and exact commit. “Reviewed”
 without a commit and disposition is not accepted by the release gate.
