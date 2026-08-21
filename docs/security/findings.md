@@ -96,3 +96,8 @@ These are gaps in required evidence and remain release-blocking under epic
 | 2026-08-21 | `SEC-011` mutation | both bounds removed from `ImportBundle.decode` | the byte-limit and entry-limit tests failed |
 | 2026-08-21 | `SEC-011` fix | `swift test` | 391 tests / 68 suites passed |
 | 2026-08-21 | `SEC-011` fix | `xcodebuild test -only-testing:WinnowAppTests` | 37 tests / 0 failures |
+| 2026-08-21 | S9 property suite | `swift test --filter CoinSelectionPropertyTests` | 7 tests passed: 7,000 seeded scenarios plus named dust, fee-rate and MAX_MONEY boundaries; also green under AddressSanitizer |
+| 2026-08-21 | S9 mutation A | change computation altered by one satoshi in `CoinSelection.select` | value-conservation property failed immediately, naming the seed and iteration for replay |
+| 2026-08-21 | S9 mutation B, first attempt | fee-rate ceiling removed | **no test failed** — an absurd rate still threw, as `insufficientFunds` rather than `invalidFeeRate`, and the assertion accepted any `CoinSelectionError` |
+| 2026-08-21 | S9 mutation B, after tightening | same mutation against the case-specific assertion | the fee-rate test failed for rates 10000.001 and 100000, reporting the wrong error case. Recorded because a mutation that kills no test means the test is weaker than it looks, not that the code is safe |
+| 2026-08-21 | S9 property suite | `swift test` | 398 tests / 69 suites passed |
