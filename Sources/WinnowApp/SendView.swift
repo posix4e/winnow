@@ -241,7 +241,12 @@ struct SendView: View {
     }
 
     private func send() {
-        guard let preview else { return }
+        // The button is disabled while `sending`, but that is presentation:
+        // it does not survive a double tap delivered before the disabled
+        // state renders. AppModel.exclusively is the real guarantee; this
+        // check just keeps an accidental second tap from surfacing an error
+        // banner instead of doing nothing.
+        guard let preview, !sending else { return }
         sending = true
         error = nil
         Task {

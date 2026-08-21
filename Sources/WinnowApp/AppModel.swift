@@ -57,6 +57,7 @@ final class AppModel {
         case storageDamaged(String)
         case deviceAuthUnavailable
         case deviceAuthFailed
+        case spendAlreadyInFlight
 
         var errorDescription: String? {
             switch self {
@@ -71,6 +72,7 @@ final class AppModel {
             case let .storageDamaged(message): message
             case .deviceAuthUnavailable: "Set a device passcode first — sensitive wallet actions require device authentication."
             case .deviceAuthFailed: "Device authentication failed."
+            case .spendAlreadyInFlight: "Another payment is already being signed and broadcast. Wait for it to finish."
             }
         }
     }
@@ -1055,7 +1057,36 @@ final class AppModel {
 
     /// Builds, signs and broadcasts the previewed send. Returns the txid
     /// (internal byte order).
+    /// Operations that move money and must never interleave.
+    ///
+    /// `send` and `bumpFee` are `@MainActor` but not atomic: each releases the
+    /// main actor at every await — device authentication, build, broadcast,
+    /// commit — so a second entry can begin in any of those gaps. Disabling a
+    /// button is presentation, not a guarantee; this is the guarantee. Both
+    /// share one gate because both spend from the same UTXO set and both
+    /// commit wallet state, so a fee bump racing a send is as dangerous as
+    /// two sends racing each other.
+    enum ExclusiveOperation: String, Sendable {
+        case spending
+    }
+
+    private var operationsInFlight: Set<ExclusiveOperation> = []
+
+    /// Runs `body` unless the same operation is already in flight. The check
+    /// and the claim happen with no await between them, so two callers cannot
+    /// both observe an idle gate.
+    func exclusively<T>(_ operation: ExclusiveOperation,
+                        _ body: () async throws -> T) async throws -> T {
+        guard !operationsInFlight.contains(operation) else {
+            throw AppError.spendAlreadyInFlight
+        }
+        operationsInFlight.insert(operation)
+        defer { operationsInFlight.remove(operation) }
+        return try await body()
+    }
+
     func send(preview: SendPreview) async throws -> Data {
+        try await exclusively(.spending) {
         guard let wallet else { throw AppError.noWallet }
         try await authenticateSensitiveAction(reason: "Sign and send this Bitcoin transaction")
         // Build and sign WITHOUT touching wallet state, hand the tx to the
@@ -1076,6 +1107,7 @@ final class AppModel {
             "tweakData": prepared.silentPaymentTweakData?.hex ?? "",
         ])
         return txid
+        }
     }
 
     func pendingFeeRate(txid: Data) async throws -> Double {
@@ -1094,6 +1126,7 @@ final class AppModel {
     /// the new broadcaster entry is removed and the old transaction keeps
     /// relaying, preserving the same rollback boundary as a first send.
     func bumpFee(preview: FeeBumpPreview) async throws -> Data {
+        try await exclusively(.spending) {
         guard let wallet else { throw AppError.noWallet }
         guard let broadcaster = stack?.broadcaster else { throw AppError.noStack }
         try await authenticateSensitiveAction(reason: "Sign a replacement Bitcoin transaction")
@@ -1118,6 +1151,7 @@ final class AppModel {
             "raw": prepared.built.transaction.serialized(includeWitness: true).hex,
         ])
         return replacementTxid
+        }
     }
 
     /// Broadcasts a fully-signed transaction via P2P relay. Block-explorer
