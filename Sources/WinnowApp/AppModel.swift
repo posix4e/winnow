@@ -661,10 +661,7 @@ final class AppModel {
     /// were reachable yet — the regular sync loop covers the same ground.
     @discardableResult
     func importWallet(bundleJSON: String) async throws -> ImportReport? {
-        guard let data = bundleJSON.data(using: .utf8) else {
-            throw WalletError.invalidBundle("not UTF-8")
-        }
-        let bundle = try JSONDecoder().decode(ImportBundle.self, from: data)
+        let bundle = try ImportBundle.decode(json: bundleJSON)
         guard bundle.network == network.rawValue else { throw AppError.wrongNetwork(bundle.network) }
         if bundle.mnemonic != nil {
             try await authenticateSensitiveAction(

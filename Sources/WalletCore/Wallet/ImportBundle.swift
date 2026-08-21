@@ -192,6 +192,47 @@ public struct ImportBundle: Codable, Equatable, Sendable {
         )
     }
 
+    // MARK: - Bounded decoding
+
+    /// A bundle is the one input a user is invited to paste from anywhere, so
+    /// it is decoded through here rather than by calling `JSONDecoder`
+    /// directly. Foundation already refuses deeply nested JSON and resolves a
+    /// duplicate key to its first occurrence, but both are undocumented
+    /// defaults; `ImportBundleBoundsTests` pins them so a Foundation change
+    /// cannot alter what a bundle means without a test failing.
+    ///
+    /// The explicit bounds are what Foundation does not provide: it will
+    /// happily decode a two-hundred-thousand-entry bundle, and every entry is
+    /// then materialised and scanned.
+    public static let maximumSerializedBytes = 8 * 1024 * 1024
+    public static let maximumEntries = 50_000
+
+    /// Decodes a bundle from untrusted text, refusing implausible sizes before
+    /// allocating anything proportional to them.
+    public static func decode(json: String) throws -> ImportBundle {
+        guard let data = json.data(using: .utf8) else {
+            throw WalletError.invalidBundle("not UTF-8")
+        }
+        return try decode(data)
+    }
+
+    public static func decode(_ data: Data) throws -> ImportBundle {
+        guard data.count <= maximumSerializedBytes else {
+            throw WalletError.invalidBundle(
+                "bundle is \(data.count) bytes, above the \(maximumSerializedBytes)-byte limit")
+        }
+        let bundle = try JSONDecoder().decode(ImportBundle.self, from: data)
+        guard bundle.utxos.count <= maximumEntries else {
+            throw WalletError.invalidBundle(
+                "bundle declares \(bundle.utxos.count) coins, above the \(maximumEntries) limit")
+        }
+        guard bundle.transactions.count <= maximumEntries else {
+            throw WalletError.invalidBundle(
+                "bundle declares \(bundle.transactions.count) transactions, above the \(maximumEntries) limit")
+        }
+        return bundle
+    }
+
     /// Pretty-printed, sorted-key JSON ready for a share sheet. Nil optionals
     /// (mnemonic / descriptor) are omitted rather than encoded as `null`.
     public func serialized() throws -> String {
