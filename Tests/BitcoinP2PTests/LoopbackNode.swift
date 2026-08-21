@@ -19,6 +19,11 @@ actor LoopbackNode {
     let chain: [Block]
     /// When set, the filter served for this height is bit-flipped (lying node).
     let corruptFilterAtHeight: Int?
+    /// Serves filter *commitments* that disagree with the honest chain while
+    /// keeping block headers honest — a peer lying about BIP157 filter
+    /// headers rather than about the chain itself. This is the shape the
+    /// cfcheckpt majority rule exists to defend against.
+    let lieAboutFilterCommitments: Bool
     /// When set, the node answers inv announcements of transactions with a
     /// getdata after this delay (nil = never request, the silent peer).
     let autoRequestDelay: Duration?
@@ -46,12 +51,14 @@ actor LoopbackNode {
 
     init(params: NetworkParams, services: UInt64 = PeerConnection.nodeCompactFilters,
          chain: [Block] = [], corruptFilterAtHeight: Int? = nil,
+         lieAboutFilterCommitments: Bool = false,
          autoRequestDelay: Duration? = nil, transactions: [Transaction] = [],
          listenPort: UInt16? = nil, versionDelay: Duration = .zero) {
         self.params = params
         self.services = services
         self.chain = chain
         self.corruptFilterAtHeight = corruptFilterAtHeight
+        self.lieAboutFilterCommitments = lieAboutFilterCommitments
         self.autoRequestDelay = autoRequestDelay
         self.transactions = Dictionary(uniqueKeysWithValues: transactions.map { ($0.txid, $0) })
         self.versionDelay = versionDelay
@@ -144,6 +151,17 @@ actor LoopbackNode {
             filterHashes.append(filterHash)
             filterHeaders.append(filterHeader)
             previous = filterHeader
+        }
+        guard lieAboutFilterCommitments else { return }
+        // Recompute a self-consistent but wrong commitment chain, so the lie
+        // survives the client's own internal checks and can only be caught by
+        // comparing against another peer.
+        var lyingPrevious = Data(repeating: 0, count: 32)
+        for index in filterHashes.indices {
+            filterHashes[index][0] ^= 0xFF
+            let header = SHA256d.hash(filterHashes[index] + lyingPrevious)
+            filterHeaders[index] = header
+            lyingPrevious = header
         }
     }
 

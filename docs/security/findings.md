@@ -137,3 +137,9 @@ These are gaps in required evidence and remain release-blocking under epic
 | 2026-08-21 | `SEC-016` partial | `swift test --filter ReorgVisibilityTests` | 4 tests passed: a plain extension records nothing, a swap reports fork height and disconnected count, a refused reorg records nothing, and a second swap replaces the record |
 | 2026-08-21 | `SEC-016` mutation | reorg recording removed | 2 tests failed |
 | 2026-08-21 | `SEC-016` partial | `swift test` | 409 tests / 72 suites passed |
+| 2026-08-21 | S5 disagreement | `swift test --filter PeerDisagreementTests` | 3 tests passed: two peers serving conflicting filter commitments fail closed without advancing the scan frontier, two honest peers sync normally, and a single peer is accepted without corroboration |
+| 2026-08-21 | S5 mutation, first attempt | cfcheckpt majority requirement removed | **no test failed.** On a six-block chain both peers return an empty cfcheckpt list, so the majority rule never engages; the assertion accepted any `FilterSyncError` and the lie was caught one layer down |
+| 2026-08-21 | S5 mutation, retargeted | per-batch cfheaders cross-check removed | the disagreement test failed with "a two-way disagreement was accepted" and the scan frontier advanced past a disputed view |
+| 2026-08-21 | S5 evidence gap | reading the checkpoint interval | `getcfcheckpt` serves headers every 1000 blocks, so the cfcheckpt **majority rule is unreachable below height 1000** and no loopback chain exercises it. The defence proven here is the per-batch cfheaders cross-check. Exercising the majority rule needs a fixture above 1000 blocks or a node-backed differential run |
+| 2026-08-21 | S5 eclipse | `PeerDisagreementTests.singlePeerIsTrustedUncorroborated` | with one peer there is nobody to compare against; a self-consistent lying commitment chain is accepted. Recorded as current behaviour, not endorsed |
+| 2026-08-21 | S5 tests | `swift test` | 412 tests / 73 suites passed |
