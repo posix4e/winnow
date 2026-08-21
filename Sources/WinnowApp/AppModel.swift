@@ -996,11 +996,25 @@ final class AppModel {
                       ReviewedOutpoint(txid: $0.previousOutput.txid, vout: $0.previousOutput.vout)
                   }) == selectedOutpoints
             else { return false }
+            // Every reviewed payment must actually appear in the transaction.
+            // Fee and inputs are pinned above, which fixes the total output
+            // value but says nothing about who receives it: without this a
+            // build could pay the reviewed amount to a different script, or
+            // pay the right script one satoshi, and still satisfy every other
+            // constraint. Outputs are consumed as they are matched so one
+            // output cannot satisfy two reviewed entries.
+            var unmatched = built.transaction.outputs
+            for payment in payments {
+                guard let index = unmatched.firstIndex(where: {
+                    $0.value == payment.amount && $0.scriptPubKey == payment.scriptPubKey
+                }) else { return false }
+                unmatched.remove(at: index)
+            }
             switch change {
             case nil:
                 return changeAmount == nil
             case let expected?:
-                return built.transaction.outputs.contains {
+                return unmatched.contains {
                     $0.value == expected.amount && $0.scriptPubKey == expected.scriptPubKey
                 }
             }
