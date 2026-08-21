@@ -197,12 +197,24 @@ final class AppModel {
     private var lastE2ESnapshotFingerprint: String?
     private var lastE2EPeerFingerprint: String?
 
-    private enum DefaultsKey {
+    enum DefaultsKey {
         static let network = "network"
-        static let manualPeers = "manualPeers"
-        static let esploraURL = "esploraURL"
+        /// Peer, explorer and tweak-index settings are per network, the way
+        /// storage already is. A signet node dialed first on mainnet spends
+        /// the pool's opening attempts on a peer that rejects the handshake,
+        /// and a signet explorer or tweak index answers mainnet queries with
+        /// confidently wrong data. See #81.
+        static func manualPeers(_ network: BitcoinNetwork) -> String { "manualPeers.\(network.rawValue)" }
+        static func esploraURL(_ network: BitcoinNetwork) -> String { "esploraURL.\(network.rawValue)" }
+        static func spIndexURL(_ network: BitcoinNetwork) -> String { "spIndexURL.\(network.rawValue)" }
+        /// The pre-#81 flat keys, migrated once into the active network.
+        static let legacyManualPeers = "manualPeers"
+        static let legacyEsploraURL = "esploraURL"
+        static let legacySpIndexURL = "spIndexURL"
+        /// Deliberately global: a preference, not a chain-specific endpoint.
+        /// With no tweak index for the current network the sync fails visibly
+        /// and tells the user to set one, rather than skipping heights.
         static let spReceiveEnabled = "spReceiveEnabled"
-        static let spIndexURL = "spIndexURL"
         static let verifyFromGenesis = "verifyFromGenesis"
         /// Set at wallet creation, cleared only by the backup sheet's
         /// confirmed Done — a relaunch in between resumes the backup.
@@ -224,16 +236,18 @@ final class AppModel {
         if e2e?.forcedNetwork != nil {
             defaults.set(selectedNetwork.rawValue, forKey: DefaultsKey.network)
         }
-        manualPeers = defaults.stringArray(forKey: DefaultsKey.manualPeers) ?? []
-        esploraURLString = defaults.string(forKey: DefaultsKey.esploraURL) ?? ""
+        Self.migrateLegacyNetworkSettings(defaults: defaults, into: selectedNetwork)
+        let scoped = Self.networkScopedSettings(defaults: defaults, network: selectedNetwork)
+        manualPeers = scoped.manualPeers
+        esploraURLString = scoped.esploraURL
         spReceiveEnabled = defaults.bool(forKey: DefaultsKey.spReceiveEnabled)
         verifyFromGenesis = defaults.bool(forKey: DefaultsKey.verifyFromGenesis)
-        spIndexURLString = defaults.string(forKey: DefaultsKey.spIndexURL) ?? ""
+        spIndexURLString = scoped.spIndexURL
         // Test mode preconfigures the local node as the (only) manual peer;
         // custom signets have no DNS seeds.
         if let peer = e2e?.peer, !manualPeers.contains(peer) {
             manualPeers = [peer]
-            defaults.set(manualPeers, forKey: DefaultsKey.manualPeers)
+            defaults.set(manualPeers, forKey: DefaultsKey.manualPeers(selectedNetwork))
         }
         e2e?.journal("app.initialized", fields: ["network": network.rawValue])
     }
@@ -1301,6 +1315,55 @@ final class AppModel {
 
     /// Per-network wallets: switching network opens that network's own state
     /// (or onboarding when it has none) with a freshly built stack.
+    /// Moves any pre-#81 flat peer/explorer/tweak-index settings into the
+    /// network that was active when the app last wrote them, then removes the
+    /// flat keys so the migration runs once.
+    ///
+    /// Attributing them to the active network is the only honest choice: the
+    /// old keys carry no record of which chain they were entered for, and the
+    /// active network is the chain the user was on when they set them.
+    static func migrateLegacyNetworkSettings(defaults: UserDefaults, into network: BitcoinNetwork) {
+        if let peers = defaults.stringArray(forKey: DefaultsKey.legacyManualPeers) {
+            if defaults.stringArray(forKey: DefaultsKey.manualPeers(network)) == nil {
+                defaults.set(peers, forKey: DefaultsKey.manualPeers(network))
+            }
+            defaults.removeObject(forKey: DefaultsKey.legacyManualPeers)
+        }
+        if let explorer = defaults.string(forKey: DefaultsKey.legacyEsploraURL) {
+            if defaults.string(forKey: DefaultsKey.esploraURL(network)) == nil {
+                defaults.set(explorer, forKey: DefaultsKey.esploraURL(network))
+            }
+            defaults.removeObject(forKey: DefaultsKey.legacyEsploraURL)
+        }
+        if let index = defaults.string(forKey: DefaultsKey.legacySpIndexURL) {
+            if defaults.string(forKey: DefaultsKey.spIndexURL(network)) == nil {
+                defaults.set(index, forKey: DefaultsKey.spIndexURL(network))
+            }
+            defaults.removeObject(forKey: DefaultsKey.legacySpIndexURL)
+        }
+    }
+
+    /// What a given network's peer, explorer and tweak-index settings are.
+    /// Pure, so the isolation between networks can be tested without a model.
+    static func networkScopedSettings(defaults: UserDefaults, network: BitcoinNetwork)
+        -> (manualPeers: [String], esploraURL: String, spIndexURL: String)
+    {
+        (manualPeers: defaults.stringArray(forKey: DefaultsKey.manualPeers(network)) ?? [],
+         esploraURL: defaults.string(forKey: DefaultsKey.esploraURL(network)) ?? "",
+         spIndexURL: defaults.string(forKey: DefaultsKey.spIndexURL(network)) ?? "")
+    }
+
+    /// Re-reads the per-network settings after `network` changes. These are
+    /// held in memory, so scoping the storage keys alone would leave the old
+    /// chain's peer and endpoints live for the rest of the session — the half
+    /// of #81 that a storage-only fix would miss.
+    func loadNetworkScopedSettings() {
+        let settings = Self.networkScopedSettings(defaults: defaults, network: network)
+        manualPeers = settings.manualPeers
+        esploraURLString = settings.esploraURL
+        spIndexURLString = settings.spIndexURL
+    }
+
     func switchNetwork(to newNetwork: BitcoinNetwork) async {
         guard e2e?.forcedNetwork == nil || e2e?.forcedNetwork == newNetwork else { return }
         guard newNetwork != network else { return }
@@ -1316,6 +1379,7 @@ final class AppModel {
         walletDescriptor = nil
         network = newNetwork
         defaults.set(newNetwork.rawValue, forKey: DefaultsKey.network)
+        loadNetworkScopedSettings()
         if case let .damaged(message) = await vaultStore.configure(
             storageURL: vaultsURL(), network: network)
         {
@@ -1357,12 +1421,12 @@ final class AppModel {
         let endpoint = try Self.parsePeer(text)
         guard !manualPeers.contains(endpoint.description) else { return }
         manualPeers.append(endpoint.description)
-        defaults.set(manualPeers, forKey: DefaultsKey.manualPeers)
+        defaults.set(manualPeers, forKey: DefaultsKey.manualPeers(network))
     }
 
     func removeManualPeers(at offsets: IndexSet) {
         manualPeers.remove(atOffsets: offsets)
-        defaults.set(manualPeers, forKey: DefaultsKey.manualPeers)
+        defaults.set(manualPeers, forKey: DefaultsKey.manualPeers(network))
     }
 
     /// Rebuilds the stack so changed peer settings take effect.
@@ -1399,7 +1463,7 @@ final class AppModel {
 
     func setSilentPaymentIndexURL(_ text: String) {
         spIndexURLString = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        defaults.set(spIndexURLString, forKey: DefaultsKey.spIndexURL)
+        defaults.set(spIndexURLString, forKey: DefaultsKey.spIndexURL(network))
         let host = URL(string: spIndexURLString)?.host?.lowercased()
         e2e?.journal("setting.silentIndex", fields: [
             "configured": String(!spIndexURLString.isEmpty),
@@ -1417,7 +1481,7 @@ final class AppModel {
 
     func setEsploraURL(_ text: String) {
         esploraURLString = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        defaults.set(esploraURLString, forKey: DefaultsKey.esploraURL)
+        defaults.set(esploraURLString, forKey: DefaultsKey.esploraURL(network))
     }
 
     /// The selected external block-explorer website. Winnow never contacts it
