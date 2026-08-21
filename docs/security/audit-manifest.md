@@ -82,6 +82,30 @@ and credible prerequisites, not by code location.
    signing credentials, TestFlight, and published evidence determine whether
    reviewed source is the source users receive.
 
+## External disclosure inventory
+
+Every point at which bytes can leave the device, and what each one carries.
+Re-derive with `grep -rn "URLSession\|NWConnection\|getaddrinfo" Sources/`.
+
+| Egress | Transport | Carries | When |
+|---|---|---|---|
+| Peer connections | `NWConnection` (`BitcoinP2P/Transport/PeerConnection.swift`) | BIP157/158 filter and header requests, and transactions the user broadcasts | Always: this is how the wallet reads the chain |
+| DNS seeds | DoH over `URLSession`, falling back to `getaddrinfo` (`Peers/SeedResolver.swift`) | Seed hostnames only | At startup, to find peers |
+| Silent-payment tweak index | `URLSession` (`BlockchainBackend/TweakIndexHTTPClient.swift`) | A block height — `GET /tweaks/{height}` | Only when the user enables silent-payment receive and sets a server |
+| Block explorer | **none** | — | Never contacted. The setting builds a link the user may tap; `EsploraClient` is not instantiated anywhere in `Sources/` |
+
+Two things are worth stating plainly because they are easy to erode.
+
+The tweak index is told a height, never an address. A server that learned
+addresses would be a hidden wallet-read path wearing a privacy-preserving
+name, so the request is captured and inspected in
+`ExternalDisclosureTests` rather than argued for from the call site.
+
+`EsploraClient` exists and its API is address-based — `/address/{a}/utxo`.
+That is exactly why the app does not use it. Wiring it into sync to make
+scanning faster would, in one step, turn a wallet that tells no server
+anything into one that tells a server every address it owns.
+
 ## Production source inventory
 
 Every production file is listed below. “Owner” means the responsible module,

@@ -116,3 +116,6 @@ These are gaps in required evidence and remain release-blocking under epic
 | 2026-08-21 | `SEC-013` mutation | the three key functions flattened back to pre-#81 names | 8 tests failed with 12 assertions |
 | 2026-08-21 | `SEC-013` fix | `xcodebuild test -only-testing:WinnowAppTests` | 53 tests / 0 failures |
 | 2026-08-21 | `SEC-013` fix | `swift test` | 401 tests / 70 suites passed |
+| 2026-08-21 | S11 inventory | `grep -rn "URLSession\|NWConnection\|getaddrinfo" Sources/` | Four egress points: peer connections, DNS seeds, the tweak index, and an explorer client that is never instantiated. Recorded in the audit manifest |
+| 2026-08-21 | S11 capture | `swift test --filter ExternalDisclosureTests` | 4 tests passed: the tweak-index request is `GET /api/tweaks/{height}` with no query, no body and no address, key or 64-character hex run anywhere in it |
+| 2026-08-21 | S11 mutation | an address appended to the tweak-index URL as a plausible optimisation | 2 tests failed, printing the leaked address |
