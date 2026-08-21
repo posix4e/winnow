@@ -45,7 +45,7 @@ struct ReceiveView: View {
                         .accessibilityIdentifier("receiveAddress")
                         .accessibilityValue(address)
                     HStack(spacing: 16) {
-                        Button("Copy") { UIPasteboard.general.string = address }
+                        Button("Copy") { ClipboardPolicy.interchange.apply(address) }
                         ShareLink(item: address)
                         Button("New address") { newAddress() }
                     }
@@ -79,7 +79,7 @@ struct ReceiveView: View {
                             .padding(.horizontal)
                             .accessibilityIdentifier("silentPaymentAddress")
                         HStack(spacing: 16) {
-                            Button("Copy") { UIPasteboard.general.string = silentPaymentAddress }
+                            Button("Copy") { ClipboardPolicy.interchange.apply(silentPaymentAddress) }
                             ShareLink(item: silentPaymentAddress)
                         }
                         .buttonStyle(.bordered)

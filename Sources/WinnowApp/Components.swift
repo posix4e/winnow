@@ -4,9 +4,45 @@ import UIKit
 import UniformTypeIdentifiers
 import WebKit
 
-/// An explicit, short-lived clipboard handoff for recovery words. Clipboard
-/// access is inherently less private than paper, so the item stays on-device
-/// and asks the system pasteboard to expire it after two minutes.
+/// How long a copied item lives, and whether it may leave the device.
+///
+/// The clipboard is the one place wallet material sits outside the app's
+/// control, and iOS syncs the general pasteboard to a user's other Apple
+/// devices unless told not to. The two policies below are different on
+/// purpose.
+struct ClipboardPolicy: Equatable {
+    /// Whether the item may leave this device via Universal Clipboard.
+    var localOnly: Bool
+    /// How long before the system drops it.
+    var lifetime: TimeInterval
+
+    /// Recovery words never leave the device, and expire quickly. There is no
+    /// legitimate reason to move a seed between devices by clipboard.
+    static let recoveryPhrase = ClipboardPolicy(localOnly: true, lifetime: 120)
+
+    /// Descriptors, PSBTs and addresses may cross to a desktop, because that
+    /// is a real workflow — a k-of-n vault's watch-only descriptor is meant to
+    /// be pasted into Bitcoin Core, and a PSBT travels between cosigners.
+    ///
+    /// The accepted risk is therefore Universal Clipboard, not the copy
+    /// itself: a descriptor carries xpubs, so whoever holds it can derive
+    /// every address the vault will ever use. Blocking that sync would break
+    /// the workflow the feature exists for, so the item still expires rather
+    /// than sitting on the pasteboard until something else overwrites it.
+    static let interchange = ClipboardPolicy(localOnly: false, lifetime: 300)
+
+    var options: [UIPasteboard.OptionsKey: Any] {
+        [.localOnly: localOnly, .expirationDate: Date().addingTimeInterval(lifetime)]
+    }
+
+    /// Single place any wallet material reaches the pasteboard, so a new copy
+    /// button has to state which policy it wants.
+    func apply(_ text: String, to pasteboard: UIPasteboard = .general) {
+        pasteboard.setItems([[UTType.plainText.identifier: text]], options: options)
+    }
+}
+
+/// An explicit, short-lived clipboard handoff for recovery words.
 struct RecoveryPhraseCopyButton: View {
     let phrase: String
     let accessibilityID: String
@@ -14,12 +50,7 @@ struct RecoveryPhraseCopyButton: View {
 
     var body: some View {
         Button(copied ? "Copied for 2 minutes" : "Copy recovery phrase") {
-            UIPasteboard.general.setItems(
-                [[UTType.plainText.identifier: phrase]],
-                options: [
-                    .localOnly: true,
-                    .expirationDate: Date().addingTimeInterval(120),
-                ])
+            ClipboardPolicy.recoveryPhrase.apply(phrase)
             copied = true
         }
         .accessibilityIdentifier(accessibilityID)
@@ -94,7 +125,7 @@ struct CopyableTextBlock: View {
             }
             .frame(maxHeight: 120)
             HStack {
-                Button("Copy") { UIPasteboard.general.string = text }
+                Button("Copy") { ClipboardPolicy.interchange.apply(text) }
                 ShareLink(item: text)
             }
             .buttonStyle(.bordered)
