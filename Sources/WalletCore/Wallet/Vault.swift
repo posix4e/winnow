@@ -94,6 +94,37 @@ public struct Vault: Sendable {
         }
         self.descriptor = descriptor
         self.network = network
+        try Self.requireDistinctSigners(policy: policy, descriptor: descriptor)
+    }
+
+    /// A k-of-n vault is only k-of-n if its signers are n *distinct* keys.
+    ///
+    /// `multiADescriptor` refuses duplicates while building, but every other
+    /// way into a vault arrives at this initializer instead: restoring
+    /// persisted records, an imported bundle, a descriptor pasted by hand. A
+    /// repeated participant makes a policy that needs fewer independent
+    /// signers than it advertises — a `musig(K, K)` "2-of-2" is spendable by
+    /// whoever holds K alone — so the check belongs at the boundary rather
+    /// than in one builder.
+    ///
+    /// Keys are compared as derived material, not as expression text, so
+    /// relabelling an origin cannot disguise a repeat.
+    private static func requireDistinctSigners(policy: Policy, descriptor: Descriptor) throws {
+        let signers: [Descriptor.KeyExpression]
+        switch policy {
+        case let .multiA(_, _, cosigners, _):
+            signers = cosigners
+        case let .muSig2(participants, _):
+            signers = participants.map { .single($0) }
+        }
+        var seen: Set<Data> = []
+        for signer in signers {
+            let key = try descriptor.publicKey(of: signer, index: 0, choice: 0)
+            guard seen.insert(key).inserted else {
+                throw VaultError.invalidDescriptor(
+                    "the same signing key appears more than once, so this policy needs fewer independent signers than it claims")
+            }
+        }
     }
 
     public init(_ string: String, network: BitcoinNetwork) throws {
