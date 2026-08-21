@@ -158,12 +158,8 @@ struct E2EMode {
             // Fail closed: an unsafe schema mistake produces no event at all.
             return
         }
-        let containsMnemonic = fields.values.contains { value in
-            let wordCount = value.split(whereSeparator: \.isWhitespace).count
-            guard [12, 15, 18, 21, 24].contains(wordCount) else { return false }
-            return (try? BIP39.validate(mnemonic: value)) != nil
-        }
-        guard !containsMnemonic else { return }
+        guard !fields.values.contains(where: Self.looksSecret) else { return }
+        guard !fields.values.contains(where: carriesThisRunsSeed) else { return }
         guard let base = try? FileManager.default.url(for: .applicationSupportDirectory,
                                                        in: .userDomainMask,
                                                        appropriateFor: nil, create: true) else { return }
@@ -186,6 +182,46 @@ struct E2EMode {
         }
         try? FileManager.default.setAttributes([.posixPermissions: 0o600],
                                                ofItemAtPath: url.path)
+    }
+
+    /// Value-level checks, because a field name only catches the mistakes
+    /// someone labelled honestly. The comment above promises the journal holds
+    /// no mnemonics, private keys, entropy or secret nonces; the name denylist
+    /// alone enforces none of that once a secret is filed under "note".
+    ///
+    /// These deliberately do not ban long hex runs: the journal legitimately
+    /// carries txids and raw transactions, so a blanket rule would either fire
+    /// constantly or be switched off.
+    static func looksSecret(_ value: String) -> Bool {
+        let wordCount = value.split(whereSeparator: \.isWhitespace).count
+        if [12, 15, 18, 21, 24].contains(wordCount), (try? BIP39.validate(mnemonic: value)) != nil {
+            return true
+        }
+        // Extended private keys are unambiguous by prefix, whatever the field
+        // is called.
+        for prefix in ["xprv", "tprv", "yprv", "zprv", "vprv", "uprv"]
+            where value.lowercased().contains(prefix)
+        {
+            return true
+        }
+        return false
+    }
+
+    /// The strongest check available here, and the one with no false
+    /// positives: this run holds its own seed, so the journal can be compared
+    /// against the actual secret rather than against a guess at what secrets
+    /// look like.
+    func carriesThisRunsSeed(_ value: String) -> Bool {
+        guard let entropy, !entropy.isEmpty else { return false }
+        let hex = entropy.map { String(format: "%02x", $0) }.joined()
+        let haystack = value.lowercased()
+        if haystack.contains(hex) { return true }
+        if let mnemonic = try? BIP39.mnemonic(entropy: entropy),
+           haystack.contains(mnemonic.lowercased())
+        {
+            return true
+        }
+        return false
     }
 
     /// Mnemonic sentence → entropy (BIP39 decode; the injected mnemonic is
