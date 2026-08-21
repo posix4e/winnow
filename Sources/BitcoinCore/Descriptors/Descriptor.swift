@@ -14,6 +14,7 @@ public enum DescriptorError: Error, Equatable {
     case invalidContext
     case invalidMuSig
     case derivationFailed
+    case treeTooDeep
 }
 
 extension HDKey.Network: Equatable {
@@ -456,11 +457,26 @@ struct Parser {
         }
     }
 
-    mutating func parseTree() throws -> Descriptor.ScriptTree {
+    /// BIP341 allows at most 128 levels in a taproot tree: a control block
+    /// carries up to 128 sibling hashes, so anything deeper can never produce
+    /// a spendable output.
+    ///
+    /// The bound does more than reject invalid trees. This parser is
+    /// recursive descent, and without a depth limit a hostile descriptor
+    /// exhausts the stack and terminates the process — around a thousand
+    /// levels was enough. Stack exhaustion is not a Swift error, so no
+    /// fail-closed handler downstream can catch it; a descriptor arriving
+    /// from a restored vault record would take the app down at launch,
+    /// before any damaged-storage handling runs. This is the only place it
+    /// can be stopped.
+    static let maximumTreeDepth = 128
+
+    mutating func parseTree(depth: Int = 0) throws -> Descriptor.ScriptTree {
+        guard depth <= Self.maximumTreeDepth else { throw DescriptorError.treeTooDeep }
         if consume("{") {
-            let left = try parseTree()
+            let left = try parseTree(depth: depth + 1)
             try expect(",")
-            let right = try parseTree()
+            let right = try parseTree(depth: depth + 1)
             try expect("}")
             return .branch(left, right)
         }
