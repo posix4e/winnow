@@ -361,9 +361,31 @@ public actor HeaderChain {
         }
     }
 
+    /// A header file is bounded before it is read, the way the compact-filter
+    /// progress file already is.
+    ///
+    /// Mainnet headers are 80 bytes each and grow by roughly 4 MB a year, so
+    /// the whole chain is well under 100 MB and this ceiling leaves decades of
+    /// headroom. It exists for the file that is *not* a real chain: a damaged
+    /// or tampered store is read during startup, and `Data(contentsOf:)` on an
+    /// arbitrarily large file exhausts memory before any of the fail-closed
+    /// corruption handling downstream gets a chance to run.
+    static let maximumHeaderFileBytes = 256 * 1_024 * 1_024
+
     private static func load(from url: URL, params: NetworkParams) throws
         -> (headers: [BlockHeader], chainwork: [UInt256], heightByHash: [Data: UInt32], baseHeight: UInt32) {
+        if let attributes = try? FileManager.default.attributesOfItem(atPath: url.path),
+           let size = attributes[.size] as? NSNumber,
+           size.int64Value > Int64(maximumHeaderFileBytes) {
+            throw HeaderChainError.storageCorrupt(
+                "header file is \(size.int64Value) bytes, above the \(maximumHeaderFileBytes)-byte limit")
+        }
         let data = try Data(contentsOf: url)
+        // Re-checked after reading: the file can change between the two.
+        guard data.count <= maximumHeaderFileBytes else {
+            throw HeaderChainError.storageCorrupt(
+                "header file is \(data.count) bytes, above the \(maximumHeaderFileBytes)-byte limit")
+        }
         var reader = ByteReader(data)
         guard let first = try? reader.readUInt32() else {
             throw HeaderChainError.storageCorrupt("bad length")
