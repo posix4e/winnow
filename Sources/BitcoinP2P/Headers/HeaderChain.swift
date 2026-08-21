@@ -299,6 +299,10 @@ public actor HeaderChain {
             throw HeaderChainError.reorgWithoutMoreWork
         }
 
+        let disconnected = headers.count - 1 - forkIndex
+        if disconnected > 0 {
+            lastReorg = Reorg(forkHeight: forkHeight, disconnectedHeaders: disconnected)
+        }
         headers = stagedHeaders
         chainwork = stagedWork
         heightByHash = heightByHash.filter { $0.value <= forkHeight }
@@ -360,6 +364,26 @@ public actor HeaderChain {
                 "could not save the header file: \(error.localizedDescription)")
         }
     }
+
+    /// The most recent reorg this chain applied.
+    ///
+    /// `connect` returns only how many headers it appended, so a caller cannot
+    /// tell an ordinary extension from a branch swap that disconnected blocks
+    /// it has already acted on. Anything deriving state from block contents —
+    /// the wallet's scan frontier above all — has to know, because a
+    /// forward-only scan never revisits a height it has passed. Without this
+    /// the swap is silent and downstream state keeps describing the orphaned
+    /// branch.
+    public struct Reorg: Equatable, Sendable {
+        /// The last height the old and new branches agree on. Everything above
+        /// it was disconnected.
+        public var forkHeight: UInt32
+        /// How many headers the swap removed.
+        public var disconnectedHeaders: Int
+    }
+
+    /// Nil until a reorg happens; thereafter the latest one.
+    public private(set) var lastReorg: Reorg?
 
     /// A header file is bounded before it is read, the way the compact-filter
     /// progress file already is.
