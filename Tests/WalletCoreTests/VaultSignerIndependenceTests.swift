@@ -112,4 +112,144 @@ struct VaultSignerIndependenceTests {
             _ = try Vault(text, network: .signet)
         }
     }
+
+    // MARK: - Signers that only collide at a later coordinate (#133)
+
+    /// `[fp/86'/1'/0']tpub…/<choice>/<index>` — a *fixed* path, so it resolves
+    /// to the same key at every address index. That is what lets it hide from
+    /// a check that samples one coordinate.
+    static func fixedExpression(master: HDKey, choice: UInt32, index: UInt32) throws -> String {
+        let account = try master.derived(path: "m/86'/1'/0'")
+        let fingerprint = String(format: "%08x", master.fingerprint)
+        return "[\(fingerprint)/86'/1'/0']\(account.neutered.serialized(network: .testnet))/\(choice)/\(index)"
+    }
+
+    /// Resolves one key expression on its own, so a collision can be shown
+    /// without going through `Vault` — which now refuses these outright.
+    static func resolve(_ expression: String, index: UInt32, choice: Int) throws -> Data {
+        let descriptor = try Descriptor("rawtr(\(expression))")
+        guard case let .rawtr(key) = descriptor.expression else {
+            throw VaultError.invalidDescriptor("fixture is not a rawtr")
+        }
+        return try descriptor.publicKey(of: key, index: index, choice: choice)
+    }
+
+    /// The premise, proved independently of `Vault`: these two expressions are
+    /// different keys at `(index: 0, choice: 0)` — the only coordinate the old
+    /// check sampled — and the *same* key one address later. Sampling more
+    /// indices would not be a proof either; only pinning the suffix is.
+    @Test("two expressions over one account key can differ at index 0 and collide at index 1")
+    func collisionExistsAtALaterIndex() throws {
+        let master = try Flow.masters()[0]
+        let ranged = try Flow.keyExpression(master: master)
+        let fixed = try Self.fixedExpression(master: master, choice: 0, index: 1)
+
+        #expect(try Self.resolve(ranged, index: 0, choice: 0) != Self.resolve(fixed, index: 0, choice: 0))
+        #expect(try Self.resolve(ranged, index: 1, choice: 0) == Self.resolve(fixed, index: 1, choice: 0))
+    }
+
+    @Test("a script-path vault whose cosigners collide at a later receive index is refused")
+    func collidingReceiveIndexRefused() throws {
+        let master = try Flow.masters()[0]
+        let ranged = try Flow.keyExpression(master: master)
+        let fixed = try Self.fixedExpression(master: master, choice: 0, index: 1)
+        let descriptor = try Descriptor("tr(\(Self.nums()),sortedmulti_a(2,\(ranged),\(fixed)))")
+        #expect(throws: VaultError.self) {
+            _ = try Vault(descriptor: descriptor, network: .signet)
+        }
+    }
+
+    /// The same trick on the change chain: multipath choice 1 is the change
+    /// branch, so a vault can be sound for every receive address and collide
+    /// on change.
+    @Test("a script-path vault whose cosigners collide at a later change index is refused")
+    func collidingChangeIndexRefused() throws {
+        let master = try Flow.masters()[0]
+        let ranged = try Flow.keyExpression(master: master)
+        let fixed = try Self.fixedExpression(master: master, choice: 1, index: 1)
+
+        #expect(try Self.resolve(ranged, index: 1, choice: 1) == Self.resolve(fixed, index: 1, choice: 1))
+
+        let descriptor = try Descriptor("tr(\(Self.nums()),sortedmulti_a(2,\(ranged),\(fixed)))")
+        #expect(throws: VaultError.self) {
+            _ = try Vault(descriptor: descriptor, network: .signet)
+        }
+    }
+
+    /// BIP390 forbids a ranged participant only when the musig suffix is
+    /// non-empty, so this shape parses and would collide exactly like the
+    /// script-path one.
+    @Test("a MuSig2 vault whose participants carry their own colliding suffixes is refused")
+    func muSig2ParticipantSuffixRefused() throws {
+        let master = try Flow.masters()[0]
+        let ranged = try Flow.keyExpression(master: master)
+        let fixed = try Self.fixedExpression(master: master, choice: 0, index: 1)
+        let descriptor = try Descriptor("tr(musig(\(ranged),\(fixed)))")
+        #expect(throws: VaultError.self) {
+            _ = try Vault(descriptor: descriptor, network: .signet)
+        }
+    }
+
+    /// A cosigner suffix that is merely *unsupported* — not yet colliding —
+    /// is refused too. Independence is proved by the pin, so anything outside
+    /// it has to go, whether or not this particular pair happens to overlap.
+    @Test("an unsupported cosigner derivation is refused even without a collision")
+    func unsupportedSuffixRefused() throws {
+        let masters = try Flow.masters()
+        let a = try Flow.keyExpression(master: masters[0])
+        let b = try Self.fixedExpression(master: masters[1], choice: 0, index: 7)
+        let descriptor = try Descriptor("tr(\(Self.nums()),sortedmulti_a(2,\(a),\(b)))")
+        #expect(throws: VaultError.self) {
+            _ = try Vault(descriptor: descriptor, network: .signet)
+        }
+    }
+
+    /// The failure has to say what is actually wrong. "Malformed descriptor"
+    /// or a generic key error would send someone looking in the wrong place.
+    @Test("the refusal names the derivation paths, not malformed text")
+    func refusalNamesTheDerivation() throws {
+        let master = try Flow.masters()[0]
+        let ranged = try Flow.keyExpression(master: master)
+        let fixed = try Self.fixedExpression(master: master, choice: 0, index: 1)
+        let descriptor = try Descriptor("tr(\(Self.nums()),sortedmulti_a(2,\(ranged),\(fixed)))")
+        do {
+            _ = try Vault(descriptor: descriptor, network: .signet)
+            Issue.record("expected the vault to be refused")
+        } catch let VaultError.invalidDescriptor(message) {
+            #expect(message.contains("derivation"))
+        }
+    }
+
+    // MARK: - The internal key must not be able to spend alone
+
+    /// A `multi_a` vault commits its threshold in a tapscript leaf, but the
+    /// key path is always available to whoever holds the internal key. With a
+    /// real key there, a "2-of-3" is spendable by one party without touching
+    /// the script at all.
+    @Test("a script-path vault whose internal key can spend alone is refused")
+    func spendableInternalKeyRefused() throws {
+        let masters = try Flow.masters()
+        let a = try Flow.keyExpression(master: masters[0])
+        let b = try Flow.keyExpression(master: masters[1])
+        let internalKey = try Flow.keyExpression(master: masters[2])
+        let descriptor = try Descriptor("tr(\(internalKey),sortedmulti_a(2,\(a),\(b)))")
+        #expect(throws: VaultError.self) {
+            _ = try Vault(descriptor: descriptor, network: .signet)
+        }
+    }
+
+    @Test("the internal-key refusal says the internal key can spend on its own")
+    func spendableInternalKeyRefusalIsSpecific() throws {
+        let masters = try Flow.masters()
+        let a = try Flow.keyExpression(master: masters[0])
+        let b = try Flow.keyExpression(master: masters[1])
+        let internalKey = try Flow.keyExpression(master: masters[2])
+        let descriptor = try Descriptor("tr(\(internalKey),sortedmulti_a(2,\(a),\(b)))")
+        do {
+            _ = try Vault(descriptor: descriptor, network: .signet)
+            Issue.record("expected the vault to be refused")
+        } catch let VaultError.invalidDescriptor(message) {
+            #expect(message.contains("internal key"))
+        }
+    }
 }

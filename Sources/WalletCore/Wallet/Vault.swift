@@ -94,21 +94,85 @@ public struct Vault: Sendable {
         }
         self.descriptor = descriptor
         self.network = network
+        try Self.requireSupportedShape(policy: policy, descriptor: descriptor)
         try Self.requireDistinctSigners(policy: policy, descriptor: descriptor)
+    }
+
+    /// Winnow vaults are exactly two descriptor shapes, and this refuses
+    /// everything else.
+    ///
+    /// The point is not tidiness — it is that signer independence has to be
+    /// *provable*. `requireDistinctSigners` below compares derived keys at one
+    /// coordinate, and one coordinate is not a proof: `publicKey(of:index:choice:)`
+    /// consumes `index` only at a wildcard and `choice` only at a multipath
+    /// element, so `K/<0;1>/*` and `K/0/1` differ at `(0, 0)` and are the same
+    /// key at `(1, 0)`. Sampling more coordinates would not fix that; only
+    /// removing the freedom does. Once every signer carries the identical
+    /// suffix template, distinct account keys can never agree anywhere.
+    ///
+    /// Two further rules close shapes that would defeat the policy outright:
+    ///
+    /// - The `multi_a` internal key must be the BIP341 NUMS point. Without it a
+    ///   restored `tr(RealKey, sortedmulti_a(2, …))` is key-path spendable by
+    ///   whoever holds that internal key, alone, regardless of the threshold.
+    /// - A `musig()` participant may not carry its own suffix. BIP390 forbids
+    ///   ranged participants only when the musig-level suffix is non-empty, so
+    ///   `tr(musig(K/<0;1>/*, K/0/1))` would otherwise parse and collide.
+    ///
+    /// The shape required here is `VaultCosignerRole.requiredDerivation`, the
+    /// same value `VaultCosignerKey` pins on the builder path — one definition,
+    /// so the boundary cannot come to accept what the builder refuses.
+    private static func requireSupportedShape(policy: Policy, descriptor: Descriptor) throws {
+        func requireSuffix(_ derivation: Descriptor.Derivation, _ role: VaultCosignerRole) throws {
+            guard derivation.elements == role.requiredDerivation else {
+                throw VaultError.invalidDescriptor(
+                    "this vault's signer derivation paths are not the supported form, so its signers cannot be shown to be independent of one another")
+            }
+        }
+
+        switch policy {
+        case let .multiA(_, _, cosigners, internalKey):
+            let key = try descriptor.publicKey(of: internalKey, index: 0, choice: 0)
+            guard Data(key.dropFirst()) == Taproot.unspendableInternalKey else {
+                throw VaultError.invalidDescriptor(
+                    "this vault's internal key can spend on its own, which would bypass the signers it lists")
+            }
+            for cosigner in cosigners {
+                guard case let .single(single) = cosigner else {
+                    throw VaultError.invalidDescriptor(
+                        "this vault nests an aggregated key where a single cosigner is required")
+                }
+                guard case .extended = single.base, single.origin != nil else {
+                    throw VaultError.invalidDescriptor(
+                        "every cosigner must be an extended public key carrying its origin")
+                }
+                try requireSuffix(single.derivation, .scriptPath)
+            }
+        case let .muSig2(participants, derivation):
+            try requireSuffix(derivation, .scriptPath)
+            for participant in participants {
+                guard case .extended = participant.base, participant.origin != nil else {
+                    throw VaultError.invalidDescriptor(
+                        "every participant must be an extended public key carrying its origin")
+                }
+                try requireSuffix(participant.derivation, .muSig2)
+            }
+        }
     }
 
     /// A k-of-n vault is only k-of-n if its signers are n *distinct* keys.
     ///
-    /// `multiADescriptor` refuses duplicates while building, but every other
-    /// way into a vault arrives at this initializer instead: restoring
-    /// persisted records, an imported bundle, a descriptor pasted by hand. A
-    /// repeated participant makes a policy that needs fewer independent
-    /// signers than it advertises — a `musig(K, K)` "2-of-2" is spendable by
-    /// whoever holds K alone — so the check belongs at the boundary rather
-    /// than in one builder.
+    /// `multiADescriptor` refuses duplicates while building, but a vault also
+    /// arrives here from a **persisted record** — `VaultStore` re-validates
+    /// every descriptor it loads — which is the tampered-storage case the
+    /// threat model cares about, and the path any future import or paste
+    /// feature would take. A repeated participant makes a policy that needs
+    /// fewer independent signers than it advertises: a `musig(K, K)` "2-of-2"
+    /// is spendable by whoever holds K alone.
     ///
     /// Keys are compared as derived material, not as expression text, so
-    /// relabelling an origin cannot disguise a repeat.
+    /// relabelling an origin cannot disguise a repeat. `requireSupportedShape`
+    /// runs first and is what makes this check sufficient rather than a sample.
     private static func requireDistinctSigners(policy: Policy, descriptor: Descriptor) throws {
         let signers: [Descriptor.KeyExpression]
         switch policy {

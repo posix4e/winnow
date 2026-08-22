@@ -8,6 +8,25 @@ public enum VaultCosignerRole: Sendable, Hashable {
     case scriptPath
     /// A bare BIP390 participant such as `[fingerprint/path]tpub…`.
     case muSig2
+
+    /// The one derivation suffix a signer of this role may carry.
+    ///
+    /// Pinning the suffix is what makes signer independence *provable* rather
+    /// than sampled. Two expressions over distinct account keys that share an
+    /// identical suffix template cannot resolve to the same public key at any
+    /// `(index, choice)`; allow the suffixes to differ and they can agree at
+    /// some later coordinate while looking distinct at the one a check
+    /// happened to sample.
+    ///
+    /// `Vault.init` and `VaultCosignerKey` both enforce this, so it lives here
+    /// rather than in either of them — if the two ever disagreed, the boundary
+    /// would accept a shape the builder refuses.
+    public var requiredDerivation: [Descriptor.Derivation.Element] {
+        switch self {
+        case .scriptPath: [.multipath([0, 1]), .wildcard(hardened: false)]
+        case .muSig2: []
+        }
+    }
 }
 
 /// Plain-language validation failures for signer keys entered during vault setup.
@@ -120,17 +139,10 @@ public struct VaultCosignerKey: Sendable, Equatable {
             )
         }
 
-        switch role {
-        case .scriptPath:
-            guard key.derivation.elements == [
-                .multipath([0, 1]),
-                .wildcard(hardened: false),
-            ] else {
-                throw VaultCosignerKeyError.scriptPathDerivationRequired
-            }
-        case .muSig2:
-            guard key.derivation.elements.isEmpty else {
-                throw VaultCosignerKeyError.muSig2DerivationForbidden
+        guard key.derivation.elements == role.requiredDerivation else {
+            switch role {
+            case .scriptPath: throw VaultCosignerKeyError.scriptPathDerivationRequired
+            case .muSig2: throw VaultCosignerKeyError.muSig2DerivationForbidden
             }
         }
 

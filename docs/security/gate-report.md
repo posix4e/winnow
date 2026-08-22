@@ -55,6 +55,9 @@ authorization path itself:
 | | |
 |---|---|
 | SEC-007 | `SendPreview.authorizes` — the last gate before broadcast — verified fee, change and inputs but **never the payment outputs**. A build paying a different script, paying one satoshi, or omitting the recipient entirely was authorized. |
+| SEC-018 | The same gate never inspected silent payments at all, and did not require the reviewed outputs to exhaust the actual ones. Fixed; the residual is that the app cannot bind a derived script to the reviewed `sp1…` code without the input keys. |
+| SEC-019 | Signer independence was proved by sampling one derivation coordinate. Two expressions over one account key could differ there and collide at a later address, making a threshold-2 vault impossible to finalize. Fixed by pinning the accepted descriptor shape. |
+| SEC-020 | A vault's Taproot internal key was never checked, so a tampered record could carry a real key and spend a k-of-n alone. Fixed. |
 | SEC-008 | `send` and `bumpFee` are `@MainActor` but release the actor at every await, so a second entry could interleave. The only protection was a disabled button. |
 | SEC-009 | `Vault.init` accepted a policy repeating a signer. `tr(musig(K,K))` presented as 2-of-2 while being spendable by whoever held K alone. |
 | SEC-010 | The recursive-descent descriptor parser had no depth bound; ~1,000 levels of nesting terminated the process by signal, from a path read at startup. |

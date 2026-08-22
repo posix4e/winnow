@@ -33,5 +33,5 @@ public struct SilentPayment: Equatable, Sendable {
 
     /// Silent payment outputs are always P2TR; this placeholder keeps the
     /// coin-selection fee math exact before the real script is derived.
-    static let sizingScriptPubKey = Data([0x51, 0x20]) + Data(repeating: 0, count: 32)
+    public static let sizingScriptPubKey = Data([0x51, 0x20]) + Data(repeating: 0, count: 32)
 }

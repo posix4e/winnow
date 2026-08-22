@@ -1002,35 +1002,58 @@ final class AppModel {
         var selectedOutpoints: [ReviewedOutpoint]
         var change: Payment?
 
-        func authorizes(_ built: BuiltTransaction) -> Bool {
+        /// Whether `built` is the transaction that was reviewed.
+        ///
+        /// `resolvedSilentPayments` has to come from the wallet: a BIP352
+        /// output script is derived from the selected inputs' private keys, so
+        /// the review layer cannot compute it and can only be handed it.
+        func authorizes(_ built: BuiltTransaction,
+                        resolvedSilentPayments: [Payment] = []) -> Bool {
             guard built.fee == fee,
                   built.changeAmount == changeAmount,
                   built.transaction.inputs.map({
                       ReviewedOutpoint(txid: $0.previousOutput.txid, vout: $0.previousOutput.vout)
                   }) == selectedOutpoints
             else { return false }
-            // Every reviewed payment must actually appear in the transaction.
-            // Fee and inputs are pinned above, which fixes the total output
-            // value but says nothing about who receives it: without this a
-            // build could pay the reviewed amount to a different script, or
-            // pay the right script one satoshi, and still satisfy every other
-            // constraint. Outputs are consumed as they are matched so one
-            // output cannot satisfy two reviewed entries.
+
+            // The reviewed outputs must account for the transaction exactly:
+            // every reviewed one present, and nothing else there.
+            //
+            // Presence alone is not enough. Fee and inputs are pinned above,
+            // which fixes the total output value but says nothing about who
+            // receives it, so a build could pay the reviewed amount to a
+            // different script, or pay the right script one satoshi. And
+            // exhaustion is not enough on its own either: an output the
+            // reviewer never saw must fail even when every reviewed one is
+            // present, which is why the count is pinned and `unmatched` has to
+            // end empty rather than merely contain the change.
+            //
+            // Silent payments are matched here on the scripts the wallet
+            // derived for them. What that binds is the amount, the presence of
+            // that script, and exhaustiveness — not that the script belongs to
+            // the `sp1…` code on screen, which cannot be checked without the
+            // input keys.
+            //
+            // Matching is order-independent throughout: `TransactionBuilder`
+            // inserts change at a random position to avoid a chain-analysis
+            // fingerprint, so nothing may assume payments-then-change.
+            guard resolvedSilentPayments.count == silentPayments.count,
+                  zip(silentPayments, resolvedSilentPayments)
+                      .allSatisfy({ $0.amount == $1.amount })
+            else { return false }
+            var expected = payments + resolvedSilentPayments
+            if let change { expected.append(change) }
+            guard built.transaction.outputs.count == expected.count else { return false }
+
             var unmatched = built.transaction.outputs
-            for payment in payments {
+            for payment in expected {
                 guard let index = unmatched.firstIndex(where: {
                     $0.value == payment.amount && $0.scriptPubKey == payment.scriptPubKey
                 }) else { return false }
                 unmatched.remove(at: index)
             }
-            switch change {
-            case nil:
-                return changeAmount == nil
-            case let expected?:
-                return unmatched.contains {
-                    $0.value == expected.amount && $0.scriptPubKey == expected.scriptPubKey
-                }
-            }
+            guard unmatched.isEmpty else { return false }
+            return (change == nil) == (changeAmount == nil)
         }
     }
 
@@ -1045,7 +1068,7 @@ final class AppModel {
         var silentPayments: [SilentPayment] = []
         // Sizing placeholder for the fee math: silent payment outputs are
         // always P2TR; the real script is derived at signing time (BIP352).
-        let sizing = Data([0x51, 0x20]) + Data(repeating: 0, count: 32)
+        let sizing = SilentPayment.sizingScriptPubKey
         if trimmed.lowercased().hasPrefix("sp1") || trimmed.lowercased().hasPrefix("tsp1") {
             silentPayments.append(try SilentPayment(amount: amount, address: trimmed, network: network))
         } else {
@@ -1106,7 +1129,9 @@ final class AppModel {
         let prepared = try await wallet.buildSend(payments: preview.payments,
                                                   feeRateSatPerVByte: preview.feeRateSatPerVByte,
                                                   silentPayments: preview.silentPayments)
-        guard preview.authorizes(prepared.built) else { throw AppError.sendReviewChanged }
+        guard preview.authorizes(prepared.built,
+                                 resolvedSilentPayments: prepared.resolvedSilentPayments)
+        else { throw AppError.sendReviewChanged }
         let txid = try await broadcast(prepared.built.transaction,
                                        feeRateSatPerVByte: preview.feeRateSatPerVByte)
         try await wallet.commit(prepared)
