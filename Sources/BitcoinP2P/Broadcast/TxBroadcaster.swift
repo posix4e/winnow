@@ -207,15 +207,27 @@ public actor TxBroadcaster {
         for subscriber in subscribers.values { subscriber.yield(event) }
     }
 
-    /// base × 2^attempt, capped at `maxRebroadcastInterval`.
-    private func backoffInterval(attempt: Int) -> Duration {
-        var interval = rebroadcastBaseInterval
+    /// base × 2^attempt, capped at `cap`.
+    ///
+    /// A pure function of the attempt count and the configured intervals: it
+    /// never reads the clock, so the schedule can be checked exhaustively
+    /// without timing anything. Asserting the step sizes against wall-clock
+    /// observations instead measures poll latency on a loaded runner, which is
+    /// how this became a flaky release gate (#138).
+    static func backoffInterval(attempt: Int, base: Duration, cap: Duration) -> Duration {
+        var interval = base
         for _ in 0 ..< attempt {
             let doubled = interval + interval
-            guard doubled < maxRebroadcastInterval else { return maxRebroadcastInterval }
+            guard doubled < cap else { return cap }
             interval = doubled
         }
-        return min(interval, maxRebroadcastInterval)
+        return min(interval, cap)
+    }
+
+    private func backoffInterval(attempt: Int) -> Duration {
+        Self.backoffInterval(attempt: attempt,
+                             base: rebroadcastBaseInterval,
+                             cap: maxRebroadcastInterval)
     }
 
     private static func timeInterval(_ duration: Duration) -> TimeInterval {
