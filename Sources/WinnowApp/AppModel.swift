@@ -58,6 +58,8 @@ final class AppModel {
         case deviceAuthUnavailable
         case deviceAuthFailed
         case spendAlreadyInFlight
+        /// No storage directory, so a rollback target cannot be recorded.
+        case noStorage
 
         var errorDescription: String? {
             switch self {
@@ -73,6 +75,7 @@ final class AppModel {
             case .deviceAuthUnavailable: "Set a device passcode first — sensitive wallet actions require device authentication."
             case .deviceAuthFailed: "Device authentication failed."
             case .spendAlreadyInFlight: "Another payment is already being signed and broadcast. Wait for it to finish."
+            case .noStorage: "Winnow could not reach its storage, so a chain reorganisation could not be recorded. Syncing has stopped rather than continue on stale data."
             }
         }
     }
@@ -501,7 +504,11 @@ final class AppModel {
             // Before anything scans: a marker here means a previous rollback
             // was interrupted, and the state it was repairing is exactly the
             // state a scan would otherwise build on.
-            try? await resumeInterruptedRollback()
+            //
+            // Fails closed. Swallowing this would leave the marker stuck and
+            // then scan on state already known to be stale, which is the one
+            // thing every other damaged-state path in this app refuses to do.
+            try await resumeInterruptedRollback()
         } catch {
             status.lastSyncError = error.localizedDescription
         }
@@ -575,9 +582,15 @@ final class AppModel {
     /// after this returns, and clearing before that would leave a window where
     /// a crash loses the rollback that had already started.
     func rollBackStores(to forkHeight: UInt32) async throws {
-        if let marker = storageDirectory()?.appending(path: Self.rollbackMarkerName) {
-            try? Data(String(forkHeight).utf8).write(to: marker, options: .atomic)
+        // Throwing, and first. `try?` here defeated the whole mechanism: a
+        // failed write proceeded into the rollbacks unprotected, and a crash
+        // then left the stores disagreeing with no marker to trigger the redo
+        // -- precisely the state the marker exists to prevent. If the target
+        // cannot be recorded, nothing may change.
+        guard let marker = storageDirectory()?.appending(path: Self.rollbackMarkerName) else {
+            throw AppError.noStorage
         }
+        try Data(String(forkHeight).utf8).write(to: marker, options: .atomic)
         try await wallet?.rollBack(to: forkHeight)
         try await vaultStore.rollBack(to: forkHeight)
     }
@@ -1779,7 +1792,7 @@ final class AppModel {
     /// progress, peers, broadcasts, vaults. Excluded from backup: no secrets
     /// here (those are Keychain-only), and even the public state stays on the
     /// device.
-    private func storageDirectory() -> URL? {
+    func storageDirectory() -> URL? {
         guard let base = try? FileManager.default.url(for: .applicationSupportDirectory,
                                                       in: .userDomainMask,
                                                       appropriateFor: nil, create: true)
