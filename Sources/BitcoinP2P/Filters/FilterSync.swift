@@ -191,11 +191,27 @@ public actor FilterSync {
             // so a single peer — or peers that agree — could answer about a
             // different chain entirely and be believed. `pinFilterHeaders`
             // has always checked its own stop hash; this path had not.
+            //
+            // Evict and carry on rather than throw. The other peers may be
+            // answering honestly, and refusing the whole sync on one bad reply
+            // would hand any single hostile peer a denial of service — the
+            // opposite of what cross-peer comparison is for. The majority rule
+            // below then runs on whoever answered about the chain we asked
+            // about.
+            //
+            // An honest peer cannot trip this. It echoes the stop hash we sent
+            // in `getcfcheckpt`, so a tip that advances mid-loop does not cause
+            // a mismatch — we simply scan to the tip we asked about and catch
+            // the rest on the next run.
             guard message.stopHash == tipHash else {
                 await pool.misbehaving(peer, reason: "cfcheckpt stop hash mismatch")
-                throw FilterSyncError.badPeerResponse("cfcheckpt stop hash mismatch")
+                continue
             }
             checkpoints.append((peer, message))
+        }
+        guard !checkpoints.isEmpty else {
+            throw FilterSyncError.badPeerResponse(
+                "no peer answered the cfcheckpt request for our chain tip")
         }
         // Adopt the MAJORITY cfcheckpt answer — never checkpoints[0] by fiat, or
         // a lying first peer could evict the honest ones and become the sole
@@ -225,14 +241,27 @@ public actor FilterSync {
                 await pool.misbehaving(peer, reason: "cfcheckpt mismatch")
             }
             reference = best.message
-            // Re-read the pool. `peers` was captured before those evictions,
-            // and the batch loop below sends to `peers[0]` and to the first
-            // two entries — a torn-down connection there aborts the whole sync
-            // with a transport error, so adopting the majority would evict the
-            // liar and then fail anyway.
-            peers = await pool.connectedPeers()
-            guard !peers.isEmpty else { throw FilterSyncError.noPeers }
         }
+
+        // Only peers whose cfcheckpt matched the answer we adopted may go on to
+        // serve filters, and `peers` has to be rebuilt from them.
+        //
+        // Two separate problems are being solved here. The list was captured
+        // before any eviction, and the batch loop sends to `peers[0]` and the
+        // first two entries — so evicting a liar that sat at the front tore
+        // down the connection the next request used, and a sync that correctly
+        // identified the liar died on a transport timeout anyway.
+        //
+        // But simply re-reading the pool is not sound either: `misbehaving`
+        // triggers `replenish`, so `connectedPeers()` can hand back brand-new
+        // peers that never went through this comparison at all. Serving filters
+        // from those bypasses the only multi-peer checkpoint consensus the
+        // client has — the eviction would be cosmetic, replacing a known liar
+        // with an unvetted stranger. Hence the intersection rather than a
+        // refresh.
+        let approvedEndpoints = await Self.endpoints(
+            of: checkpoints.filter { $0.message == reference }.map(\.peer))
+        peers = try await approved(peers: approvedEndpoints)
         // Core serves checkpoint headers at heights 1000, 2000, …, ascending
         // (ProcessGetCFCheckPt: entry i is the header at (i+1)*1000; the stop
         // block itself is included only when it is a multiple of 1000).
@@ -266,8 +295,12 @@ public actor FilterSync {
             candidate.nextScanHeight = batchStop + 1
             try persist(candidate)
             progress = candidate
-            peers = await pool.connectedPeers()
-            guard !peers.isEmpty else { throw FilterSyncError.noPeers }
+            // Same intersection as above, for the same reason: a long sync
+            // must not drift onto replacements dialled mid-scan whose
+            // checkpoints were never compared against anyone's. If every
+            // approved peer has gone, stop rather than continue unvetted —
+            // the next `sync` redoes the comparison from scratch.
+            peers = try await approved(peers: approvedEndpoints)
         }
 
         // Final guard: the highest checkpoint header we computed must equal
@@ -284,6 +317,29 @@ public actor FilterSync {
 
     /// Fetches cfheaders for [batchStart, batchStop] and pins the filter
     /// header chain to our block-header chain.
+    /// Endpoint descriptions of `connections`, for comparing peer identity
+    /// across a pool that may have been replenished underneath us.
+    private static func endpoints(of connections: [PeerConnection]) async -> Set<String> {
+        var result: Set<String> = []
+        for connection in connections { result.insert(connection.endpoint.description) }
+        return result
+    }
+
+    /// The still-connected peers whose cfcheckpt answer we adopted.
+    ///
+    /// Throws rather than falling back to the full pool: a peer that never had
+    /// its checkpoints compared is exactly what the cross-peer check exists to
+    /// exclude, so continuing without an approved peer would silently drop the
+    /// protection instead of failing closed.
+    private func approved(peers approvedEndpoints: Set<String>) async throws -> [PeerConnection] {
+        var result: [PeerConnection] = []
+        for peer in await pool.connectedPeers() {
+            if approvedEndpoints.contains(peer.endpoint.description) { result.append(peer) }
+        }
+        guard !result.isEmpty else { throw FilterSyncError.noPeers }
+        return result
+    }
+
     private func pinFilterHeaders(batchStart: UInt32, batchStop: UInt32, stopHash: Data,
                                   peers: [PeerConnection],
                                   startingFrom storedHeaders: [String: String]) async throws

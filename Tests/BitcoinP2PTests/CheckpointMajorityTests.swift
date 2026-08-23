@@ -254,10 +254,50 @@ struct CheckpointMajorityTests {
             Issue.record("expected badPeerResponse, got \(String(describing: thrown))")
             return
         }
-        #expect(reason.contains("stop hash"))
+        // The peer is evicted rather than the sync being aborted on the spot,
+        // so what remains is an empty checkpoint set — no peer answered about
+        // the chain we asked about.
+        #expect(reason.contains("no peer answered"))
         #expect(await sync.nextScanHeight == 1)
         // The peer is dropped, not merely disbelieved for this request.
         #expect(await pool.connectedPeers().isEmpty)
+
+        await pool.stop()
+    }
+
+    /// The case that proves eviction is the right response rather than
+    /// throwing: one peer answers about a different chain while two answer
+    /// honestly. Aborting on the first bad reply would fail a sync that two
+    /// honest peers could have completed — handing any single hostile peer a
+    /// denial of service.
+    @Test("one peer lying about the stop hash does not stop two honest peers syncing")
+    func mixedStopHashLieStillSyncs() async throws {
+        let synthetic = Self.chain()
+        let honestA = LoopbackNode(params: synthetic.params, chain: synthetic.blocks)
+        let honestB = LoopbackNode(params: synthetic.params, chain: synthetic.blocks)
+        let liar = LoopbackNode(params: synthetic.params, chain: synthetic.blocks,
+                                cfcheckptStopHashOverride: Data(repeating: 0xAB, count: 32))
+        let nodes = [honestA, honestB, liar]
+        for node in nodes { try await node.start() }
+        defer { for node in nodes { Task { await node.stop() } } }
+
+        let liarEndpoint = await liar.endpoint
+        let pool = PeerPool(params: synthetic.params, peerCount: 3,
+                            manualPeers: await Self.endpoints(nodes),
+                            peersFileURL: tempFileURL("peers.json"))
+        await pool.start()
+        #expect(await pool.connectedPeers().count == 3)
+
+        let chain = try HeaderChain(params: synthetic.params)
+        let sync = try FilterSync(pool: pool, chain: chain, startHeight: 1,
+                                  storageURL: tempFileURL("progress.json"),
+                                  requiredCheckpointPeers: 3)
+        let collector = MatchCollector()
+        try await sync.sync(watchScripts: [synthetic.watchScript]) { collector.add($0) }
+
+        #expect(collector.matches.count == 1)
+        #expect(await sync.lastScannedHeight == 1_001)
+        #expect(await Self.connectedEndpoints(pool).contains(liarEndpoint.description) == false)
 
         await pool.stop()
     }
@@ -293,6 +333,57 @@ struct CheckpointMajorityTests {
         }
         #expect((thrown as? FilterSyncError) != nil)
         #expect(await sync.nextScanHeight == 1)
+
+        await pool.stop()
+    }
+
+    /// Evicting a peer is only half a defence if its replacement is trusted
+    /// without the same scrutiny.
+    ///
+    /// `pool.misbehaving` triggers `replenish`, which dials a fresh peer. That
+    /// peer never took part in the checkpoint comparison, so serving filters
+    /// from it would bypass the only multi-peer consensus the client has — the
+    /// eviction would amount to swapping a known liar for an unvetted stranger.
+    ///
+    /// Two peers are evicted here for answering about the wrong chain, leaving
+    /// a single approved survivor. The replacement dialled in their place lies
+    /// about filter commitments, so if the scan were to use it at all the
+    /// cfheaders cross-check would fail the sync. Completing is the assertion.
+    @Test("a peer dialled in to replace an evicted one is not trusted to serve filters")
+    func replacementPeersAreNotTrusted() async throws {
+        let synthetic = Self.chain()
+        let wrongChain = Data(repeating: 0xAB, count: 32)
+        let honest = LoopbackNode(params: synthetic.params, chain: synthetic.blocks)
+        let liarA = LoopbackNode(params: synthetic.params, chain: synthetic.blocks,
+                                 cfcheckptStopHashOverride: wrongChain)
+        let liarB = LoopbackNode(params: synthetic.params, chain: synthetic.blocks,
+                                 cfcheckptStopHashOverride: wrongChain)
+        // Held back so the first three dials are the ones above; this is the
+        // peer `replenish` reaches for once the two liars are dropped.
+        let replacement = LoopbackNode(params: synthetic.params, chain: synthetic.blocks,
+                                       lieAboutFilterCommitments: true,
+                                       versionDelay: .milliseconds(400))
+        let nodes = [honest, liarA, liarB, replacement]
+        for node in nodes { try await node.start() }
+        defer { for node in nodes { Task { await node.stop() } } }
+
+        let honestEndpoint = await honest.endpoint
+        let pool = PeerPool(params: synthetic.params, peerCount: 3,
+                            manualPeers: await Self.endpoints(nodes),
+                            peersFileURL: tempFileURL("peers.json"))
+        await pool.start()
+
+        let chain = try HeaderChain(params: synthetic.params)
+        let sync = try FilterSync(pool: pool, chain: chain, startHeight: 1,
+                                  storageURL: tempFileURL("progress.json"),
+                                  requiredCheckpointPeers: 3)
+        let collector = MatchCollector()
+        try await sync.sync(watchScripts: [synthetic.watchScript]) { collector.add($0) }
+
+        #expect(collector.matches.count == 1)
+        #expect(await sync.lastScannedHeight == 1_001)
+        // The approved survivor is still there; the two liars are not.
+        #expect(await Self.connectedEndpoints(pool).contains(honestEndpoint.description))
 
         await pool.stop()
     }
