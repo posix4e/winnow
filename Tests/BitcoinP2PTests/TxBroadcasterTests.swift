@@ -288,7 +288,14 @@ struct TxBroadcasterTests {
         let txid1 = try await broadcaster.broadcast(makeFakeSegwitTx().serialized(includeWitness: true))
         #expect(await node.nextMessage(command: "inv") != nil)
         try await broadcaster.markConfirmed(txid1)
+        // The pending entry is gone, so no further attempt can be scheduled.
+        // That is the claim, and it is deterministic.
         #expect(await broadcaster.pendingTxids.isEmpty)
+        // The wire check is about what happens *after* that. A rebroadcast
+        // already scheduled when the confirmation landed may still arrive —
+        // the interval here is 150ms — and is not a counter-example, so one
+        // in-flight inv is drained before requiring silence (#144).
+        _ = await node.nextMessage(command: "inv", timeout: .milliseconds(300))
         #expect(await node.nextMessage(command: "inv", timeout: .milliseconds(700)) == nil)
         #expect(seen.events.contains { $0 == .confirmed(txid: txid1) })
 
@@ -528,7 +535,14 @@ struct TxBroadcasterTests {
 }
 
 /// Polls `condition` every 10ms until it holds or `timeout` elapses.
-private func pollUntil(_ timeout: Duration = .seconds(10),
+/// Waits for `condition`, and gives up eventually so a hung test fails instead
+/// of hanging forever.
+///
+/// The timeout is a HANG-GUARD, not a performance claim. Nothing here asserts
+/// that the condition is met within it — on a contended CI runner a short
+/// deadline turns into an assertion nobody wrote, which is how these became
+/// intermittent (#144). Keep it generous: a real hang fails either way.
+private func pollUntil(_ timeout: Duration = .seconds(60),
                        _ condition: () async -> Bool) async -> Bool {
     let deadline = ContinuousClock.now + timeout
     while ContinuousClock.now < deadline {

@@ -305,7 +305,14 @@ struct MempoolWindowTests {
 }
 
 /// Polls `condition` every 10ms until it holds or `timeout` elapses.
-private func pollUntil(_ timeout: Duration = .seconds(10),
+/// Waits for `condition`, and gives up eventually so a hung test fails instead
+/// of hanging forever.
+///
+/// The timeout is a HANG-GUARD, not a performance claim. Nothing here asserts
+/// that the condition is met within it — on a contended CI runner a short
+/// deadline turns into an assertion nobody wrote, which is how these became
+/// intermittent (#144). Keep it generous: a real hang fails either way.
+private func pollUntil(_ timeout: Duration = .seconds(60),
                        _ condition: () async -> Bool) async -> Bool {
     let deadline = ContinuousClock.now + timeout
     while ContinuousClock.now < deadline {

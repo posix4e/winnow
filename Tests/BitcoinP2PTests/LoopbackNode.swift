@@ -83,7 +83,13 @@ actor LoopbackNode {
     var endpoint: PeerEndpoint { PeerEndpoint(host: "127.0.0.1", port: port) }
 
     func start() async throws {
-        let listener = try NWListener(using: .tcp,
+        // Local endpoint reuse: `retryAfterExhaustion` deliberately closes a
+        // listener and rebinds the same port, and without SO_REUSEADDR the
+        // kernel can still be holding it — which surfaces on a loaded CI
+        // machine as "Address already in use" and nowhere else (#144).
+        let parameters = NWParameters.tcp
+        parameters.allowLocalEndpointReuse = true
+        let listener = try NWListener(using: parameters,
                                       on: listenPort.flatMap { NWEndpoint.Port(rawValue: $0) } ?? .any)
         self.listener = listener
         listener.newConnectionHandler = { connection in

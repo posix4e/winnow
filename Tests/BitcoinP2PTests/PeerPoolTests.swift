@@ -99,14 +99,30 @@ struct PeerPoolTests {
         }
         defer { for node in nodes { Task { await node.stop() } } }
 
+        // Measure one silent candidate first, so the claim can be stated as a
+        // ratio. An absolute bound is a claim about the machine as much as the
+        // code: on a contended runner `elapsed < 2s` fails while the racing it
+        // is meant to prove works perfectly (#144).
+        let single = SilentNode()
+        try await single.start()
+        defer { Task { await single.stop() } }
+        let onePool = PeerPool(params: params, peerCount: 1,
+                               manualPeers: [await single.endpoint],
+                               dialTimeout: .milliseconds(400))
+        let oneStart = ContinuousClock.now
+        await onePool.start()
+        let oneRound = ContinuousClock.now - oneStart
+        await onePool.stop()
+
         let pool = PeerPool(params: params, peerCount: 3, manualPeers: endpoints,
                             dialTimeout: .milliseconds(400))
         let start = ContinuousClock.now
         await pool.start()
         let elapsed = ContinuousClock.now - start
-        // Serial dialing would take 5 × 400ms of timeouts; racing all five
-        // bounds the round at roughly one dial timeout.
-        #expect(elapsed < .seconds(2))
+        // Serial dialing would cost five timeouts; racing costs about one. The
+        // margin is generous because what is being refused is 5×, not 2×.
+        #expect(elapsed < oneRound * 3,
+                "five candidates took \(elapsed) against \(oneRound) for one — that looks serial, not raced")
         let status = await pool.connectionStatus
         #expect(status.connected == 0)
         #expect(status.exhausted)
