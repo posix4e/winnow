@@ -147,6 +147,33 @@ struct PeerDiversityTests {
         #expect(policy(seats).admits(candidate("3.3.3.3", .persisted), given: seated) == false)
     }
 
+    /// A peer that was manual once and has since been removed from settings
+    /// must lose the ceiling exemption with it.
+    ///
+    /// The exemption exists because a configured peer is an instruction, and an
+    /// instruction that has been withdrawn is not one any more. Keeping it
+    /// would mean a transient settings entry buys standing that outlives it —
+    /// so a peer briefly typed in, or briefly injected, would stay
+    /// ceiling-exempt for the life of the peers file.
+    @Test("a manual peer removed from settings loses its exemption")
+    func withdrawnManualPeerDecays() async throws {
+        let file = FileManager.default.temporaryDirectory
+            .appendingPathComponent("winnow-decay-\(UUID().uuidString).json")
+        defer { try? FileManager.default.removeItem(at: file) }
+
+        // A peers file remembering it as manual, and settings that no longer
+        // list it.
+        let endpoint = PeerEndpoint(host: "47.206.253.100", port: 8333)
+        let stored = PersistedPeers([PeerCandidate(endpoint: endpoint, source: .manual)])
+        try JSONEncoder().encode(stored).write(to: file)
+
+        let pool = PeerPool(params: .signet, peerCount: 3, manualPeers: [],
+                            peersFileURL: file)
+        let classes = await pool.candidateSourcesForTest()
+        #expect(classes[endpoint] == .persisted,
+                "an instruction that has been withdrawn is not an instruction")
+    }
+
     // MARK: - The peers file
 
     /// A file written before this change is a bare array with no class. It must

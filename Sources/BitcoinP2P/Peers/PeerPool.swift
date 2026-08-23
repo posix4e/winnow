@@ -446,6 +446,27 @@ public actor PeerPool {
     /// The diversity rules this pool enforces, sized to its slot count.
     private var policy: DiversityPolicy { DiversityPolicy(peerCount: peerCount) }
 
+    /// The class a known-good peer counts as today.
+    ///
+    /// `manual` is exempt from the source ceiling because a peer the user typed
+    /// in is instruction rather than selection — but only while it *is* still
+    /// configured. A peer that was manual once and has since been removed from
+    /// settings is no longer an instruction, and letting it keep a permanent
+    /// ceiling exemption would mean a transient entry buys standing that
+    /// outlives it. It reverts to `persisted`, which is what it now is: a peer
+    /// this device happened to connect to before.
+    private func rememberedSource(_ endpoint: PeerEndpoint) -> PeerSource {
+        let remembered = knownSource[endpoint] ?? .persisted
+        if remembered == .manual, !manualPeers.contains(endpoint) { return .persisted }
+        return remembered
+    }
+
+    /// Test seam: the class each known-good peer would be dialled under now.
+    func candidateSourcesForTest() -> [PeerEndpoint: PeerSource] {
+        Dictionary(localCandidates(excluding: []).map { ($0.endpoint, $0.source) },
+                   uniquingKeysWith: { first, _ in first })
+    }
+
     /// What is connected right now, with each peer's origin.
     private func seatedCandidates() -> [PeerCandidate] {
         peers.map {
@@ -465,8 +486,7 @@ public actor PeerPool {
             ordered.append(PeerCandidate(endpoint: endpoint, source: .manual))
         }
         for endpoint in knownGood.subtracting(manualPeers) {
-            ordered.append(PeerCandidate(endpoint: endpoint,
-                                         source: knownSource[endpoint] ?? .persisted))
+            ordered.append(PeerCandidate(endpoint: endpoint, source: rememberedSource(endpoint)))
         }
         for endpoint in params.fallbackPeers {
             ordered.append(PeerCandidate(endpoint: endpoint, source: .fallback))
