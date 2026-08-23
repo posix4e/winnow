@@ -304,6 +304,10 @@ struct TxBroadcasterTests {
         #expect(await node.nextMessage(command: "inv") != nil)
         try await broadcaster.cancel(txid2)
         #expect(await broadcaster.pendingTxids.isEmpty)
+        // Same race as the confirmation branch above, and it needs the same
+        // treatment: a rebroadcast already scheduled when the cancellation
+        // landed is not a counter-example to "cancelling stops rebroadcasting".
+        _ = await node.nextMessage(command: "inv", timeout: .milliseconds(300))
         #expect(await node.nextMessage(command: "inv", timeout: .milliseconds(700)) == nil)
         #expect(seen.events.contains { $0 == .cancelled(txid: txid2) })
 
