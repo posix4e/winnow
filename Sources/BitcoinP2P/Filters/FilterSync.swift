@@ -220,6 +220,27 @@ public actor FilterSync {
         // we drop every checkpoint peer and let the pool replenish and retry.
         let reference: CFCheckptMessage
         if checkpoints.count == 1 {
+            // A lone survivor is accepted even when more peers were asked for,
+            // and that is deliberate — refusing here would be strictly worse.
+            //
+            // A peer only leaves this set by being evicted, and the two ways
+            // out lead somewhere harmless. The stop-hash guard evicts the peer
+            // that *replied*, and an honest peer never sends a stop hash we did
+            // not ask about, so an attacker spraying garbage only evicts his own
+            // peers and hands the sync to one he does not control. Reaching the
+            // bad case — his peer as sole survivor — means the honest ones lost
+            // the tally, which already requires him to hold a majority; the
+            // downgrade adds nothing he did not already have.
+            //
+            // Refusing, by contrast, would hand him something new: a repeatable
+            // abort. Sending one bad reply per attempt would stall every sync
+            // indefinitely, which is the denial of service this whole path is
+            // written to avoid.
+            //
+            // Corroboration here is defence in depth rather than the load-
+            // bearing check. A sole survivor still cannot fabricate filter
+            // commitments past the checkpoint-boundary comparison below or the
+            // final guard at the end of this function.
             reference = checkpoints[0].message
         } else {
             var tally: [(message: CFCheckptMessage, count: Int)] = []
@@ -315,8 +336,6 @@ public actor FilterSync {
 
     // MARK: - Internals
 
-    /// Fetches cfheaders for [batchStart, batchStop] and pins the filter
-    /// header chain to our block-header chain.
     /// Endpoint descriptions of `connections`, for comparing peer identity
     /// across a pool that may have been replenished underneath us.
     private static func endpoints(of connections: [PeerConnection]) async -> Set<String> {
@@ -340,6 +359,8 @@ public actor FilterSync {
         return result
     }
 
+    /// Fetches cfheaders for [batchStart, batchStop] and pins the filter
+    /// header chain to our block-header chain.
     private func pinFilterHeaders(batchStart: UInt32, batchStop: UInt32, stopHash: Data,
                                   peers: [PeerConnection],
                                   startingFrom storedHeaders: [String: String]) async throws

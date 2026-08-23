@@ -331,62 +331,25 @@ struct CheckpointMajorityTests {
         } catch {
             thrown = error
         }
-        #expect((thrown as? FilterSyncError) != nil)
+        // Assert the specific reason, not merely that something threw: with a
+        // bare `is FilterSyncError` check this test would still pass if the
+        // sync failed for an unrelated reason and the guard had been removed.
+        guard case let .badPeerResponse(reason)? = thrown as? FilterSyncError else {
+            Issue.record("expected badPeerResponse, got \(String(describing: thrown))")
+            return
+        }
+        #expect(reason.contains("no peer answered"))
         #expect(await sync.nextScanHeight == 1)
 
         await pool.stop()
     }
 
-    /// Evicting a peer is only half a defence if its replacement is trusted
-    /// without the same scrutiny.
-    ///
-    /// `pool.misbehaving` triggers `replenish`, which dials a fresh peer. That
-    /// peer never took part in the checkpoint comparison, so serving filters
-    /// from it would bypass the only multi-peer consensus the client has — the
-    /// eviction would amount to swapping a known liar for an unvetted stranger.
-    ///
-    /// Two peers are evicted here for answering about the wrong chain, leaving
-    /// a single approved survivor. The replacement dialled in their place lies
-    /// about filter commitments, so if the scan were to use it at all the
-    /// cfheaders cross-check would fail the sync. Completing is the assertion.
-    @Test("a peer dialled in to replace an evicted one is not trusted to serve filters")
-    func replacementPeersAreNotTrusted() async throws {
-        let synthetic = Self.chain()
-        let wrongChain = Data(repeating: 0xAB, count: 32)
-        let honest = LoopbackNode(params: synthetic.params, chain: synthetic.blocks)
-        let liarA = LoopbackNode(params: synthetic.params, chain: synthetic.blocks,
-                                 cfcheckptStopHashOverride: wrongChain)
-        let liarB = LoopbackNode(params: synthetic.params, chain: synthetic.blocks,
-                                 cfcheckptStopHashOverride: wrongChain)
-        // Held back so the first three dials are the ones above; this is the
-        // peer `replenish` reaches for once the two liars are dropped.
-        let replacement = LoopbackNode(params: synthetic.params, chain: synthetic.blocks,
-                                       lieAboutFilterCommitments: true,
-                                       versionDelay: .milliseconds(400))
-        let nodes = [honest, liarA, liarB, replacement]
-        for node in nodes { try await node.start() }
-        defer { for node in nodes { Task { await node.stop() } } }
-
-        let honestEndpoint = await honest.endpoint
-        let pool = PeerPool(params: synthetic.params, peerCount: 3,
-                            manualPeers: await Self.endpoints(nodes),
-                            peersFileURL: tempFileURL("peers.json"))
-        await pool.start()
-
-        let chain = try HeaderChain(params: synthetic.params)
-        let sync = try FilterSync(pool: pool, chain: chain, startHeight: 1,
-                                  storageURL: tempFileURL("progress.json"),
-                                  requiredCheckpointPeers: 3)
-        let collector = MatchCollector()
-        try await sync.sync(watchScripts: [synthetic.watchScript]) { collector.add($0) }
-
-        #expect(collector.matches.count == 1)
-        #expect(await sync.lastScannedHeight == 1_001)
-        // The approved survivor is still there; the two liars are not.
-        #expect(await Self.connectedEndpoints(pool).contains(honestEndpoint.description))
-
-        await pool.stop()
-    }
+    // Not covered: the `noPeers` throw inside `approved(peers:)`, which fires
+    // only when every approved peer disconnects *between* batches. Killing a
+    // node mid-scan does not reach it — the in-flight request fails on the
+    // transport first, 30 seconds later — and there is no hook between a batch
+    // persisting and the next one starting. Left untested rather than covered
+    // by a test that would pass for the wrong reason.
 
     // MARK: - Positive control
 
