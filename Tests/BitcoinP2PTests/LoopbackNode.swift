@@ -24,6 +24,15 @@ actor LoopbackNode {
     /// headers rather than about the chain itself. This is the shape the
     /// cfcheckpt majority rule exists to defend against.
     let lieAboutFilterCommitments: Bool
+    /// Answers every getcfcheckpt with this stop hash instead of the one the
+    /// client asked about — a peer replying about a different chain (#129).
+    let cfcheckptStopHashOverride: Data?
+    /// Distinguishes one liar's fabricated commitment chain from another's.
+    /// The lie is a byte-flip on every filter hash; with a fixed flip, two
+    /// lying nodes fabricate *identical* chains and form a majority for the
+    /// lie instead of a three-way split. Varying the salt makes each liar
+    /// wrong in its own self-consistent way (#129).
+    let lieSalt: UInt8
     /// When set, the node answers inv announcements of transactions with a
     /// getdata after this delay (nil = never request, the silent peer).
     let autoRequestDelay: Duration?
@@ -51,7 +60,8 @@ actor LoopbackNode {
 
     init(params: NetworkParams, services: UInt64 = PeerConnection.nodeCompactFilters,
          chain: [Block] = [], corruptFilterAtHeight: Int? = nil,
-         lieAboutFilterCommitments: Bool = false,
+         lieAboutFilterCommitments: Bool = false, lieSalt: UInt8 = 0xFF,
+         cfcheckptStopHashOverride: Data? = nil,
          autoRequestDelay: Duration? = nil, transactions: [Transaction] = [],
          listenPort: UInt16? = nil, versionDelay: Duration = .zero) {
         self.params = params
@@ -59,6 +69,8 @@ actor LoopbackNode {
         self.chain = chain
         self.corruptFilterAtHeight = corruptFilterAtHeight
         self.lieAboutFilterCommitments = lieAboutFilterCommitments
+        self.lieSalt = lieSalt
+        self.cfcheckptStopHashOverride = cfcheckptStopHashOverride
         self.autoRequestDelay = autoRequestDelay
         self.transactions = Dictionary(uniqueKeysWithValues: transactions.map { ($0.txid, $0) })
         self.versionDelay = versionDelay
@@ -158,7 +170,7 @@ actor LoopbackNode {
         // comparing against another peer.
         var lyingPrevious = Data(repeating: 0, count: 32)
         for index in filterHashes.indices {
-            filterHashes[index][0] ^= 0xFF
+            filterHashes[index][0] ^= lieSalt
             let header = SHA256d.hash(filterHashes[index] + lyingPrevious)
             filterHeaders[index] = header
             lyingPrevious = header
@@ -283,7 +295,8 @@ actor LoopbackNode {
                 headers.append(filterHeaders[height])
                 height += Int(FilterSync.checkpointInterval)
             }
-            try await send(.cfcheckpt(CFCheckptMessage(stopHash: request.stopHash, filterHeaders: headers)))
+            try await send(.cfcheckpt(CFCheckptMessage(
+                stopHash: cfcheckptStopHashOverride ?? request.stopHash, filterHeaders: headers)))
 
         case let .getcfheaders(request):
             guard let stop = height(ofHash: request.stopHash) else { return }

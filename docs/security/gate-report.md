@@ -44,8 +44,8 @@ reviewing work it produced is a consistency check, not a second opinion.
 incidental. What is missing needs things this pass could not reach: a Bitcoin
 Core node for the differential corpus cross-check, independent wallets for
 mixed-implementation PSBT fixtures (#58), a physical device for Keychain and
-screenshot behaviour, sustained signet runs, and a chain above height 1000 to
-exercise the cfcheckpt majority rule at all.
+screenshot behaviour, and sustained signet runs. The cfcheckpt majority rule
+is no longer among them: it is exercised on a 1,001-block fixture (`SEC-021`).
 
 ## What is now evidenced
 

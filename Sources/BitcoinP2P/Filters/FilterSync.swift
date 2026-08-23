@@ -186,6 +186,15 @@ public actor FilterSync {
             guard case let .cfcheckpt(message) = response else {
                 throw FilterSyncError.badPeerResponse("expected cfcheckpt")
             }
+            // The reply must answer the question we asked. Without this the
+            // stop hash is only ever compared peer-to-peer in the tally below,
+            // so a single peer — or peers that agree — could answer about a
+            // different chain entirely and be believed. `pinFilterHeaders`
+            // has always checked its own stop hash; this path had not.
+            guard message.stopHash == tipHash else {
+                await pool.misbehaving(peer, reason: "cfcheckpt stop hash mismatch")
+                throw FilterSyncError.badPeerResponse("cfcheckpt stop hash mismatch")
+            }
             checkpoints.append((peer, message))
         }
         // Adopt the MAJORITY cfcheckpt answer — never checkpoints[0] by fiat, or
@@ -216,6 +225,13 @@ public actor FilterSync {
                 await pool.misbehaving(peer, reason: "cfcheckpt mismatch")
             }
             reference = best.message
+            // Re-read the pool. `peers` was captured before those evictions,
+            // and the batch loop below sends to `peers[0]` and to the first
+            // two entries — a torn-down connection there aborts the whole sync
+            // with a transport error, so adopting the majority would evict the
+            // liar and then fail anyway.
+            peers = await pool.connectedPeers()
+            guard !peers.isEmpty else { throw FilterSyncError.noPeers }
         }
         // Core serves checkpoint headers at heights 1000, 2000, …, ascending
         // (ProcessGetCFCheckPt: entry i is the header at (i+1)*1000; the stop

@@ -49,8 +49,11 @@ struct PeerDisagreementTests {
         // blocks, so on a six-block chain both peers return an *empty*
         // cfcheckpt list — identical, no disagreement — and the cfcheckpt
         // majority rule never engages. The defence that catches this lie is
-        // the per-batch cfheaders cross-check. The majority rule only matters
-        // above height 1000, which no loopback chain reaches.
+        // the per-batch cfheaders cross-check, which is exactly why this test
+        // stays at six blocks: it is the control for that layer.
+        //
+        // The majority rule itself is exercised in `CheckpointMajorityTests`,
+        // on a 1,001-block chain that actually crosses the interval (#129).
         do {
             try await sync.sync(watchScripts: [synthetic.watchScript]) { _ in }
             Issue.record("a two-way disagreement was accepted")
