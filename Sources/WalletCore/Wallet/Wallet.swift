@@ -1667,6 +1667,53 @@ public actor Wallet {
 
     // MARK: - Persistence
 
+    /// Rewinds every chain-derived fact to a fork height, so the wallet stops
+    /// describing a branch that no longer exists (#127).
+    ///
+    /// A pure function of `forkHeight`. That is what makes it safe to repeat:
+    /// running it twice is indistinguishable from running it once, so a crash
+    /// part-way through a multi-store rollback needs no partial-state
+    /// reasoning, only a redo.
+    ///
+    /// What it rewinds, and what it must not:
+    ///
+    /// - coins confirmed above the fork are dropped, because the rescan will
+    ///   re-find them if they still exist;
+    /// - spends *confirmed* above the fork are undone, restoring the coin;
+    /// - spends with no height are left alone. Those are our own transactions,
+    ///   still in flight and still being re-relayed, so restoring their inputs
+    ///   would let the wallet re-select coins its own transaction is spending
+    ///   and double-spend itself;
+    /// - history above the fork goes, since it describes blocks that are gone;
+    /// - the scan frontier rewinds so those heights are read again.
+    ///
+    /// Untouched, deliberately: the descriptor, the network, the creation
+    /// height, `pendingSends`, and above all the address indices. Rewinding
+    /// those would hand out an address that has already been given to someone,
+    /// which is a privacy regression in a wallet whose argument is that it
+    /// discloses nothing. A reorg must never cost the user their address gap.
+    ///
+    /// Height 0 means "not in a block yet", not "in block zero", so pending
+    /// coins and pending history survive any fork height.
+    public func rollBack(to forkHeight: UInt32) throws {
+        var candidate = state
+        candidate.allUtxos.removeAll { $0.height > forkHeight }
+        for index in candidate.allUtxos.indices {
+            guard let height = candidate.allUtxos[index].spent?.height,
+                  height > forkHeight
+            else { continue }
+            candidate.allUtxos[index].spent = nil
+        }
+        candidate.history.removeAll { $0.height > forkHeight }
+        // Never forward: a fork at or above the frontier leaves nothing that
+        // was scanned in doubt, and advancing here would skip unread blocks.
+        candidate.nextScanHeight = min(state.nextScanHeight,
+                                       forkHeight == UInt32.max ? forkHeight : forkHeight + 1)
+        guard candidate != state else { return }
+        try persist(candidate)
+        state = candidate
+    }
+
     func persist() throws {
         try persist(state)
     }

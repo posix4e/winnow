@@ -246,10 +246,11 @@ public actor HeaderChain {
     /// Connects a batch of headers received from a peer. The first header must
     /// build on a block already in the chain (usually the tip; an earlier
     /// height means a reorg, accepted only with strictly more total work).
-    /// Returns the number of headers appended.
+    /// Reports what the batch did, including the fork height when it replaced
+    /// an existing branch -- the one fact a consumer needs in order to rewind.
     @discardableResult
-    public func connect(_ newHeaders: [BlockHeader]) throws -> Int {
-        guard !newHeaders.isEmpty else { return 0 }
+    public func connect(_ newHeaders: [BlockHeader]) throws -> ConnectOutcome {
+        guard !newHeaders.isEmpty else { return ConnectOutcome(appended: 0) }
         guard let forkHeight = heightByHash[newHeaders[0].previousHash] else {
             throw HeaderChainError.doesNotConnect
         }
@@ -285,7 +286,8 @@ public actor HeaderChain {
             // Appending is the whole point of the fast path, so the write is
             // incremental too. A reorg cannot reach here.
             try persistAppended(from: headers.count - appended.count)
-            return newHeaders.count
+            // The fast path is by definition an extension, so no fork height.
+            return ConnectOutcome(appended: newHeaders.count)
         }
 
         let forkIndex = Int(forkHeight - baseHeight)
@@ -308,9 +310,6 @@ public actor HeaderChain {
         }
 
         let disconnected = headers.count - 1 - forkIndex
-        if disconnected > 0 {
-            lastReorg = Reorg(forkHeight: forkHeight, disconnectedHeaders: disconnected)
-        }
         headers = stagedHeaders
         chainwork = stagedWork
         heightByHash = heightByHash.filter { $0.value <= forkHeight }
@@ -318,11 +317,16 @@ public actor HeaderChain {
             heightByHash[header.hash] = baseHeight + UInt32(index)
         }
         try persist()
-        return newHeaders.count
+        return ConnectOutcome(appended: newHeaders.count,
+                              forkHeight: disconnected > 0 ? forkHeight : nil,
+                              disconnectedHeaders: disconnected)
     }
 
     /// Syncs from the current tip to the peer's best tip via getheaders.
-    public func sync(using peer: PeerConnection, timeout: Duration = .seconds(30)) async throws {
+    @discardableResult
+    public func sync(using peer: PeerConnection,
+                     timeout: Duration = .seconds(30)) async throws -> SyncOutcome {
+        var outcome = SyncOutcome()
         while true {
             let request = GetHeadersMessage(version: PeerConnection.protocolVersion,
                                             locatorHashes: blockLocator())
@@ -332,9 +336,9 @@ public actor HeaderChain {
             guard case let .headers(batch) = message else {
                 throw HeaderChainError.badPeerResponse("expected headers")
             }
-            if batch.isEmpty { return }
-            try connect(batch)
-            if batch.count < Self.maxHeadersPerRequest { return }
+            if batch.isEmpty { return outcome }
+            outcome.absorb(try connect(batch))
+            if batch.count < Self.maxHeadersPerRequest { return outcome }
         }
     }
 
@@ -442,16 +446,46 @@ public actor HeaderChain {
     /// forward-only scan never revisits a height it has passed. Without this
     /// the swap is silent and downstream state keeps describing the orphaned
     /// branch.
-    public struct Reorg: Equatable, Sendable {
-        /// The last height the old and new branches agree on. Everything above
-        /// it was disconnected.
-        public var forkHeight: UInt32
+    /// What one batch of headers did to the chain.
+    public struct ConnectOutcome: Equatable, Sendable {
+        /// Headers this batch added.
+        public var appended: Int
+        /// The last height the old and new branches agree on, when the batch
+        /// replaced an existing branch. nil for an ordinary extension.
+        public var forkHeight: UInt32?
         /// How many headers the swap removed.
-        public var disconnectedHeaders: Int
+        public var disconnectedHeaders: Int = 0
     }
 
-    /// Nil until a reorg happens; thereafter the latest one.
-    public private(set) var lastReorg: Reorg?
+    /// What a whole sync did.
+    ///
+    /// This replaced a sticky `lastReorg` property, which was the wrong shape
+    /// twice over: a poller could read the same value after later ordinary
+    /// syncs and roll back a second time, and two swaps inside one sync
+    /// collapsed into whichever happened last, losing the deeper one.
+    ///
+    /// Reporting the *lowest* fork height of the sync fixes both, and it can
+    /// because a rollback is a pure function of the height it rolls back to.
+    /// Rolling back to the lowest fork covers every swap the sync performed,
+    /// so collapsing becomes harmless rather than lossy, and no event identity
+    /// or acknowledgement protocol is needed. The value is per-sync and is not
+    /// retained, so it cannot be replayed.
+    public struct SyncOutcome: Equatable, Sendable {
+        /// Headers added across the whole sync.
+        public var connected: Int = 0
+        /// The lowest fork height of any branch swap during this sync, or nil
+        /// if the chain only ever extended.
+        public var minForkHeight: UInt32?
+        /// Headers disconnected across the whole sync.
+        public var disconnectedHeaders: Int = 0
+
+        mutating func absorb(_ batch: ConnectOutcome) {
+            connected += batch.appended
+            disconnectedHeaders += batch.disconnectedHeaders
+            guard let fork = batch.forkHeight else { return }
+            minForkHeight = min(minForkHeight ?? fork, fork)
+        }
+    }
 
     /// A header file is bounded before it is read, the way the compact-filter
     /// progress file already is.

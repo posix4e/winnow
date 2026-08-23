@@ -392,6 +392,36 @@ actor VaultStore {
         }
     }
 
+    /// Rewinds vault coins to a fork height, matching `Wallet.rollBack`.
+    ///
+    /// The same operation, for the same reason, and with the same exemption:
+    /// a spend with no height is a vault transaction still in flight, so its
+    /// inputs stay reserved rather than being handed back to coin selection.
+    ///
+    /// `createdAtHeight` and the address indices are untouched -- a reorg must
+    /// not cost a vault its address gap any more than it costs the wallet one.
+    func rollBack(to forkHeight: UInt32) throws {
+        var candidate = records
+        for index in candidate.indices {
+            candidate[index].allUtxos.removeAll { $0.height > forkHeight }
+            for position in candidate[index].allUtxos.indices {
+                guard let height = candidate[index].allUtxos[position].spent?.height,
+                      height > forkHeight
+                else { continue }
+                candidate[index].allUtxos[position].spent = nil
+            }
+        }
+        guard candidate != records else { return }
+        let previous = records
+        records = candidate
+        do {
+            try persist()
+        } catch {
+            records = previous
+            throw error
+        }
+    }
+
     private func persist() throws {
         guard let storageURL else { return }
         let data = try JSONEncoder().encode(records)

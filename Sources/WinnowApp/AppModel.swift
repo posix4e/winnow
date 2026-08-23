@@ -498,6 +498,10 @@ final class AppModel {
             }
             stack = newStack
             observeBroadcasterFailures(broadcaster)
+            // Before anything scans: a marker here means a previous rollback
+            // was interrupted, and the state it was repairing is exactly the
+            // state a scan would otherwise build on.
+            try? await resumeInterruptedRollback()
         } catch {
             status.lastSyncError = error.localizedDescription
         }
@@ -551,6 +555,52 @@ final class AppModel {
                 + "Your balance and history are unaffected."
             return try TxBroadcaster(pool: pool, storageURL: storageURL)
         }
+    }
+
+    /// Names the height an interrupted rollback was heading for.
+    static let rollbackMarkerName = "rollback.height"
+
+    /// Rolls the wallet and vaults back to a fork height, recording the target
+    /// before touching either.
+    ///
+    /// The four stores persist independently -- wallet JSON, vaults.json,
+    /// filters.json, broadcast.json -- so a crash mid-rollback leaves them
+    /// disagreeing. Because a rollback is a pure function of the height, it is
+    /// idempotent, and that turns recovery into a redo rather than a repair:
+    /// write the target first, roll each store back, clear the target once the
+    /// whole sync has finished. A surviving marker at launch means run it
+    /// again, and running it twice is indistinguishable from running it once.
+    ///
+    /// The marker is deliberately not cleared here. Filter progress rewinds
+    /// after this returns, and clearing before that would leave a window where
+    /// a crash loses the rollback that had already started.
+    func rollBackStores(to forkHeight: UInt32) async throws {
+        if let marker = storageDirectory()?.appending(path: Self.rollbackMarkerName) {
+            try? Data(String(forkHeight).utf8).write(to: marker, options: .atomic)
+        }
+        try await wallet?.rollBack(to: forkHeight)
+        try await vaultStore.rollBack(to: forkHeight)
+    }
+
+    /// Clears the marker once a sync that included a rollback has completed.
+    func finishRollback() {
+        guard let marker = storageDirectory()?.appending(path: Self.rollbackMarkerName) else { return }
+        try? FileManager.default.removeItem(at: marker)
+    }
+
+    /// Redoes a rollback that a crash interrupted.
+    ///
+    /// Runs before any scanning, because the state it repairs is exactly the
+    /// state scanning would otherwise build on.
+    func resumeInterruptedRollback() async throws {
+        guard let marker = storageDirectory()?.appending(path: Self.rollbackMarkerName),
+              let text = try? String(contentsOf: marker, encoding: .utf8),
+              let forkHeight = UInt32(text.trimmingCharacters(in: .whitespacesAndNewlines))
+        else { return }
+        try await wallet?.rollBack(to: forkHeight)
+        try await vaultStore.rollBack(to: forkHeight)
+        try await stack?.filters?.rollBack(to: forkHeight)
+        finishRollback()
     }
 
     /// The signed bytes of a still-pending transaction, hex-encoded.
@@ -641,7 +691,11 @@ final class AppModel {
             let broadcaster = stack.broadcaster
             let network = network
             let vaultStore = vaultStore
-            try await filters.sync(watchScripts: scripts, extraScripts: extraScripts) { match in
+            try await filters.sync(watchScripts: scripts, extraScripts: extraScripts,
+                                   onReorg: { [weak self] forkHeight in
+                guard let self else { return }
+                try await self.rollBackStores(to: forkHeight)
+            }) { match in
                 let walletEffect = try await wallet.apply(match: match)
                 for discarded in walletEffect.discardedReplacements {
                     try await broadcaster.cancel(discarded)
@@ -656,6 +710,12 @@ final class AppModel {
             // authoritative here. Persist it so exportBundle() and the next
             // launch's startHeight match what the UI already shows.
             try await wallet.recordScanHeight(await filters.nextScanHeight)
+            // Every store that a rollback touches has now been rewound and the
+            // scan that followed it has finished, so the target is no longer
+            // needed. Cleared only on the success path: a sync that threw may
+            // have left the rollback half-applied, and the marker is what gets
+            // it redone at the next launch.
+            finishRollback()
             status.lastSyncError = nil
         } catch {
             // A later batch may have thrown after earlier ones persisted

@@ -147,8 +147,8 @@ struct CheckpointAgreementTests {
         #expect(await fromGenesis.height == (await fromCheckpoint.height))
 
         let next = try headers(checkpoint.height + 1, target)
-        #expect(try await fromGenesis.connect(next) == next.count)
-        #expect(try await fromCheckpoint.connect(next) == next.count)
+        #expect(try await fromGenesis.connect(next).appended == next.count)
+        #expect(try await fromCheckpoint.connect(next).appended == next.count)
 
         // And after doing real work on top, which is the claim that matters:
         // the checkpoint start is not a different chain, just a later entrance.

@@ -252,9 +252,10 @@ public actor PeerPool {
     ///     without counting against that budget. Separate because the two
     ///     failures mean different things, but still bounded, or a pool that
     ///     keeps producing timing-out candidates would spin.
+    @discardableResult
     public func syncHeaders(_ chain: HeaderChain, timeoutPerPeer: Duration = .seconds(30),
                             maxAttempts: Int = 6,
-                            maxTransportRetries: Int = 12) async throws {
+                            maxTransportRetries: Int = 12) async throws -> HeaderChain.SyncOutcome {
         precondition(maxAttempts > 0)
         var attempts = 0
         var transportRetries = 0
@@ -288,9 +289,9 @@ public actor PeerPool {
             // changing (#82).
             var burnedAPeer = true
             do {
-                try await chain.sync(using: peer, timeout: timeoutPerPeer)
+                let outcome = try await chain.sync(using: peer, timeout: timeoutPerPeer)
                 transportSucceeded(peer.endpoint)
-                return
+                return outcome
             } catch let error as HeaderChainError {
                 switch error {
                 case .storageCorrupt, .storageUnavailable:

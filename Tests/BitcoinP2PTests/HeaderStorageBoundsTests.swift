@@ -79,7 +79,7 @@ struct HeaderStorageBoundsTests {
 
         let written = try HeaderChain(params: chain.params, storageURL: url)
         let appended = try await written.connect(chain.blocks.dropFirst().map(\.header))
-        #expect(appended == 5)
+        #expect(appended.appended == 5)
 
         let reloaded = try HeaderChain(params: chain.params, storageURL: url)
         #expect(await reloaded.height == written.height)

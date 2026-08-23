@@ -164,8 +164,17 @@ public actor FilterSync {
     /// advances. Continuing a batch without its extra scripts would let a
     /// forward-only scan skip those payments permanently and invisibly — an
     /// index outage must surface as a sync error instead.
+    /// `onReorg` is called with the fork height when the header sync replaced a
+    /// branch, and is awaited **before** any filter work resumes.
+    ///
+    /// The ordering is the requirement, not a convenience. Scanning forward
+    /// from a frontier that describes the orphaned branch is precisely the bug
+    /// being fixed, so the rollback has to finish first, and a throw from it
+    /// aborts the sync rather than proceeding with state that is known stale
+    /// (#127).
     public func sync(watchScripts: [Data],
                      extraScripts: (@Sendable (ClosedRange<UInt32>) async throws -> [UInt32: [Data]])? = nil,
+                     onReorg: (@Sendable (UInt32) async throws -> Void)? = nil,
                      onMatch: @Sendable (BlockMatch) async throws -> Void) async throws {
         var peers = await pool.connectedPeers()
         guard !peers.isEmpty else {
@@ -179,7 +188,20 @@ public actor FilterSync {
 
         // 1. Headers to tip. A stale or broken peer is evicted and the pool
         // retries another peer without discarding already-persisted progress.
-        try await pool.syncHeaders(chain)
+        let headerOutcome = try await pool.syncHeaders(chain)
+
+        // 1a. A branch was replaced, so everything derived from the old one is
+        // wrong. Roll back to the lowest fork the sync saw before reading a
+        // single filter: the frontier below is the thing that would otherwise
+        // carry the orphaned branch forward.
+        if let forkHeight = headerOutcome.minForkHeight {
+            // The caller goes first because it owns the crash marker: nothing
+            // may change in any store until the target height is recorded, or
+            // a crash leaves stores disagreeing with no way to know a rollback
+            // was ever in progress.
+            try await onReorg?(forkHeight)
+            try rollBack(to: forkHeight)
+        }
         peers = await pool.connectedPeers()
         guard !peers.isEmpty else { throw FilterSyncError.noPeers }
         let tip = await chain.height
@@ -587,6 +609,46 @@ public actor FilterSync {
                 stored: progress.nextScanHeight, tip: tip)
         }
     }
+
+    /// Rewinds filter progress to a fork height, so scanning resumes from the
+    /// first block the surviving branch does not share with the old one.
+    ///
+    /// A pure function of `forkHeight`, which is what makes the whole rollback
+    /// safe to repeat: running it twice is indistinguishable from running it
+    /// once, so a crash part-way through needs no partial-state reasoning.
+    ///
+    /// Pinned filter headers above the fork are dropped rather than kept. They
+    /// commit to filters for blocks that are no longer on the chain, and a
+    /// later cross-check against them would compare the surviving branch to
+    /// the orphaned one and reject honest peers.
+    ///
+    /// Never moves the frontier forward: a fork at or above the current
+    /// frontier means nothing scanned is affected, and advancing here would
+    /// skip blocks that have never been read.
+    public func rollBack(to forkHeight: UInt32) throws {
+        let resumeFrom = forkHeight == UInt32.max ? forkHeight : forkHeight + 1
+        var candidate = progress
+        candidate.nextScanHeight = min(progress.nextScanHeight, resumeFrom)
+        candidate.filterHeaders = progress.filterHeaders.filter { key, _ in
+            guard let height = UInt32(key) else { return false }
+            return height <= forkHeight
+        }
+        guard candidate != progress else { return }
+        try persist(candidate)
+        progress = candidate
+    }
+
+    /// Test seam: sets progress directly so a rollback can be exercised without
+    /// running a whole sync against loopback peers.
+    func recordProgressForTest(nextScanHeight: UInt32,
+                               filterHeaders: [String: String] = [:]) throws {
+        let candidate = Progress(nextScanHeight: nextScanHeight, filterHeaders: filterHeaders)
+        try persist(candidate)
+        progress = candidate
+    }
+
+    /// Test seam: the pinned filter headers a rollback prunes.
+    var pinnedFilterHeadersForTest: [String: String] { progress.filterHeaders }
 
     private func persist(_ candidate: Progress) throws {
         guard let storageURL else { return }

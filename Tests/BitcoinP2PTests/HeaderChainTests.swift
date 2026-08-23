@@ -11,7 +11,7 @@ struct HeaderChainTests {
         let chain = makeSyntheticChain(length: 5, watchHeight: 6)
         let headerChain = try HeaderChain(params: chain.params)
         let appended = try await headerChain.connect(chain.blocks.dropFirst().map(\.header))
-        #expect(appended == 5)
+        #expect(appended.appended == 5)
         #expect(await headerChain.height == 5)
         #expect(await headerChain.tipHash == chain.blocks[5].hash)
         #expect(await headerChain.blockHash(at: 0) == chain.blocks[0].hash)
@@ -303,7 +303,7 @@ struct CheckpointStartTests {
 
         let chain = try HeaderChain(params: params, storageURL: url, start: .checkpoint)
         let next = try BlockHeader.decode(Self.block900_001)
-        #expect(try await chain.connect([next]) == 1)
+        #expect(try await chain.connect([next]).appended == 1)
         #expect(await chain.height == cp.height + 1)
         let workAfter = await chain.tipWork
 
@@ -325,7 +325,7 @@ struct CheckpointStartTests {
         defer { try? FileManager.default.removeItem(at: url) }
 
         let chain = try HeaderChain(params: params, storageURL: url, start: .checkpoint)
-        #expect(try await chain.connect([try BlockHeader.decode(Self.block900_001)]) == 1)
+        #expect(try await chain.connect([try BlockHeader.decode(Self.block900_001)]).appended == 1)
 
         // The file is not damaged; it just answers a different question. Saying
         // so lets the app rebuild rather than treat block 900,000 as block 0.
