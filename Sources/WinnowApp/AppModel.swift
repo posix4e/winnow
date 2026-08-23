@@ -91,6 +91,9 @@ final class AppModel {
         var nextScanHeight: UInt32 = 0
         var syncing = false
         var lastSyncError: String?
+        /// A damaged relay store was set aside so sync could continue (#150).
+        /// Distinct from `lastSyncError`: sync is fine, relay lost its queue.
+        var relayStoreQuarantined: String?
         /// BIP133 feefilter floor across connected peers (sat/vB).
         var feeFloorSatPerVByte: Double?
     }
@@ -486,7 +489,7 @@ final class AppModel {
                     return try HeaderChain(params: params, storageURL: headersURL, start: start)
                 }
             }.value
-            let broadcaster = try TxBroadcaster(
+            let broadcaster = try makeBroadcaster(
                 pool: pool, storageURL: dir.appending(path: "broadcast.json"))
             var newStack = SyncStack(pool: pool, chain: chain, filters: nil, broadcaster: broadcaster)
             if let wallet {
@@ -497,6 +500,56 @@ final class AppModel {
             observeBroadcasterFailures(broadcaster)
         } catch {
             status.lastSyncError = error.localizedDescription
+        }
+    }
+
+    /// Where a quarantined relay store is set aside. A fixed name, so the most
+    /// recent damaged file is kept and older ones do not accumulate unbounded
+    /// in a directory the user cannot see.
+    static let quarantinedRelayStoreName = "broadcast.damaged.json"
+
+    /// Builds the transaction broadcaster, setting a damaged store aside
+    /// rather than letting it take the whole sync stack down with it.
+    ///
+    /// The three stores are not equally important, and constructing this one
+    /// inside the stack build inverted their priority. Rebroadcast state is
+    /// best-effort -- it exists so a pending transaction keeps being
+    /// announced, and the wallet's own history remains the source of truth for
+    /// balance and confirmations. Headers and filters are what make the wallet
+    /// work at all. So one damaged record in the least important store stopped
+    /// the most important functions, and because nothing repaired the file,
+    /// every relaunch failed identically until the user deleted it by hand --
+    /// which they had no way of knowing to do, since it surfaced as a sync
+    /// error (#150).
+    ///
+    /// The file is renamed rather than deleted. It is the only evidence of
+    /// what went wrong, and it may hold transactions worth recovering by hand.
+    ///
+    /// Deliberately not solved by making `load` skip bad records and keep the
+    /// rest: the record most likely to carry a corrupt field is the
+    /// longest-pending transaction, the one most in need of rebroadcast, so
+    /// "keep the rest" would quietly discard exactly the record that mattered
+    /// most. The loader stays strict; the call site stops being brittle.
+    func makeBroadcaster(pool: PeerPool, storageURL: URL) throws -> TxBroadcaster {
+        do {
+            return try TxBroadcaster(pool: pool, storageURL: storageURL)
+        } catch let error as TxBroadcasterStorageError {
+            let quarantine = storageURL.deletingLastPathComponent()
+                .appending(path: Self.quarantinedRelayStoreName)
+            try? FileManager.default.removeItem(at: quarantine)
+            do {
+                try FileManager.default.moveItem(at: storageURL, to: quarantine)
+            } catch {
+                // The file could not be moved, so a fresh broadcaster would
+                // read the same damage next launch. Better to fail loudly than
+                // to loop: rethrow the original storage error.
+                throw error
+            }
+            status.relayStoreQuarantined =
+                "Pending transactions could not be read (\(error.localizedDescription)). "
+                + "The file was set aside as \(Self.quarantinedRelayStoreName) and relay started fresh. "
+                + "Your balance and history are unaffected."
+            return try TxBroadcaster(pool: pool, storageURL: storageURL)
         }
     }
 

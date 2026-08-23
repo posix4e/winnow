@@ -75,6 +75,13 @@ struct HomeView: View {
                             .font(.footnote)
                             .foregroundStyle(.red)
                     }
+                    // A relay problem, not a sync failure — sync is running.
+                    if let quarantined = model.status.relayStoreQuarantined {
+                        Text(quarantined)
+                            .font(.footnote)
+                            .foregroundStyle(.orange)
+                            .accessibilityIdentifier("relayStoreQuarantined")
+                    }
                     Button("Sync now") {
                         Task { await model.syncNow() }
                     }
