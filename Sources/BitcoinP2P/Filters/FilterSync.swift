@@ -124,6 +124,15 @@ public actor FilterSync {
     /// How many peers to consult for the cfcheckpt comparison (and for the
     /// initial cfheaders cross-check). If fewer are connected, all connected
     /// peers are used and the comparison simply covers those.
+    ///
+    /// Defaults to the whole pool rather than a subset of it. At two, the
+    /// comparison took the first two connected peers — and the pool's source
+    /// ceiling permits two peers to share a class, so the check that exists to
+    /// compare independent sources could run entirely inside one of them (#3).
+    /// Consulting every connected peer removes that: no class may hold the
+    /// whole pool, so a full-pool comparison necessarily spans more than one
+    /// source. It also uses all the evidence available instead of discarding a
+    /// third of it, at the cost of one extra round trip per sync.
     public let requiredCheckpointPeers: Int
     private let storageURL: URL?
     public nonisolated let persistenceState: PersistenceState
@@ -133,7 +142,7 @@ public actor FilterSync {
     private static let maximumPinnedHeaders = 2_000_000
 
     public init(pool: PeerPool, chain: HeaderChain, startHeight: UInt32,
-                storageURL: URL? = nil, requiredCheckpointPeers: Int = 2) throws {
+                storageURL: URL? = nil, requiredCheckpointPeers: Int = 3) throws {
         self.pool = pool
         self.chain = chain
         self.storageURL = storageURL
