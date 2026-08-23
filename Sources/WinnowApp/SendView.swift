@@ -140,6 +140,17 @@ struct SendView: View {
                         if let change = preview.changeAmount {
                             LabeledContent("Change back", value: satsText(change))
                         }
+                        // Warn, never block. A small consolidating or test
+                        // payment is legitimate and the user may mean it;
+                        // refusing outright would be worse than the current
+                        // silence (#140).
+                        if let proportion = preview.feeProportion {
+                            Label(proportion.message(sats: satsText),
+                                  systemImage: "exclamationmark.triangle")
+                                .font(.footnote)
+                                .foregroundStyle(.orange)
+                                .accessibilityIdentifier("feeProportionWarning")
+                        }
                         Button(sending ? "Signing & broadcasting…" : "Sign & broadcast") { send() }
                             .accessibilityIdentifier("sendButton")
                             .disabled(sending)

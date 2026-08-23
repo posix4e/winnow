@@ -997,6 +997,50 @@ final class AppModel {
 
     /// What a send will look like at the resolved feerate (coin selection run
     /// without committing — `Wallet.send` itself commits on success).
+    /// The fee measured against the payment it is paying for.
+    ///
+    /// Winnow refuses a payment below dust and refuses a fee rate outside its
+    /// band, but nothing looked at the relationship *between* the two. A
+    /// one-input, two-output Taproot spend is 143 vB, so at an unremarkable
+    /// 5 sat/vB it costs 715 sat -- and a 500 sat payment clears dust, at a
+    /// cheap market rate, with coin selection succeeding and value conserved.
+    /// Every guard passes; the composition is what produces a transaction
+    /// nobody would knowingly authorise (#140).
+    struct FeeProportion: Equatable, Sendable {
+        let fee: Int64
+        let amount: Int64
+
+        /// The fee costs at least half as much as the payment delivers.
+        ///
+        /// A ratio rather than a number of sats, so it scales with the fee
+        /// market: the same transaction at 50 sat/vB costs 7,150 sat and the
+        /// threshold has to move with it. Half is deliberately loose -- a
+        /// payment smaller than its own fee must be caught, one several times
+        /// its fee must not be nagged about, and everything between is a
+        /// judgement about false positives on small deliberate sends, which
+        /// are legitimate. Integer arithmetic, so there is no rounding at the
+        /// boundary the tests pin.
+        var isDisproportionate: Bool { fee * 2 >= amount }
+
+        /// Whether it costs more to send than it delivers.
+        var exceedsAmount: Bool { fee > amount }
+
+        /// Fee as a percentage of the amount, rounded, for display.
+        var percentOfAmount: Int {
+            guard amount > 0 else { return 0 }
+            return Int((Double(fee) / Double(amount) * 100).rounded())
+        }
+
+        /// Names the actual numbers: a generic caution tells the user nothing
+        /// they can act on. `sats` is injected so the sentence is composed with
+        /// the same formatter the rest of the screen uses.
+        func message(sats: (Int64) -> String) -> String {
+            exceedsAmount
+                ? "This costs more to send than it delivers: sending \(sats(amount)) costs \(sats(fee)) in fees — \(percentOfAmount)% of the amount."
+                : "The fee is \(percentOfAmount)% of the amount: sending \(sats(amount)) costs \(sats(fee)) in fees."
+        }
+    }
+
     struct SendPreview: Equatable {
         struct ReviewedOutpoint: Equatable {
             var txid: Data
@@ -1016,6 +1060,27 @@ final class AppModel {
         /// simple UI but must remain identical when the wallet signs.
         var selectedOutpoints: [ReviewedOutpoint]
         var change: Payment?
+
+        /// The total leaving the wallet as payment, excluding change and fee.
+        ///
+        /// Silent payments are counted: the amount is known at review time even
+        /// though the output script is derived later, and it leaves the wallet
+        /// the same way.
+        var amountSent: Int64 {
+            payments.map(\.amount).reduce(0, +) + silentPayments.map(\.amount).reduce(0, +)
+        }
+
+        /// How large the fee is next to what is actually being sent, when that
+        /// ratio is worth saying out loud (#140).
+        ///
+        /// `nil` when the send is ordinary, so the review screen can render it
+        /// or not without repeating the rule.
+        var feeProportion: FeeProportion? {
+            let amount = amountSent
+            guard amount > 0 else { return nil }
+            let proportion = FeeProportion(fee: fee, amount: amount)
+            return proportion.isDisproportionate ? proportion : nil
+        }
 
         /// Whether `built` is the transaction that was reviewed.
         ///
