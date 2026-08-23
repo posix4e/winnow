@@ -116,6 +116,37 @@ struct PeerDiversityTests {
                                  given: [candidate("2.2.2.2", .persisted)]))
     }
 
+    // MARK: - The comparison that consumes the diversity
+
+    /// The pool's ceilings only buy anything if the check that compares peers
+    /// actually looks at more than one source.
+    ///
+    /// The cfcheckpt comparison takes the first `requiredCheckpointPeers`
+    /// connected peers. At two, and with a ceiling that permits two peers to
+    /// share a class, the comparison could run entirely inside one source —
+    /// the exact situation #3 exists to prevent, in the exact place the
+    /// evidence is supposed to be cross-checked.
+    ///
+    /// Consulting the whole pool removes it: no class may hold every slot, so
+    /// a full-pool comparison spans more than one source by construction. This
+    /// pins the coupling, because the guarantee lives in the two numbers
+    /// agreeing and nothing else would notice if one moved.
+    @Test("the checkpoint comparison covers the whole pool")
+    func checkpointComparisonSpansThePool() async throws {
+        let pool = PeerPool(params: .signet, peerCount: 0, manualPeers: [])
+        let chain = try HeaderChain(params: .signet)
+        let filters = try FilterSync(pool: pool, chain: chain, startHeight: 0)
+
+        let seats = await PeerPool(params: .signet, manualPeers: []).peerCount
+        let consulted = await filters.requiredCheckpointPeers
+        #expect(consulted >= seats,
+                "a comparison narrower than the pool can sit inside one source class")
+
+        // …and the ceiling is what makes that span classes.
+        let seated = [candidate("1.1.1.1", .persisted), candidate("2.2.2.2", .persisted)]
+        #expect(policy(seats).admits(candidate("3.3.3.3", .persisted), given: seated) == false)
+    }
+
     // MARK: - The peers file
 
     /// A file written before this change is a bare array with no class. It must
