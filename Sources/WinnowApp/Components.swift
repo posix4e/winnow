@@ -133,6 +133,48 @@ struct CopyableTextBlock: View {
     }
 }
 
+/// A transaction identifier, shown short and copied whole.
+///
+/// A txid is 64 hex characters and does not fit a list row, so rows abbreviate
+/// it -- and an abbreviated identifier with only text selection cannot be got
+/// out of the app at all, which is the gap this closes. What is displayed is a
+/// summary; what is copied is always the full value.
+///
+/// `interchange` rather than a policy of its own: a txid is already public on
+/// the chain, so the copy discloses nothing new, and crossing to a desktop is
+/// exactly the point -- looking the transaction up, or handing it to someone.
+/// The expiry comes along with it, which is a small bonus rather than the
+/// reason.
+struct CopyableIdentifier: View {
+    let value: String
+    var abbreviated: Bool = false
+    var label: String = "Copy"
+    var accessibilityID: String?
+    @State private var copied = false
+
+    private var shown: String {
+        guard abbreviated, value.count > 20 else { return value }
+        return value.prefix(16) + "…"
+    }
+
+    var body: some View {
+        HStack(alignment: .firstTextBaseline) {
+            Text(shown)
+                .font(.system(.caption2, design: .monospaced))
+                .textSelection(.enabled)
+            Spacer(minLength: 8)
+            Button(copied ? "Copied" : label) {
+                ClipboardPolicy.interchange.apply(value)
+                copied = true
+            }
+            .font(.caption)
+            .buttonStyle(.bordered)
+            .controlSize(.small)
+            .accessibilityIdentifier(accessibilityID ?? "copyIdentifierButton")
+        }
+    }
+}
+
 /// The bundled design papers are the same HTML the website serves. Loading the
 /// file from the bundle keeps them readable with no network, and lets the page
 /// bring its own typography instead of being flattened into one Text view.

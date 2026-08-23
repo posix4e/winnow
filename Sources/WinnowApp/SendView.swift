@@ -37,6 +37,8 @@ struct SendView: View {
     @State private var error: String?
     @State private var sending = false
     @State private var sentTxid: Data?
+    /// Hex of the signed transaction, while it is still pending.
+    @State private var rawTransaction: String?
     @State private var relayLog: [String] = []
     @State private var relayedPeers: Set<String> = []
     @State private var feeFloorNotice = false
@@ -159,9 +161,16 @@ struct SendView: View {
 
                 if let sentTxid {
                     Section("Broadcast") {
-                        Text(sentTxid.displayHex)
-                            .font(.system(.caption2, design: .monospaced))
-                            .textSelection(.enabled)
+                        CopyableIdentifier(value: sentTxid.displayHex,
+                                           accessibilityID: "copyBroadcastTransactionIDButton")
+                        // Winnow relays over its own peers and has no fallback
+                        // submission path, so when relay is not working the
+                        // signed bytes are the only way out of the device.
+                        if let rawTransaction {
+                            CopyableIdentifier(value: rawTransaction, abbreviated: true,
+                                               label: "Copy raw",
+                                               accessibilityID: "copyRawTransactionButton")
+                        }
                         WarnedExplorerLink(
                             title: "View transaction",
                             url: model.esploraTransactionURL(sentTxid),
@@ -262,7 +271,9 @@ struct SendView: View {
         error = nil
         Task {
             do {
-                sentTxid = try await model.send(preview: preview)
+                let txid = try await model.send(preview: preview)
+                sentTxid = txid
+                rawTransaction = await model.rawTransactionHex(txid)
             } catch {
                 self.error = error.localizedDescription
             }
@@ -275,6 +286,7 @@ struct SendView: View {
         amountText = ""
         preview = nil
         sentTxid = nil
+        rawTransaction = nil
         relayLog = []
         relayedPeers = []
         feeFloorNotice = false

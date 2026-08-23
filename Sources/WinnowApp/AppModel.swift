@@ -553,6 +553,20 @@ final class AppModel {
         }
     }
 
+    /// The signed bytes of a still-pending transaction, hex-encoded.
+    ///
+    /// Winnow relays over its own peer connections and has no fallback
+    /// submission path. When relay is not working, the transaction itself is
+    /// the only thing that can leave the device, so the user is given it
+    /// rather than left with a txid for something no one has seen.
+    ///
+    /// nil once it confirms and leaves the pending set -- at that point it is
+    /// on the chain and the txid is the useful handle.
+    func rawTransactionHex(_ txid: Data) async -> String? {
+        guard let broadcaster = stack?.broadcaster else { return nil }
+        return await broadcaster.rawTransaction(txid)?.hex
+    }
+
     /// Scheduled relay retries happen independently of the foreground send
     /// sheet. Keep storage failures visible at the app level even when that
     /// sheet is closed; otherwise relay could be halted with no explanation.

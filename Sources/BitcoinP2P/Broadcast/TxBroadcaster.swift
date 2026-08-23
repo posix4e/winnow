@@ -186,6 +186,17 @@ public actor TxBroadcaster {
     /// txids (internal byte order) awaiting confirmation.
     public var pendingTxids: [Data] { Array(pending.keys) }
 
+    /// The signed bytes of a transaction still awaiting confirmation.
+    ///
+    /// Winnow relays over its own peer connections and has no fallback
+    /// submission path, so when relay is not working the only way out of the
+    /// device is the transaction itself. Handing the user the raw bytes lets
+    /// them paste it into any node or explorer that accepts one, which is a
+    /// real escape hatch rather than a debugging convenience.
+    ///
+    /// nil once the transaction confirms and leaves the pending set.
+    public func rawTransaction(_ txid: Data) -> Data? { pending[txid]?.rawTx }
+
     public func events() -> AsyncStream<Event> {
         let id = UUID()
         return AsyncStream { continuation in

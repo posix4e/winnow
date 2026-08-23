@@ -124,6 +124,32 @@ struct TxBroadcasterBackoffTests {
         await reloaded.shutdown()
     }
 
+    /// The signed bytes stay reachable while a transaction is pending.
+    ///
+    /// Winnow relays over its own peers with no fallback submission path, so
+    /// when relay is not working the transaction itself is the only thing that
+    /// can leave the device. Handing the user a txid for something no one has
+    /// seen is not much use; handing them the bytes is an escape hatch.
+    @Test("a pending transaction's raw bytes can be read back")
+    func rawTransactionIsRecoverable() async throws {
+        let pool = PeerPool(params: .signet, peerCount: 0, manualPeers: [])
+        let broadcaster = try TxBroadcaster(pool: pool,
+                                            rebroadcastBaseInterval: .seconds(60))
+        let raw = makeFakeSegwitTx().serialized(includeWitness: true)
+        let txid = try await broadcaster.broadcast(raw)
+
+        #expect(await broadcaster.rawTransaction(txid) == raw,
+                "the bytes handed back must be the bytes that were signed")
+
+        // Unknown txids are simply absent rather than an error.
+        #expect(await broadcaster.rawTransaction(Data(repeating: 0xFF, count: 32)) == nil)
+
+        // Once it confirms it is on the chain, and the txid is the handle.
+        try await broadcaster.markConfirmed(txid)
+        #expect(await broadcaster.rawTransaction(txid) == nil)
+        await broadcaster.shutdown()
+    }
+
     @Test("a cap below the base clamps every attempt to the cap")
     func capBelowBaseClamps() {
         // Degenerate configuration, but it must not return an interval longer

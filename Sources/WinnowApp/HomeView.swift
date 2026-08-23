@@ -132,9 +132,8 @@ private struct HistoryRow: View {
             VStack(alignment: .leading, spacing: 2) {
                 Text(net >= 0 ? "Received" : "Sent")
                     .font(.headline)
-                Text(entry.txid.displayHex.prefix(16) + "…")
-                    .font(.system(.caption2, design: .monospaced))
-                    .foregroundStyle(.secondary)
+                CopyableIdentifier(value: entry.txid.displayHex, abbreviated: true,
+                                   accessibilityID: "copyTransactionIDButton")
                 WarnedExplorerLink(
                     title: "View transaction",
                     url: model.esploraTransactionURL(entry.txid),
@@ -211,9 +210,8 @@ private struct FeeBumpView: View {
         NavigationStack {
             Form {
                 Section("Transaction") {
-                    Text(txid.displayHex)
-                        .font(.system(.caption2, design: .monospaced))
-                        .textSelection(.enabled)
+                    CopyableIdentifier(value: txid.displayHex,
+                                       accessibilityID: "copyOriginalTransactionIDButton")
                     LabeledContent("Current rate", value: currentRate.map(feeRateText) ?? "—")
                 }
 
@@ -252,9 +250,8 @@ private struct FeeBumpView: View {
                     Section("Replacement broadcast") {
                         Label("Original marked replaced", systemImage: "arrow.triangle.2.circlepath")
                             .foregroundStyle(.green)
-                        Text(replacementTxid.displayHex)
-                            .font(.system(.caption2, design: .monospaced))
-                            .textSelection(.enabled)
+                        CopyableIdentifier(value: replacementTxid.displayHex,
+                                           accessibilityID: "copyReplacementTransactionIDButton")
                         Button("Done") { dismiss() }
                     }
                 }
