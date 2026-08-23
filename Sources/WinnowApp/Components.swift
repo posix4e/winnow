@@ -166,6 +166,13 @@ struct CopyableIdentifier: View {
             Button(copied ? "Copied" : label) {
                 ClipboardPolicy.interchange.apply(value)
                 copied = true
+                // Back to a button after a moment. A permanent "Copied" stops
+                // being feedback and becomes a label, and then there is no way
+                // to tell a second copy worked.
+                Task {
+                    try? await Task.sleep(for: .seconds(2))
+                    copied = false
+                }
             }
             .font(.caption)
             .buttonStyle(.bordered)

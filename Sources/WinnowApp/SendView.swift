@@ -166,7 +166,10 @@ struct SendView: View {
                         // Winnow relays over its own peers and has no fallback
                         // submission path, so when relay is not working the
                         // signed bytes are the only way out of the device.
-                        if let rawTransaction {
+                        // Withdrawn once a block has it: at that point the
+                        // transaction is public and the txid is the handle,
+                        // so offering the bytes only invites confusion.
+                        if let rawTransaction, confirmedHeight == nil {
                             CopyableIdentifier(value: rawTransaction, abbreviated: true,
                                                label: "Copy raw",
                                                accessibilityID: "copyRawTransactionButton")
