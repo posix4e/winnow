@@ -107,6 +107,21 @@ struct FeeProportionTests {
         #expect(message.contains("143%"))
     }
 
+    /// The other wording branch. `warningNamesTheAmounts` only exercises the
+    /// case where the fee exceeds the payment, so blanking the sub-100%
+    /// sentence killed no test -- an unproven guard, and the reason this one
+    /// exists.
+    @Test("the sub-100% wording names its amounts too")
+    func nonExceedingWarningNamesTheAmounts() throws {
+        // 550 on 1,000: over the half threshold, under the amount.
+        let warning = try #require(preview(amount: 1_000, fee: 550).feeProportion)
+        #expect(warning.exceedsAmount == false, "this must be the other branch")
+        let message = warning.message { "\($0) sat" }
+        #expect(message.contains("1000 sat"))
+        #expect(message.contains("550 sat"))
+        #expect(message.contains("55%"))
+    }
+
     /// Guard rather than behaviour: no payment means no ratio to speak of, and
     /// the division must not be attempted.
     @Test("a preview with nothing being sent has no proportion")
