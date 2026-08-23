@@ -34,6 +34,19 @@ final class RelayStoreQuarantineTests: XCTestCase {
         return url
     }
 
+    /// A signed transaction the broadcaster will accept, so a real store can
+    /// be written and then damaged in one field.
+    private static var signedTransactionBytes: Data {
+        var input = Transaction.Input(
+            previousOutput: Transaction.Outpoint(txid: Data(repeating: 0x11, count: 32), vout: 0),
+            scriptSig: Data(), sequence: 0xFFFF_FFFD)
+        input.witness = [Data([0x30, 0x44, 0x02, 0x20]), Data(repeating: 0x02, count: 33)]
+        let output = Transaction.Output(
+            value: 50_000, scriptPubKey: Data([0x51, 0x20] + repeatElement(0x77, count: 32)))
+        return Transaction(version: 2, inputs: [input], outputs: [output], locktime: 0)
+            .serialized(includeWitness: true)
+    }
+
     private func pool() -> PeerPool {
         PeerPool(params: .signet, peerCount: 0, manualPeers: [])
     }
@@ -116,6 +129,57 @@ final class RelayStoreQuarantineTests: XCTestCase {
                       "the message must name the file it set aside")
         XCTAssertNil(model.status.lastSyncError,
                      "sync did not fail; saying so would send the user after the wrong problem")
+    }
+
+    /// The notice has to survive `refresh`, which rebuilds the status snapshot
+    /// from the stores. A quarantine is a fact about the launch, not something
+    /// any store reports, so it is carried across like `lastSyncError` -- and
+    /// without that it is wiped by the refresh that runs moments after the
+    /// stack is built, leaving the user's relay queue silently gone.
+    func testTheNoticeSurvivesARefresh() async throws {
+        let dir = try makeDirectory()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let url = dir.appending(path: "broadcast.json")
+        try Data("this is not json".utf8).write(to: url)
+
+        let model = makeModel()
+        _ = try model.makeBroadcaster(pool: pool(), storageURL: url)
+        XCTAssertNotNil(model.status.relayStoreQuarantined)
+
+        await model.refresh()
+        XCTAssertNotNil(model.status.relayStoreQuarantined,
+                        "a refresh must not wipe the only notice the user gets")
+    }
+
+    /// Record-level damage, which is the realistic case: the file parses, the
+    /// shape is right, and one transaction inside it is out of range. This is
+    /// the state an unclamped retry counter used to produce.
+    func testRecordLevelDamageIsQuarantinedToo() async throws {
+        let dir = try makeDirectory()
+        defer { try? FileManager.default.removeItem(at: dir) }
+        let url = dir.appending(path: "broadcast.json")
+
+        // A real store, then one field pushed out of range, so the rest of the
+        // record stays valid and only the per-record validation objects.
+        let seed = makeModel()
+        let broadcaster = try seed.makeBroadcaster(pool: pool(), storageURL: url)
+        _ = try await broadcaster.broadcast(Self.signedTransactionBytes)
+        await broadcaster.shutdown()
+
+        var json = try JSONSerialization.jsonObject(with: Data(contentsOf: url)) as! [String: Any]
+        var transactions = json["transactions"] as! [String: Any]
+        let key = transactions.keys.first!
+        var record = transactions[key] as! [String: Any]
+        record["attempt"] = 9_999
+        transactions[key] = record
+        json["transactions"] = transactions
+        try JSONSerialization.data(withJSONObject: json).write(to: url)
+
+        let model = makeModel()
+        XCTAssertNoThrow(try model.makeBroadcaster(pool: pool(), storageURL: url))
+        XCTAssertNotNil(model.status.relayStoreQuarantined)
+        XCTAssertTrue(FileManager.default.fileExists(
+            atPath: dir.appending(path: AppModel.quarantinedRelayStoreName).path()))
     }
 
     /// The control. A healthy store must load normally and quarantine nothing,

@@ -682,6 +682,12 @@ final class AppModel {
         }
         snapshot.syncing = status.syncing
         snapshot.lastSyncError = status.lastSyncError
+        // Carried like lastSyncError: `refresh` rebuilds the snapshot from the
+        // stores, and a quarantine is a fact about the launch rather than
+        // something any store reports. Dropping it here would wipe the notice
+        // on the refresh that runs moments after the stack is built, leaving
+        // the user's relay queue silently gone.
+        snapshot.relayStoreQuarantined = status.relayStoreQuarantined
         status = snapshot
         vaults = await vaultStore.all
         journalSnapshotIfChanged()
