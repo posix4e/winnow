@@ -78,6 +78,52 @@ struct TxBroadcasterBackoffTests {
         #expect(interval(6) == cap)
     }
 
+    /// The retry counter saturates instead of growing without bound, and the
+    /// reason is not tidiness: `load` refuses any record whose attempt is
+    /// outside `0...maximumAttempt`, and it refuses by throwing for the whole
+    /// file. So an unclamped counter does not cost one transaction -- it makes
+    /// the entire pending store unloadable, and every transaction waiting in it
+    /// is forgotten at the next launch.
+    ///
+    /// That state is reachable in practice. At the shipped defaults the
+    /// interval caps at an hour, so a transaction still unconfirmed after
+    /// roughly two and a half days has fired 64 attempts. Driven here with a
+    /// 1ms interval and no peers, so it is arithmetic rather than a wait.
+    @Test("the retry counter saturates, leaving the store loadable")
+    func retryCounterSaturates() async throws {
+        let pool = PeerPool(params: .signet, peerCount: 0, manualPeers: [])
+        let store = tempFileURL("pending-saturate.json")
+        defer { try? FileManager.default.removeItem(at: store.deletingLastPathComponent()) }
+        let broadcaster = try TxBroadcaster(pool: pool, storageURL: store,
+                                            rebroadcastBaseInterval: .milliseconds(1),
+                                            maxRebroadcastInterval: .milliseconds(1))
+        let txid = try await broadcaster.broadcast(
+            makeFakeSegwitTx().serialized(includeWitness: true))
+
+        // Run past the ceiling, then let it keep firing: the point is that it
+        // stops climbing, not merely that it arrives.
+        var saturated = false
+        let deadline = ContinuousClock.now + .seconds(60) // hang-guard, not a deadline
+        while ContinuousClock.now < deadline {
+            if await broadcaster.attemptCount(txid) ?? 0 >= 63 { saturated = true; break }
+            try? await Task.sleep(for: .milliseconds(5))
+        }
+        #expect(saturated)
+        try? await Task.sleep(for: .milliseconds(50))
+        #expect(await broadcaster.attemptCount(txid) == 63,
+                "the counter must hold at the ceiling rather than climb past it")
+        await broadcaster.shutdown()
+
+        // The consequence that actually matters: the store still loads, so the
+        // transaction is still being rebroadcast after a restart.
+        let reloaded = try TxBroadcaster(pool: pool, storageURL: store,
+                                         rebroadcastBaseInterval: .milliseconds(1),
+                                         maxRebroadcastInterval: .milliseconds(1))
+        #expect(await reloaded.pendingTxids == [txid],
+                "a saturated counter must not make the pending store unloadable")
+        await reloaded.shutdown()
+    }
+
     @Test("a cap below the base clamps every attempt to the cap")
     func capBelowBaseClamps() {
         // Degenerate configuration, but it must not return an interval longer
