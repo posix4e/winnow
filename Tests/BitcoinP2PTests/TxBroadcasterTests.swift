@@ -291,11 +291,14 @@ struct TxBroadcasterTests {
         // The pending entry is gone, so no further attempt can be scheduled.
         // That is the claim, and it is deterministic.
         #expect(await broadcaster.pendingTxids.isEmpty)
-        // The wire check is about what happens *after* that. A rebroadcast
-        // already scheduled when the confirmation landed may still arrive —
-        // the interval here is 150ms — and is not a counter-example, so one
-        // in-flight inv is drained before requiring silence (#144).
-        _ = await node.nextMessage(command: "inv", timeout: .milliseconds(300))
+        // The wire check is about what happens *after* that. Rebroadcasts
+        // already sent when the confirmation landed are still sitting in the
+        // node's inbox — the interval here is 150ms and the node buffers, so
+        // there can be several — and none of them is a counter-example. Drain
+        // whatever is queued, then require quiet for longer than the maximum
+        // rebroadcast interval, which is the window in which a *new* one would
+        // have to appear (#144).
+        await drainQueuedInvs(from: node)
         #expect(await node.nextMessage(command: "inv", timeout: .milliseconds(700)) == nil)
         #expect(seen.events.contains { $0 == .confirmed(txid: txid1) })
 
@@ -304,10 +307,8 @@ struct TxBroadcasterTests {
         #expect(await node.nextMessage(command: "inv") != nil)
         try await broadcaster.cancel(txid2)
         #expect(await broadcaster.pendingTxids.isEmpty)
-        // Same race as the confirmation branch above, and it needs the same
-        // treatment: a rebroadcast already scheduled when the cancellation
-        // landed is not a counter-example to "cancelling stops rebroadcasting".
-        _ = await node.nextMessage(command: "inv", timeout: .milliseconds(300))
+        // Same as the confirmation branch above, for the same reason.
+        await drainQueuedInvs(from: node)
         #expect(await node.nextMessage(command: "inv", timeout: .milliseconds(700)) == nil)
         #expect(seen.events.contains { $0 == .cancelled(txid: txid2) })
 
@@ -571,5 +572,17 @@ private final class EventCollector: @unchecked Sendable {
         lock.lock()
         storage.append(event)
         lock.unlock()
+    }
+}
+
+/// Consumes every inv already queued on `node`, so a following assertion is
+/// about what arrives *next* rather than what was already in flight.
+///
+/// Bounded so a broadcaster that never stops fails the test instead of hanging
+/// it — the drain is meant to remove a finite backlog, not to wait out an
+/// unbounded stream.
+private func drainQueuedInvs(from node: LoopbackNode, limit: Int = 20) async {
+    for _ in 0 ..< limit {
+        if await node.nextMessage(command: "inv", timeout: .milliseconds(250)) == nil { return }
     }
 }
