@@ -9,6 +9,28 @@ public enum PeerError: Error, Equatable {
     /// Peer did not signal NODE_COMPACT_FILTERS (BIP157 service bit 6).
     case missingCompactFilters(services: UInt64)
     case protocolViolation(String)
+
+    /// Whether this is the connection failing rather than the peer being
+    /// dishonest — the distinction that decides between a cooldown and a
+    /// session-long ban (#82).
+    ///
+    /// Timeouts and disconnections say nothing about whether a peer is
+    /// truthful; they say the link was slow or dropped, which a good peer on a
+    /// bad network does routinely. A protocol violation or a missing service
+    /// bit is the peer itself being unusable, and stays permanent.
+    ///
+    /// `handshakeFailed` is counted as transport on purpose: it is the most
+    /// common shape of "unreachable right now", and treating a failed dial as
+    /// misconduct is what removes a perfectly good endpoint from the persisted
+    /// peers file.
+    public var isTransport: Bool {
+        switch self {
+        case .timeout, .notConnected, .disconnected, .handshakeFailed:
+            true
+        case .missingCompactFilters, .protocolViolation:
+            false
+        }
+    }
 }
 
 /// A peer's host/port.

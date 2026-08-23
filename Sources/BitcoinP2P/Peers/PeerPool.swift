@@ -42,6 +42,9 @@ public actor PeerPool {
     private let peersFileURL: URL?
     /// DNS-seed resolver (DoH, then getaddrinfo). Injectable for tests.
     private let seedResolver: SeedResolver
+    /// Clock for cooldown expiry. Injectable so a test can advance time
+    /// instead of sleeping through a 30-second cooldown.
+    private let now: @Sendable () -> ContinuousClock.Instant
 
     private var peers: [PeerConnection] = []
     private var knownGood: Set<PeerEndpoint> = []
@@ -54,6 +57,19 @@ public actor PeerPool {
     /// Without this set a manual or persisted bad peer is immediately dialed
     /// again after `misbehaving`, starving healthy fallback candidates.
     private var rejectedForSession: Set<PeerEndpoint> = []
+    /// Endpoints cooling off after a transport failure, and how many they have
+    /// had in a row. Neither survives the process: a cooldown is a judgement
+    /// about right now, not a reputation (#82).
+    private var cooldownUntil: [PeerEndpoint: ContinuousClock.Instant] = [:]
+    private var consecutiveTransportFailures: [PeerEndpoint: Int] = [:]
+    /// Why each endpoint was last dropped, so a diagnosis does not have to
+    /// guess between "slow" and "lying".
+    private var lastRejection: [PeerEndpoint: String] = [:]
+
+    /// First cooldown after a transport failure; doubles per consecutive
+    /// failure up to the cap.
+    static let transportCooldownBase: Duration = .seconds(30)
+    static let transportCooldownCap: Duration = .seconds(600)
 
     /// UI-facing snapshot of the pool's connection progress.
     public struct ConnectionStatus: Sendable, Equatable {
@@ -81,7 +97,8 @@ public actor PeerPool {
                 relayPreference: Bool = false,
                 dialTimeout: Duration = .seconds(5),
                 maxParallelDials: Int = 5, maxDialAttempts: Int = 50,
-                seedResolver: SeedResolver = .live()) {
+                seedResolver: SeedResolver = .live(),
+                now: @Sendable @escaping () -> ContinuousClock.Instant = { ContinuousClock.now }) {
         self.params = params
         self.peerCount = peerCount
         self.manualPeers = manualPeers
@@ -91,6 +108,7 @@ public actor PeerPool {
         self.maxParallelDials = maxParallelDials
         self.maxDialAttempts = maxDialAttempts
         self.seedResolver = seedResolver
+        self.now = now
         if let peersFileURL,
            let data = try? Data(contentsOf: peersFileURL),
            let stored = try? JSONDecoder().decode([PeerEndpoint].self, from: data) {
@@ -128,33 +146,129 @@ public actor PeerPool {
 
     public func randomPeer() -> PeerConnection? { peers.randomElement() }
 
-    /// Disconnects a misbehaving/broken peer and connects a replacement.
+    /// Disconnects a peer that sent something wrong and refuses it for the
+    /// rest of the session.
+    ///
+    /// This is the response to a *data* fault — a protocol violation, a filter
+    /// commitment that disagrees with its peers, a header that does not link.
+    /// It is deliberately harsh: it drops the endpoint from `knownGood`, which
+    /// is the persisted peers file, so the judgement outlives this launch.
+    ///
+    /// A peer that was merely slow must not come here. See
+    /// `transportFailure(_:reason:)` (#82).
     public func misbehaving(_ peer: PeerConnection, reason: String) async {
         await peer.disconnect()
         peers.removeAll { $0.endpoint == peer.endpoint }
         knownGood.remove(peer.endpoint)
         rejectedForSession.insert(peer.endpoint)
+        lastRejection[peer.endpoint] = reason
         await replenish()
+    }
+
+    /// Disconnects a peer that failed to answer in time, and cools it off
+    /// instead of condemning it.
+    ///
+    /// A mid-request timeout makes the connection suspect, so it is dropped —
+    /// but being slow once is not misconduct. Routing that through
+    /// `misbehaving` meant a single lagging reply removed the endpoint from
+    /// `knownGood` *and* barred it for the session, so on a mainnet header sync
+    /// — around 460 round trips, all inside one call against one peer — a
+    /// user's best peers were burned one hiccup at a time, and the persisted
+    /// peers file was degraded for every future launch too. That is the
+    /// "peers are lagging me out" report (#82).
+    ///
+    /// Instead the endpoint enters an exponential, capped cooldown, escalating
+    /// while failures stay consecutive and clearing on the first success. It
+    /// stays in `knownGood` and never reaches `rejectedForSession` on its own,
+    /// so a peer that is briefly slow is skipped for a while and then tried
+    /// again. Only a data fault is permanent.
+    public func transportFailure(_ peer: PeerConnection, reason: String) async {
+        await peer.disconnect()
+        peers.removeAll { $0.endpoint == peer.endpoint }
+        let failures = (consecutiveTransportFailures[peer.endpoint] ?? 0) + 1
+        consecutiveTransportFailures[peer.endpoint] = failures
+        cooldownUntil[peer.endpoint] = now().advanced(by: Self.cooldown(afterFailures: failures))
+        lastRejection[peer.endpoint] = reason
+        await replenish()
+    }
+
+    /// A completed exchange clears the endpoint's cooldown escalation. Without
+    /// this, failures accumulate across a long session and a peer that had one
+    /// bad minute an hour ago starts its next hiccup already halfway to the
+    /// cap.
+    func transportSucceeded(_ endpoint: PeerEndpoint) {
+        consecutiveTransportFailures[endpoint] = nil
+        cooldownUntil[endpoint] = nil
+    }
+
+    /// `base × 2^(failures - 1)`, capped — the shape `TxBroadcaster` already
+    /// uses for rebroadcast backoff, applied to peer endpoints rather than
+    /// transactions.
+    static func cooldown(afterFailures failures: Int,
+                         base: Duration = transportCooldownBase,
+                         cap: Duration = transportCooldownCap) -> Duration {
+        var interval = base
+        for _ in 1 ..< max(1, failures) {
+            let doubled = interval + interval
+            guard doubled < cap else { return cap }
+            interval = doubled
+        }
+        return min(interval, cap)
+    }
+
+    /// Whether this endpoint is currently cooling off after a transport
+    /// failure, and so should not be dialled yet.
+    func isCoolingDown(_ endpoint: PeerEndpoint) -> Bool {
+        guard let until = cooldownUntil[endpoint] else { return false }
+        return now() < until
+    }
+
+    /// Endpoints that are only unavailable because they are cooling off —
+    /// the pool would take them again once the timer expires.
+    var coolingEndpoints: Set<PeerEndpoint> {
+        Set(cooldownUntil.keys.filter { isCoolingDown($0) })
+    }
+
+    /// Why an endpoint was last dropped, for diagnosis. `misbehaving` accepted
+    /// a reason and discarded it, which is why the original report could say
+    /// only that peers were "lagging me out".
+    public func rejectionReason(_ endpoint: PeerEndpoint) -> String? {
+        lastRejection[endpoint]
     }
 
     /// Syncs headers against connected peers with bounded failover. Header
     /// batches already accepted by `HeaderChain` remain persisted, so the next
     /// peer resumes from that progress rather than restarting at genesis.
     /// Local storage failures are never blamed on (or retried against) peers.
+    /// - Parameters:
+    ///   - maxAttempts: how many peers may be *burned* — dropped for a data
+    ///     fault — before the sync gives up.
+    ///   - maxTransportRetries: how many slow or dropped peers may be skipped
+    ///     without counting against that budget. Separate because the two
+    ///     failures mean different things, but still bounded, or a pool that
+    ///     keeps producing timing-out candidates would spin.
     public func syncHeaders(_ chain: HeaderChain, timeoutPerPeer: Duration = .seconds(30),
-                            maxAttempts: Int = 6) async throws {
+                            maxAttempts: Int = 6,
+                            maxTransportRetries: Int = 12) async throws {
         precondition(maxAttempts > 0)
         var attempts = 0
+        var transportRetries = 0
         var lastError: (any Error)?
 
-        while attempts < maxAttempts {
+        while attempts < maxAttempts, transportRetries <= maxTransportRetries {
             guard let peer = peers.first else {
                 if attempts == 0 { throw PeerPoolHeaderSyncError.noPeers }
                 break
             }
-            attempts += 1
+            // `maxAttempts` is a budget of peers *burned*, so a peer that was
+            // only slow must not spend it. Otherwise a run of hiccups declares
+            // exhaustion while healthy endpoints sit in the pool cooling off,
+            // and the report the user gets moves up a layer without the cause
+            // changing (#82).
+            var burnedAPeer = true
             do {
                 try await chain.sync(using: peer, timeout: timeoutPerPeer)
+                transportSucceeded(peer.endpoint)
                 return
             } catch let error as HeaderChainError {
                 switch error {
@@ -163,6 +277,8 @@ public actor PeerPool {
                 default:
                     break
                 }
+                // The peer sent headers that do not link, or claim work they
+                // do not have. That is a data fault, and permanent.
                 lastError = error
                 await misbehaving(peer, reason: error.localizedDescription)
             } catch is CancellationError {
@@ -170,12 +286,21 @@ public actor PeerPool {
                 // misconduct. Keep the connection eligible for the next
                 // foreground sync instead of poisoning the session pool.
                 throw CancellationError()
-            } catch {
+            } catch let error as PeerError where error.isTransport {
+                // Slow or dropped, not dishonest. Cool the endpoint off and
+                // try the next peer; this attempt does not count as one of the
+                // peers the budget allows us to burn.
                 lastError = error
-                // A peer that disconnects, times out, or violates framing in
-                // the middle of header sync is unsuitable for this run too.
+                burnedAPeer = false
+                transportRetries += 1
+                await transportFailure(peer, reason: error.localizedDescription)
+            } catch {
+                // Anything else — framing violations, unexpected messages —
+                // is the peer's fault and stays permanent.
+                lastError = error
                 await misbehaving(peer, reason: error.localizedDescription)
             }
+            if burnedAPeer { attempts += 1 }
         }
 
         throw PeerPoolHeaderSyncError.exhausted(
@@ -216,7 +341,10 @@ public actor PeerPool {
         // Dial manual / persisted / fallback first. Resolve DNS seeds only
         // if those sources cannot fill the pool — a working manual peer
         // must not wait on DoH.
-        var queue = localCandidates(excluding: Set(peers.map(\.endpoint)).union(rejectedForSession))
+        // Cooling endpoints are skipped, not rejected: they come back into the
+        // queue on a later round once their timer expires (#82).
+        let excluded = Set(peers.map(\.endpoint)).union(rejectedForSession).union(coolingEndpoints)
+        var queue = localCandidates(excluding: excluded)
         var resolvedSeeds = false
         var needed = peerCount - peers.count
         var next = 0
@@ -225,7 +353,7 @@ public actor PeerPool {
             while needed > 0, started {
                 if next >= queue.count && !resolvedSeeds {
                     resolvedSeeds = true
-                    var seen = Set(peers.map(\.endpoint)).union(rejectedForSession)
+                    var seen = excluded
                     seen.formUnion(queue)
                     queue.append(contentsOf: await seedCandidates(excluding: seen))
                 }

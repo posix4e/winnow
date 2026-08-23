@@ -17,6 +17,10 @@ actor LoopbackNode {
     let services: UInt64
     /// Height-indexed blocks served over getheaders/getdata (empty: headers-disabled node).
     let chain: [Block]
+    /// Completes the handshake, then never answers `getheaders` — a peer that
+    /// is reachable and well-behaved but too slow to reply, which is the shape
+    /// that used to get an endpoint banned for the session (#82).
+    let withholdHeaders: Bool
     /// When set, the filter served for this height is bit-flipped (lying node).
     let corruptFilterAtHeight: Int?
     /// Serves filter *commitments* that disagree with the honest chain while
@@ -59,7 +63,8 @@ actor LoopbackNode {
     private var filterHeaders: [Data] = []
 
     init(params: NetworkParams, services: UInt64 = PeerConnection.nodeCompactFilters,
-         chain: [Block] = [], corruptFilterAtHeight: Int? = nil,
+         chain: [Block] = [], withholdHeaders: Bool = false,
+         corruptFilterAtHeight: Int? = nil,
          lieAboutFilterCommitments: Bool = false, lieSalt: UInt8 = 0xFF,
          cfcheckptStopHashOverride: Data? = nil,
          autoRequestDelay: Duration? = nil, transactions: [Transaction] = [],
@@ -67,6 +72,7 @@ actor LoopbackNode {
         self.params = params
         self.services = services
         self.chain = chain
+        self.withholdHeaders = withholdHeaders
         self.corruptFilterAtHeight = corruptFilterAtHeight
         self.lieAboutFilterCommitments = lieAboutFilterCommitments
         self.lieSalt = lieSalt
@@ -278,6 +284,7 @@ actor LoopbackNode {
             try await send(.pong(nonce))
 
         case let .getheaders(request):
+            if withholdHeaders { return } // reachable, but never answers
             // First matching locator wins; no match → from height 1.
             var start = 1
             for hash in request.locatorHashes {
