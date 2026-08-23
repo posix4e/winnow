@@ -525,7 +525,9 @@ final class WinnowAppUITests: XCTestCase {
             utxos: [utxo],
             payments: [Payment(amount: 100_000, address: Self.fixtureAddress(0xE5),
                                network: .signet)],
-            changeIndex: 0, feeRateSatPerVByte: 2)
+            // A fixed tip and a draw that misses the lookback branch, so the
+            // fixture PSBT is byte-stable across runs (#139).
+            changeIndex: 0, feeRateSatPerVByte: 2, chainTip: 1_500, randomness: { 0.5 })
 
         let app = launchApp(clipboard: psbt.base64)
         app.tabBars.buttons["Vaults"].tap()
