@@ -152,7 +152,8 @@ struct VaultSpendView: View {
             let payment = try Payment(amount: amount, address: trimmed, network: model.network)
             let psbt = try vault.createSpend(utxos: record.utxos, payments: [payment],
                                              changeIndex: record.nextChangeIndex,
-                                             feeRateSatPerVByte: feeRate)
+                                             feeRateSatPerVByte: feeRate,
+                                             chainTip: model.status.tipHeight)
             created = psbt.base64
             model.journalPSBT(stage: "vault-spend-created", psbt: psbt)
         } catch {

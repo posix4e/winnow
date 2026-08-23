@@ -430,7 +430,7 @@ struct WinnowStoryTests {
         let destination = Data([0x51, 0x20] + repeatElement(0x77, count: 32))
         let created = try vault.createSpend(utxos: [utxo],
                                             payments: [Payment(amount: 60_000, scriptPubKey: destination)],
-                                            changeIndex: 0, feeRateSatPerVByte: 2)
+                                            changeIndex: 0, feeRateSatPerVByte: 2, chainTip: testChainTip, randomness: { 0.5 })
         let leo = try PSBT(base64: companion.partialSignInheritance(psbtBase64: created.base64, as: "leo"))
         let marina = try PSBT(base64: companion.partialSignInheritance(psbtBase64: created.base64, as: "marina"))
         var combined = try leo.combined(with: [marina])
@@ -451,7 +451,7 @@ struct WinnowStoryTests {
         let destination = Data([0x51, 0x20] + repeatElement(0x78, count: 32))
         let created = try vault.createSpend(utxos: [utxo],
                                             payments: [Payment(amount: 50_000, scriptPubKey: destination)],
-                                            changeIndex: 0, feeRateSatPerVByte: 2)
+                                            changeIndex: 0, feeRateSatPerVByte: 2, chainTip: testChainTip, randomness: { 0.5 })
         let context = try vault.muSig2Context(choice: 0, index: 0)
 
         var elenaNonce = created
@@ -486,3 +486,7 @@ struct WinnowStoryTests {
         #expect(transaction.inputs[0].witness[0].count == 64)
     }
 }
+
+/// A plausible validated tip for story tests that build a vault spend, paired
+/// with a fixed draw so the resulting transaction is byte-stable (#139).
+let testChainTip: UInt32 = 840_000

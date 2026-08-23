@@ -172,7 +172,7 @@ struct VaultFlowTests {
         // Fund the vault and build the spend PSBT (creator role).
         let utxo = try Self.funding(vault: vault, amount: 100_000)
         let created = try vault.createSpend(utxos: [utxo], payments: [Payment(amount: 50_000, scriptPubKey: destination)],
-                                            changeIndex: 0, feeRateSatPerVByte: 2)
+                                            changeIndex: 0, feeRateSatPerVByte: 2, chainTip: testChainTip, randomness: { 0.5 })
         let input = created.inputs[0]
         #expect(input.tapInternalKey == Taproot.unspendableInternalKey)
         #expect(input.tapLeafScripts.count == 1)
@@ -270,7 +270,7 @@ struct VaultFlowTests {
         let changeCoordinate = Vault.OutputCoordinate(choice: AddressChain.change.rawValue, index: 0)
         let created = try vault.createSpend(
             utxos: [utxo], payments: [Payment(amount: 50_000, scriptPubKey: destination)],
-            changeIndex: 0, feeRateSatPerVByte: 2)
+            changeIndex: 0, feeRateSatPerVByte: 2, chainTip: testChainTip, randomness: { 0.5 })
 
         let review = try vault.reviewSpend(
             created, knownUTXOs: [utxo], ownedOutputCoordinates: [changeCoordinate])
@@ -278,7 +278,10 @@ struct VaultFlowTests {
         #expect(review.outputTotal + review.fee == review.inputTotal)
         #expect(review.sighashTypes == [0])
         #expect(review.transactionVersion == 2)
-        #expect(review.fallbackLocktime == 0)
+        // The review surfaces the anti-fee-sniping locktime the creator chose,
+        // so a signer sees the height it is committing to (#139). It used to
+        // read zero here, which was the fingerprint, not an invariant.
+        #expect(review.fallbackLocktime == testChainTip)
         #expect(review.sequences == [0xFFFF_FFFD])
         #expect(review.outputs.first { $0.scriptPubKey == destination }?.isVaultOwned == false)
         #expect(review.outputs.first { $0.scriptPubKey != destination }?.isVaultOwned == true)
@@ -348,7 +351,7 @@ struct VaultFlowTests {
 
         let utxo = try Self.funding(vault: vault, amount: 80_000)
         let created = try vault.createSpend(utxos: [utxo], payments: [Payment(amount: 50_000, scriptPubKey: destination)],
-                                            changeIndex: 0, feeRateSatPerVByte: 2)
+                                            changeIndex: 0, feeRateSatPerVByte: 2, chainTip: testChainTip, randomness: { 0.5 })
         let context = try vault.muSig2Context(choice: 0, index: 0)
         #expect(context.participants.count == 2)
         // The BIP373 participant field and the BIP328-derived internal key.
@@ -426,7 +429,7 @@ struct VaultFlowTests {
         let vault = try Vault("tr(musig(\(keys[0]),\(keys[1]))/<0;1>/*)", network: .signet)
         let utxo = try Self.funding(vault: vault, amount: 80_000)
         var psbt = try vault.createSpend(utxos: [utxo], payments: [Payment(amount: 50_000, scriptPubKey: destination)],
-                                         changeIndex: 0, feeRateSatPerVByte: 2)
+                                         changeIndex: 0, feeRateSatPerVByte: 2, chainTip: testChainTip, randomness: { 0.5 })
         let context = try vault.muSig2Context(choice: 0, index: 0)
         // The third master is not a participant: no nonce, no signature.
         let outsider = try Self.masters()[2]

@@ -52,6 +52,48 @@ public enum TransactionBuilder {
     /// Sequence 0xFFFFFFFD: locktime-disabled, opt-in BIP125 replaceable.
     public static let defaultSequence: UInt32 = 0xFFFF_FFFD
 
+    /// The `nLockTime` to stamp on a newly built transaction.
+    ///
+    /// Bitcoin Core sets this to the current block height on everything it
+    /// creates. The mechanism is anti-fee-sniping: a transaction whose locktime
+    /// equals the tip cannot be mined into an *earlier* block, which removes
+    /// the incentive to re-mine the previous block and take the fees in it.
+    ///
+    /// The reason it matters here is the anonymity set rather than the fee
+    /// theft. Because "a recent block height" is what almost everything emits,
+    /// a transaction carrying zero is trivially distinguishable from a
+    /// Core-built one — it discloses which software made it to anyone reading
+    /// the chain. For a wallet whose whole argument is that it discloses
+    /// nothing, that is a poor trade for no benefit (#139).
+    ///
+    /// Also following Core: about one in ten transactions uses a height from
+    /// the previous hundred blocks instead of the tip. Without that, "locktime
+    /// is always exactly the tip" becomes its own signal, and a wallet that is
+    /// behind on sync stands out from one that is not.
+    ///
+    /// Never returns a height above `tip`: a locktime in the future is not
+    /// final, and the transaction would not relay.
+    public static func antiFeeSnipingLocktime(
+        tip: UInt32,
+        randomness: @Sendable () -> Double = { Double.random(in: 0 ..< 1) }
+    ) -> UInt32 {
+        guard Self.draw(randomness()) < 0.1 else { return tip }
+        let lookback = UInt32(Self.draw(randomness()) * 100) // 0...99, as Core
+        return tip >= lookback ? tip - lookback : 0
+    }
+
+    /// Confines a draw to `0 ..< 1`.
+    ///
+    /// The default source already satisfies that, but the parameter exists so
+    /// tests can drive both branches deterministically, and an injected value
+    /// outside the range would otherwise convert to a lookback of 100 or --
+    /// for a negative draw -- trap in the `UInt32` initialiser. Clamping keeps
+    /// a bad injection a wrong answer rather than a crash on the money path.
+    private static func draw(_ value: Double) -> Double {
+        guard value.isFinite else { return 0 }
+        return min(max(value, 0), 0.999_999_999)
+    }
+
     /// An unsigned transaction: payments first, the change output inserted at
     /// `changePosition` (a random position when nil, so change isn't always the
     /// last output — a chain-analysis fingerprint).

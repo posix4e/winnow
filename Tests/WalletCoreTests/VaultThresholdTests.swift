@@ -66,7 +66,7 @@ struct VaultThresholdTests {
         let owned = [Vault.OutputCoordinate(choice: 1, index: 0)]
         let created = try vault.createSpend(
             utxos: [utxo], payments: [Payment(amount: 50_000, scriptPubKey: destination)],
-            changeIndex: 0, feeRateSatPerVByte: 2)
+            changeIndex: 0, feeRateSatPerVByte: 2, chainTip: testChainTip, randomness: { 0.5 })
 
         var first = try PSBT(base64: created.base64)
         try vault.partialSign(&first, master: masters[pair.0], knownUTXOs: [utxo],
@@ -95,7 +95,7 @@ struct VaultThresholdTests {
         let owned = [Vault.OutputCoordinate(choice: 1, index: 0)]
         let created = try vault.createSpend(
             utxos: [utxo], payments: [Payment(amount: 50_000, scriptPubKey: destination)],
-            changeIndex: 0, feeRateSatPerVByte: 2)
+            changeIndex: 0, feeRateSatPerVByte: 2, chainTip: testChainTip, randomness: { 0.5 })
 
         var alone = try PSBT(base64: created.base64)
         try vault.partialSign(&alone, master: masters[index], knownUTXOs: [utxo],
@@ -118,7 +118,7 @@ struct VaultThresholdTests {
         let owned = [Vault.OutputCoordinate(choice: 1, index: 0)]
         let created = try vault.createSpend(
             utxos: [utxo], payments: [Payment(amount: 50_000, scriptPubKey: destination)],
-            changeIndex: 0, feeRateSatPerVByte: 2)
+            changeIndex: 0, feeRateSatPerVByte: 2, chainTip: testChainTip, randomness: { 0.5 })
 
         var signed: [PSBT] = []
         for master in masters {

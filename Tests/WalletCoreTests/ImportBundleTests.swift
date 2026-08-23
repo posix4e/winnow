@@ -317,7 +317,7 @@ struct ImportBundleTests {
         let destination = Data([0x51, 0x20] + repeatElement(0x77, count: 32))
         let prepared = try await restored.buildSend(
             payments: [Payment(amount: 60_000, scriptPubKey: destination)],
-            feeRateSatPerVByte: 2)
+            feeRateSatPerVByte: 2, chainTip: testChainTip, randomness: { 0.5 })
         let spend = prepared.built.transaction
         let sighash = try SighashBIP341.sighash(
             tx: spend, inputIndex: 0,
@@ -508,7 +508,7 @@ struct ImportBundleTests {
         let destination = Data([0x51, 0x20] + repeatElement(0x99, count: 32))
         let built = try await wallet.send(
             payments: [Payment(amount: 50_000, scriptPubKey: destination)],
-            feeRateSatPerVByte: 2)
+            feeRateSatPerVByte: 2, chainTip: testChainTip, randomness: { 0.5 })
         #expect(await wallet.utxos.contains(where: { $0.height == 0 }))
         do {
             _ = try await wallet.exportBundle()

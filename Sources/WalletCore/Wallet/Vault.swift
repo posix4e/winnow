@@ -384,8 +384,13 @@ public struct Vault: Sendable {
     /// key. Change (if any) goes to choice 1 at `changeIndex` and carries
     /// PSBT_OUT_TAP_TREE / internal key so cosigners can verify it belongs to
     /// the vault.
+    /// `chainTip` is the validated header-chain tip. As with `Wallet.buildSend`
+    /// it carries no default: a vault spend is as identifiable as any other if
+    /// it goes out with a zero locktime (#139).
     public func createSpend(utxos: [WalletUTXO], payments: [Payment], changeIndex: UInt32,
-                            feeRateSatPerVByte: Double) throws -> PSBT {
+                            feeRateSatPerVByte: Double, chainTip: UInt32,
+                            randomness: @Sendable () -> Double = { Double.random(in: 0 ..< 1) }
+    ) throws -> PSBT {
         for utxo in utxos {
             guard try scriptPubKey(index: utxo.index, choice: utxo.chain.rawValue) == utxo.scriptPubKey else {
                 throw VaultError.scriptMismatch(index: utxo.index, choice: utxo.chain.rawValue)
@@ -397,8 +402,9 @@ public struct Vault: Sendable {
                                                  feeRateSatPerVByte: feeRateSatPerVByte,
                                                  witnessBytesPerInput: witnessBytesPerInput(index: utxos.first?.index ?? 0))
         let change = selection.changeAmount.map { Payment(amount: $0, scriptPubKey: changeScript) }
-        let tx = try TransactionBuilder.build(inputs: selection.selected.map(\.outpoint),
-                                              payments: payments, change: change)
+        let tx = try TransactionBuilder.build(
+            inputs: selection.selected.map(\.outpoint), payments: payments, change: change,
+            locktime: TransactionBuilder.antiFeeSnipingLocktime(tip: chainTip, randomness: randomness))
         var psbt = try PSBT(unsignedTx: tx,
                             inputs: selection.selected.map { PSBT.InputInfo(spentOutput: $0.spentOutput) },
                             outputs: tx.outputs.map { _ in PSBT.OutputInfo() })

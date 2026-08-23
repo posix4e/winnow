@@ -62,3 +62,12 @@ func tempFileURL(_ name: String) -> URL {
                                              withIntermediateDirectories: true)
     return url
 }
+
+/// A plausible validated tip for tests that build a send.
+///
+/// Paired with a fixed draw of 0.5 at the call sites, which misses the
+/// one-in-ten lookback branch, so the resulting locktime is exactly this and
+/// the transaction is byte-stable across runs. Tests that care about the
+/// locktime itself live in "Anti-fee-sniping locktime"; everything else just
+/// needs sends to look like real ones (#139).
+let testChainTip: UInt32 = 840_000

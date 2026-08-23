@@ -39,7 +39,7 @@ struct SilentPaymentPipelineTests {
             payments: [], feeRateSatPerVByte: 2,
             silentPayments: try amounts.map {
                 try SilentPayment(amount: $0, address: address, network: .signet)
-            })
+            }, chainTip: testChainTip, randomness: { 0.5 })
         let tx = built.transaction
 
         let inputKeys = tx.inputs.compactMap {

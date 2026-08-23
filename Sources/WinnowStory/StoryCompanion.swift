@@ -65,9 +65,13 @@ public struct StoryCompanion: Sendable {
             personaID: personaID, inputTxid: inputTxid, inputVout: inputVout,
             inputAmount: inputAmount, inputHeight: inputHeight)
         let silent = try SilentPayment(amount: amount, address: recipient, network: .signet)
+        // A fixed tip and a fixed draw, because a story capture is a published
+        // artefact: a random locktime would change the txid from run to run and
+        // every recorded vector with it. 0.5 misses the one-in-ten lookback
+        // branch, so this is exactly `inputHeight`.
         let prepared = try await wallet.buildSend(
             payments: [], feeRateSatPerVByte: feeRateSatPerVByte,
-            silentPayments: [silent])
+            silentPayments: [silent], chainTip: inputHeight, randomness: { 0.5 })
         guard let tweakData = prepared.silentPaymentTweakData else {
             throw StoryModelError.invalidTransition("silent send did not produce BIP352 tweak data")
         }

@@ -47,7 +47,7 @@ struct SilentPaymentSendTests {
         let address = try recipient()
 
         let built = try await wallet.send(payments: [], feeRateSatPerVByte: 2,
-                                          silentPayments: [SilentPayment(amount: 100_000, address: address)])
+                                          silentPayments: [SilentPayment(amount: 100_000, address: address)], chainTip: testChainTip, randomness: { 0.5 })
         let tx = built.transaction
         #expect(tx.inputs.count == 1)
         #expect(tx.inputs[0].witness.count == 1) // signed
@@ -73,7 +73,7 @@ struct SilentPaymentSendTests {
 
         let built = try await wallet.send(payments: [], feeRateSatPerVByte: 2,
                                           silentPayments: [SilentPayment(amount: 100_000, address: address),
-                                                           SilentPayment(amount: 50_000, address: address)])
+                                                           SilentPayment(amount: 50_000, address: address)], chainTip: testChainTip, randomness: { 0.5 })
         let spentScript = try await wallet.scriptPubKey(chain: .receive, index: 0)
         let input = SilentPaymentSending.Input(txid: funding.txid, vout: 0,
                                                prevoutScriptPubKey: spentScript,
@@ -96,7 +96,7 @@ struct SilentPaymentSendTests {
         let built = try await wallet.send(
             payments: [Payment(amount: 40_000, scriptPubKey: destination)],
             feeRateSatPerVByte: 2,
-            silentPayments: [SilentPayment(amount: 100_000, address: address)])
+            silentPayments: [SilentPayment(amount: 100_000, address: address)], chainTip: testChainTip, randomness: { 0.5 })
         let tx = built.transaction
         #expect(tx.outputs.contains { $0.value == 40_000 && $0.scriptPubKey == destination })
         #expect(tx.outputs.contains { $0.value == 100_000 && $0.scriptPubKey != destination })
@@ -116,7 +116,7 @@ struct SilentPaymentSendTests {
         let signetAddress = try recipient(network: .signet)
         _ = try SilentPayment(amount: 1_000, address: signetAddress.encoded, network: .signet)
         do {
-            _ = try await wallet.send(payments: [], feeRateSatPerVByte: 2, silentPayments: [])
+            _ = try await wallet.send(payments: [], feeRateSatPerVByte: 2, silentPayments: [], chainTip: testChainTip, randomness: { 0.5 })
             Issue.record("expected WalletError.noPayments")
         } catch {
             #expect(error as? WalletError == .noPayments)

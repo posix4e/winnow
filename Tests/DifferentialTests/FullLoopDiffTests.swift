@@ -83,9 +83,15 @@ struct FullLoopDiffTests {
         let throwaway = try BIP86.address(
             internalKey: BIP86.xonlyPublicKey(of: testMaster().derived(path: "m/86'/1'/9'/0/0")),
             hrp: "tb")
+        // The node's own tip, and a draw that misses the lookback branch, so the
+        // locktime is exactly the tip. This is the one place that proves an
+        // anti-fee-sniping locktime is acceptable to Core's mempool policy
+        // rather than merely to our builder (#139): step 5 below puts this very
+        // transaction through `testmempoolaccept`.
         let original = try await wallet.send(
             payments: [Payment(amount: 100_000, address: throwaway, network: .signet)],
-            feeRateSatPerVByte: 1)
+            feeRateSatPerVByte: 1, chainTip: tip, randomness: { 0.5 })
+        #expect(original.transaction.locktime == tip, "the send is stamped with the node's tip")
         let rawHex = original.transaction.serialized(includeWitness: true).hex
         trace("spend signed")
 

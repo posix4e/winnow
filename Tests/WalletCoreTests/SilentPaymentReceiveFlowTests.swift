@@ -102,7 +102,7 @@ struct SilentPaymentReceiveFlowTests {
         let address = try await receiver.silentPaymentAddress()
         let built = try await sender.send(
             payments: [], feeRateSatPerVByte: 2,
-            silentPayments: [try SilentPayment(amount: 100_000, address: address, network: .signet)])
+            silentPayments: [try SilentPayment(amount: 100_000, address: address, network: .signet)], chainTip: testChainTip, randomness: { 0.5 })
         let tx = built.transaction
 
         // Receive-side scan from the raw transaction — the same quantities the
@@ -153,7 +153,7 @@ struct SilentPaymentReceiveFlowTests {
         // silent-payment output key (no TapTweak).
         let destination = try await sender.scriptPubKey(chain: .receive, index: 1)
         let prepared = try await reopened.buildSend(
-            payments: [Payment(amount: 60_000, scriptPubKey: destination)], feeRateSatPerVByte: 2)
+            payments: [Payment(amount: 60_000, scriptPubKey: destination)], feeRateSatPerVByte: 2, chainTip: testChainTip, randomness: { 0.5 })
         let spend = prepared.built.transaction
         #expect(spend.inputs.count == 1)
         #expect(spend.inputs[0].previousOutput == Transaction.Outpoint(txid: tx.txid,
@@ -234,7 +234,7 @@ struct SilentPaymentReceiveFlowTests {
         let recipient = try SilentPaymentAddress(scanKey: scanKey, spendKey: spendKey, hrp: "tsp")
         let built = try await wallet.send(payments: [], feeRateSatPerVByte: 2,
                                           silentPayments: [SilentPayment(amount: 100_000,
-                                                                         address: recipient)])
+                                                                         address: recipient)], chainTip: testChainTip, randomness: { 0.5 })
 
         // Independently derive the recipient's expected output script with
         // d = b_spend + tweak as the input key — if the wallet keyed the
@@ -263,7 +263,7 @@ struct SilentPaymentReceiveFlowTests {
 
         let destination = Data([0x51, 0x20] + repeatElement(0x99, count: 32))
         let original = try await wallet.buildSend(
-            payments: [Payment(amount: 60_000, scriptPubKey: destination)], feeRateSatPerVByte: 2)
+            payments: [Payment(amount: 60_000, scriptPubKey: destination)], feeRateSatPerVByte: 2, chainTip: testChainTip, randomness: { 0.5 })
         try await wallet.commit(original)
         let originalTxid = original.built.transaction.txid
 

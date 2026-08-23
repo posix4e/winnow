@@ -1018,8 +1018,14 @@ public actor Wallet {
     /// (BIP352 §Creating outputs), and replace the same-size placeholders used
     /// for fee estimation. Signing stays SIGHASH_DEFAULT — the BIP352-safe
     /// sighash for taproot inputs.
+    /// `chainTip` is the validated header-chain tip, and carries no default:
+    /// omitting it is what stamps a fingerprint onto the chain (#139), so every
+    /// call site is made to decide rather than inherit a silent zero.
     public func buildSend(payments: [Payment], feeRateSatPerVByte: Double,
-                          silentPayments: [SilentPayment] = []) throws -> PreparedSend {
+                          silentPayments: [SilentPayment] = [],
+                          chainTip: UInt32,
+                          randomness: @Sendable () -> Double = { Double.random(in: 0 ..< 1) }
+    ) throws -> PreparedSend {
         guard !payments.isEmpty || !silentPayments.isEmpty else { throw WalletError.noPayments }
         let changeIndex = state.nextChangeIndex
         let changeScript = try scriptPubKey(chain: .change, index: changeIndex)
@@ -1052,8 +1058,9 @@ public actor Wallet {
             resolvedPayments += resolvedSilentPayments
         }
         let change = selection.changeAmount.map { Payment(amount: $0, scriptPubKey: changeScript) }
-        let tx = try TransactionBuilder.build(inputs: selection.selected.map(\.outpoint),
-                                              payments: resolvedPayments, change: change)
+        let tx = try TransactionBuilder.build(
+            inputs: selection.selected.map(\.outpoint), payments: resolvedPayments, change: change,
+            locktime: TransactionBuilder.antiFeeSnipingLocktime(tip: chainTip, randomness: randomness))
         let changeOutputIndex = change.flatMap { change in
             tx.outputs.firstIndex { $0.scriptPubKey == change.scriptPubKey && $0.value == change.amount }
         }
@@ -1109,9 +1116,13 @@ public actor Wallet {
     /// wherever a broadcaster exists, so a failed broadcast rolls back cleanly.
     @discardableResult
     public func send(payments: [Payment], feeRateSatPerVByte: Double,
-                     silentPayments: [SilentPayment] = []) throws -> BuiltTransaction {
+                     silentPayments: [SilentPayment] = [],
+                     chainTip: UInt32,
+                     randomness: @Sendable () -> Double = { Double.random(in: 0 ..< 1) }
+    ) throws -> BuiltTransaction {
         let prepared = try buildSend(payments: payments, feeRateSatPerVByte: feeRateSatPerVByte,
-                                     silentPayments: silentPayments)
+                                     silentPayments: silentPayments, chainTip: chainTip,
+                                     randomness: randomness)
         try commit(prepared)
         return prepared.built
     }

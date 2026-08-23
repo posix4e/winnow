@@ -622,6 +622,21 @@ final class AppModel {
     ///
     /// Scanning still starts at or below the tip, so a payment made while the
     /// user is writing down the phrase is covered.
+    /// The validated header-chain tip, which is what a newly built transaction
+    /// stamps as its `nLockTime` (#139).
+    ///
+    /// Deliberately the local chain height rather than any peer's advertised
+    /// one: a locktime above the real tip is not final and would not relay, so
+    /// the only safe error is to be behind. A wallet with no stack cannot
+    /// broadcast anyway -- `broadcast` refuses without one -- so the zero here
+    /// is never what actually goes out.
+    var chainTipHeight: UInt32 {
+        get async {
+            guard let stack else { return 0 }
+            return await stack.chain.height
+        }
+    }
+
     private func creationHeightForNewWallet() async -> UInt32 {
         guard let stack else { return 0 }
         let local = await stack.chain.height
@@ -1128,7 +1143,8 @@ final class AppModel {
         // (no stack, disk error), nothing was spent locally — no stranded UTXOs.
         let prepared = try await wallet.buildSend(payments: preview.payments,
                                                   feeRateSatPerVByte: preview.feeRateSatPerVByte,
-                                                  silentPayments: preview.silentPayments)
+                                                  silentPayments: preview.silentPayments,
+                                                  chainTip: await chainTipHeight)
         guard preview.authorizes(prepared.built,
                                  resolvedSilentPayments: prepared.resolvedSilentPayments)
         else { throw AppError.sendReviewChanged }

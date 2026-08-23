@@ -178,7 +178,7 @@ struct WalletTests {
 
         let destination = Data([0x51, 0x20] + repeatElement(0x99, count: 32))
         let built = try await wallet.send(payments: [Payment(amount: 100_000, scriptPubKey: destination)],
-                                          feeRateSatPerVByte: 2)
+                                          feeRateSatPerVByte: 2, chainTip: testChainTip, randomness: { 0.5 })
         let tx = built.transaction
         #expect(tx.isSegwit)
         #expect(built.changeAmount != nil) // largest-first picks the 150k UTXO
@@ -231,7 +231,7 @@ struct WalletTests {
         await #expect(throws: CoinSelectionError.noUTXOs) {
             try await wallet.buildSend(
                 payments: [Payment(amount: 100_000, scriptPubKey: destination)],
-                feeRateSatPerVByte: 2)
+                feeRateSatPerVByte: 2, chainTip: testChainTip, randomness: { 0.5 })
         }
 
         // 99 confirmations: still immature (tip 198 → 198-100+1 = 99).
@@ -240,13 +240,13 @@ struct WalletTests {
         await #expect(throws: CoinSelectionError.noUTXOs) {
             try await wallet.buildSend(
                 payments: [Payment(amount: 100_000, scriptPubKey: destination)],
-                feeRateSatPerVByte: 2)
+                feeRateSatPerVByte: 2, chainTip: testChainTip, randomness: { 0.5 })
         }
 
         try await matureCoinbase(wallet, height: 100)
         #expect(await wallet.spendableUtxos.count == 1)
         let built = try await wallet.buildSend(
-            payments: [Payment(amount: 100_000, scriptPubKey: destination)], feeRateSatPerVByte: 2)
+            payments: [Payment(amount: 100_000, scriptPubKey: destination)], feeRateSatPerVByte: 2, chainTip: testChainTip, randomness: { 0.5 })
         #expect(built.built.transaction.inputs.count == 1)
     }
 
@@ -264,7 +264,7 @@ struct WalletTests {
 
         let destination = Data([0x51, 0x20] + repeatElement(0x99, count: 32))
         let prepared = try await wallet.buildSend(
-            payments: [Payment(amount: 100_000, scriptPubKey: destination)], feeRateSatPerVByte: 2)
+            payments: [Payment(amount: 100_000, scriptPubKey: destination)], feeRateSatPerVByte: 2, chainTip: testChainTip, randomness: { 0.5 })
 
         // Nothing moved: had broadcast thrown here, no UTXO is stranded.
         #expect(await wallet.balance == 150_000)
@@ -293,7 +293,7 @@ struct WalletTests {
 
         let destination = Data([0x51, 0x20] + repeatElement(0x99, count: 32))
         let original = try await wallet.buildSend(
-            payments: [Payment(amount: 100_000, scriptPubKey: destination)], feeRateSatPerVByte: 2)
+            payments: [Payment(amount: 100_000, scriptPubKey: destination)], feeRateSatPerVByte: 2, chainTip: testChainTip, randomness: { 0.5 })
         try await wallet.commit(original)
         let originalTx = original.built.transaction
         let originalBalance = await wallet.balance
@@ -379,7 +379,7 @@ struct WalletTests {
         try await matureCoinbase(wallet, height: 100)
         let destination = Data([0x51, 0x20] + repeatElement(0x88, count: 32))
         let original = try await wallet.buildSend(
-            payments: [Payment(amount: 99_778, scriptPubKey: destination)], feeRateSatPerVByte: 2)
+            payments: [Payment(amount: 99_778, scriptPubKey: destination)], feeRateSatPerVByte: 2, chainTip: testChainTip, randomness: { 0.5 })
         #expect(original.built.changeAmount == nil)
         try await wallet.commit(original)
         #expect(await wallet.feeBumpableTxids.isEmpty)
@@ -403,13 +403,13 @@ struct WalletTests {
         try await matureCoinbase(wallet, height: 100)
         let destination = Data([0x51, 0x20] + repeatElement(0x55, count: 32))
         let parent = try await wallet.buildSend(
-            payments: [Payment(amount: 100_000, scriptPubKey: destination)], feeRateSatPerVByte: 2)
+            payments: [Payment(amount: 100_000, scriptPubKey: destination)], feeRateSatPerVByte: 2, chainTip: testChainTip, randomness: { 0.5 })
         try await wallet.commit(parent)
 
         // The only spendable UTXO is now the parent's height-0 change, so the
         // child spend is forced onto it.
         let child = try await wallet.buildSend(
-            payments: [Payment(amount: 20_000, scriptPubKey: destination)], feeRateSatPerVByte: 2)
+            payments: [Payment(amount: 20_000, scriptPubKey: destination)], feeRateSatPerVByte: 2, chainTip: testChainTip, randomness: { 0.5 })
         #expect(child.built.transaction.inputs.contains {
             $0.previousOutput.txid == parent.built.transaction.txid
         })
@@ -439,7 +439,7 @@ struct WalletTests {
         let destination = Data([0x51, 0x20] + repeatElement(0x66, count: 32))
         let original = try await wallet.buildSend(
             payments: [Payment(amount: 100_000, scriptPubKey: destination)],
-            feeRateSatPerVByte: 2)
+            feeRateSatPerVByte: 2, chainTip: testChainTip, randomness: { 0.5 })
         let originalChange = try #require(original.built.changeAmount)
         let changeScript = try await wallet.scriptPubKey(chain: .change, index: 0)
         #expect(originalChange >= CoinSelection.dustThreshold(scriptPubKey: changeScript))
@@ -467,7 +467,7 @@ struct WalletTests {
         try await matureCoinbase(wallet, height: 100)
         let destination = Data([0x51, 0x20] + repeatElement(0x77, count: 32))
         let original = try await wallet.buildSend(
-            payments: [Payment(amount: 100_000, scriptPubKey: destination)], feeRateSatPerVByte: 2)
+            payments: [Payment(amount: 100_000, scriptPubKey: destination)], feeRateSatPerVByte: 2, chainTip: testChainTip, randomness: { 0.5 })
         try await wallet.commit(original)
         let replacement = try await wallet.buildFeeBump(
             txid: original.built.transaction.txid, feeRateSatPerVByte: 5)
@@ -500,7 +500,7 @@ struct WalletTests {
         try await matureCoinbase(wallet, height: 100)
         let destination = Data([0x51, 0x20] + repeatElement(0x66, count: 32))
         let original = try await wallet.buildSend(
-            payments: [Payment(amount: 100_000, scriptPubKey: destination)], feeRateSatPerVByte: 2)
+            payments: [Payment(amount: 100_000, scriptPubKey: destination)], feeRateSatPerVByte: 2, chainTip: testChainTip, randomness: { 0.5 })
         try await wallet.commit(original)
         let first = try await wallet.buildFeeBump(
             txid: original.built.transaction.txid, feeRateSatPerVByte: 5)
@@ -537,7 +537,7 @@ struct WalletTests {
         let destination = Data([0x51, 0x20] + repeatElement(0x44, count: 32))
         let original = try await wallet.buildSend(
             payments: [Payment(amount: 100_000, scriptPubKey: destination)],
-            feeRateSatPerVByte: 2)
+            feeRateSatPerVByte: 2, chainTip: testChainTip, randomness: { 0.5 })
         try await wallet.commit(original)
         let replacement = try await wallet.buildFeeBump(
             txid: original.built.transaction.txid, feeRateSatPerVByte: 5)
@@ -575,7 +575,7 @@ struct WalletTests {
         let destination = Data([0x51, 0x20] + repeatElement(0x33, count: 32))
         let original = try await wallet.buildSend(
             payments: [Payment(amount: 120_000, scriptPubKey: destination)],
-            feeRateSatPerVByte: 2)
+            feeRateSatPerVByte: 2, chainTip: testChainTip, randomness: { 0.5 })
         #expect(original.built.transaction.inputs.count == 2)
         try await wallet.commit(original)
 
