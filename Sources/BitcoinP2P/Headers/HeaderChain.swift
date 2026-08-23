@@ -67,6 +67,11 @@ public actor HeaderChain {
     private var chainwork: [UInt256]
     /// Absolute heights, not indices.
     private var heightByHash: [Data: UInt32]
+    /// How many headers the file on disk currently claims. Tracked so an
+    /// append knows where the record area ends without re-reading the file,
+    /// and so any divergence falls back to a full rewrite rather than writing
+    /// at a guessed offset (#83).
+    private var persistedCount: Int = 0
     /// Height of `headers[0]`. Zero when syncing from genesis; a checkpoint
     /// height when starting from one (#89). Every index/height conversion in
     /// this type goes through it.
@@ -130,6 +135,7 @@ public actor HeaderChain {
             chainwork = loaded.chainwork
             heightByHash = loaded.heightByHash
             baseHeight = loaded.baseHeight
+            persistedCount = loaded.headers.count
         } else if let checkpoint {
             let header = try BlockHeader.decode(checkpoint.header)
             // PoW-check it like any other header. A checkpoint is a starting
@@ -276,7 +282,9 @@ public actor HeaderChain {
             for (offset, header) in appended.enumerated() {
                 heightByHash[header.hash] = firstNewHeight + UInt32(offset)
             }
-            try persist()
+            // Appending is the whole point of the fast path, so the write is
+            // incremental too. A reorg cannot reach here.
+            try persistAppended(from: headers.count - appended.count)
             return newHeaders.count
         }
 
@@ -341,6 +349,12 @@ public actor HeaderChain {
     private static let formatMarker: UInt32 = 0xFFFF_FFFF
     private static let formatVersion: UInt32 = 1
 
+    /// Bytes before the first header: a bare count for the genesis layout,
+    /// marker + version + baseHeight + baseWork + count for the other.
+    private var prefixSize: Int { baseHeight == 0 ? 4 : 4 + 4 + 4 + 32 + 4 }
+    /// Offset of the mutable header count within the prefix.
+    private var countOffset: Int { baseHeight == 0 ? 0 : 4 + 4 + 4 + 32 }
+
     private func persist() throws {
         guard let storageURL else { return }
         var data = Data()
@@ -363,6 +377,60 @@ public actor HeaderChain {
             throw HeaderChainError.storageUnavailable(
                 "could not save the header file: \(error.localizedDescription)")
         }
+        persistedCount = headers.count
+    }
+
+    /// Writes only the headers appended since the last save.
+    ///
+    /// Rewriting the whole file on every batch is what made mainnet header
+    /// sync get slower as it ran: 963,000 headers is 77 MB, re-serialised and
+    /// re-written 460 times over a first sync (#83). The layout is a
+    /// fixed-size prefix followed by fixed 80-byte records in height order, so
+    /// the new headers go straight onto the end and the only field that
+    /// changes is the count.
+    ///
+    /// **Payload first, then the count.** That order is the whole crash-safety
+    /// argument. A crash between the two leaves a file whose count is stale
+    /// and whose tail is bytes nothing refers to — recoverable, and the tail is
+    /// ignored on load. The reverse order would leave a count claiming headers
+    /// that are not there, which is indistinguishable from real truncation.
+    /// Each write is followed by `synchronize()` so the order survives the
+    /// filesystem, not just the process.
+    ///
+    /// Falls back to a full rewrite whenever the file is not in the state this
+    /// assumes — a different persisted count, or no file at all.
+    private func persistAppended(from oldCount: Int) throws {
+        guard let storageURL else { return }
+        guard oldCount == persistedCount, oldCount > 0,
+              FileManager.default.fileExists(atPath: storageURL.path)
+        else {
+            try persist()
+            return
+        }
+        var payload = Data()
+        payload.reserveCapacity((headers.count - oldCount) * BlockHeader.serializedSize)
+        for header in headers[oldCount...] { payload.append(header.serialized) }
+
+        do {
+            let handle = try FileHandle(forWritingTo: storageURL)
+            defer { try? handle.close() }
+            try handle.seek(toOffset: UInt64(prefixSize + oldCount * BlockHeader.serializedSize))
+            try handle.write(contentsOf: payload)
+            // Drop anything a previously interrupted append left beyond the
+            // new end, so the file is exactly the length its count implies.
+            try handle.truncate(atOffset: UInt64(prefixSize + headers.count * BlockHeader.serializedSize))
+            try handle.synchronize()
+
+            var count = Data()
+            count.appendUInt32(UInt32(headers.count))
+            try handle.seek(toOffset: UInt64(countOffset))
+            try handle.write(contentsOf: count)
+            try handle.synchronize()
+        } catch {
+            throw HeaderChainError.storageUnavailable(
+                "could not append to the header file: \(error.localizedDescription)")
+        }
+        persistedCount = headers.count
     }
 
     /// The most recent reorg this chain applied.
@@ -431,7 +499,24 @@ public actor HeaderChain {
             count = stored
             prefix = 4 + 4 + 4 + 32 + 4
         }
-        guard data.count == prefix + Int(count) * BlockHeader.serializedSize else {
+        // A file SHORTER than its count claims is truncation — bytes the count
+        // says are there and are not — and stays a refusal.
+        //
+        // A file LONGER is the interrupted-append case, and is read up to the
+        // count with the tail ignored. Headers are appended before the count
+        // that admits them (#83), so a crash between the two writes leaves
+        // exactly this shape, and refusing it would turn every crash during
+        // header sync into a corrupt-file error requiring a full resync.
+        //
+        // This does relax a check that previously refused any trailing bytes.
+        // What it costs is small: the count gates how many records are read,
+        // so bytes past it are never decoded, and an attacker who can write
+        // the file can write a consistent count just as easily — padding was
+        // never the barrier. The barrier is that every header up to the count
+        // is independently proof-of-work and linkage checked below, and that
+        // is unchanged.
+        let expectedLength = prefix + Int(count) * BlockHeader.serializedSize
+        guard data.count >= expectedLength else {
             throw HeaderChainError.storageCorrupt("bad length")
         }
         let genesis = HeaderChain.genesisHeader(for: params)

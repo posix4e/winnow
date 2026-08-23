@@ -42,6 +42,13 @@ struct HeaderStorageCorruptionTests {
         return url
     }
 
+    /// Loads a byte image that is expected to succeed, and returns the chain.
+    static func load(_ bytes: Data, params: NetworkParams) throws -> HeaderChain {
+        let url = try write(bytes)
+        defer { try? FileManager.default.removeItem(at: url) }
+        return try HeaderChain(params: params, storageURL: url)
+    }
+
     /// Loads a byte image and returns the error, or nil if it loaded.
     static func loadError(_ bytes: Data, params: NetworkParams) throws -> HeaderChainError? {
         let url = try write(bytes)
@@ -76,15 +83,56 @@ struct HeaderStorageCorruptionTests {
         }
     }
 
-    /// Extra bytes appended: also a length mismatch, so a file cannot be
-    /// padded with a header the writer never committed to.
-    @Test("a file with trailing bytes is refused")
-    func trailingBytesRefused() async throws {
+    /// Trailing bytes were refused until headers began being appended (#83).
+    /// They are now the signature of a crash between writing the headers and
+    /// writing the count that admits them, which is a recoverable state rather
+    /// than damage — refusing it would turn any crash during header sync into
+    /// a corrupt-file error and a full resync.
+    ///
+    /// The tail is ignored, not trusted: the count decides how many records
+    /// are read, so nothing past it is ever decoded. Padding was never the
+    /// barrier anyway — anyone able to append bytes can adjust the count to
+    /// match. The barrier is the per-header proof-of-work and linkage checks,
+    /// which the tests below still pin.
+    @Test("a file with trailing bytes loads, ignoring the tail")
+    func trailingBytesIgnored() async throws {
         let (url, params, bytes) = try await Self.persistedChain()
         defer { try? FileManager.default.removeItem(at: url) }
-        let error = try Self.loadError(bytes + Data(repeating: 0, count: 80), params: params)
+
+        let intact = try Self.load(bytes, params: params)
+        let padded = try Self.load(bytes + Data(repeating: 0, count: 80), params: params)
+        #expect(await padded.height == intact.height)
+        #expect(await padded.tipHash == intact.tipHash)
+    }
+
+    /// A partial record is the same case mid-write: fewer than 80 bytes of the
+    /// next header made it to disk before the crash.
+    @Test("a partially written trailing header is ignored")
+    func partialTrailingHeaderIgnored() async throws {
+        let (url, params, bytes) = try await Self.persistedChain()
+        defer { try? FileManager.default.removeItem(at: url) }
+
+        let intact = try Self.load(bytes, params: params)
+        let torn = try Self.load(bytes + Data(repeating: 0xAB, count: 37), params: params)
+        #expect(await torn.height == intact.height)
+        #expect(await torn.tipHash == intact.tipHash)
+    }
+
+    /// The other direction stays a refusal, and this is the asymmetry that
+    /// makes the relaxation above safe: a count claiming headers that are not
+    /// on disk is real damage, and the writer never produces it because the
+    /// headers are written first.
+    @Test("a count claiming more headers than the file holds is refused")
+    func countBeyondFileRefused() async throws {
+        let (url, params, bytes) = try await Self.persistedChain()
+        defer { try? FileManager.default.removeItem(at: url) }
+
+        // Genesis layout: the count is the first four bytes.
+        var inflated = bytes
+        inflated.replaceSubrange(0 ..< 4, with: withUnsafeBytes(of: UInt32(9_999).littleEndian) { Data($0) })
+        let error = try Self.loadError(inflated, params: params)
         guard case let .storageCorrupt(reason)? = error, reason.contains("bad length") else {
-            Issue.record("padding gave \(String(describing: error)) rather than a length refusal")
+            Issue.record("an inflated count gave \(String(describing: error)) rather than a length refusal")
             return
         }
     }
