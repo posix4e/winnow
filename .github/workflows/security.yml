@@ -8,6 +8,13 @@ on:
     # Scheduled workflows run from the default branch only.
     - cron: "17 4 * * 1"
   workflow_dispatch:
+    inputs:
+      replay_seed:
+        description: >-
+          Replay a specific sustained-fuzz seed, from the failing run's
+          seed.txt artifact. Leave empty to derive a fresh seed from the run id.
+        required: false
+        type: string
 
 permissions:
   contents: read
@@ -66,6 +73,11 @@ jobs:
         with:
           persist-credentials: false
 
+      # Deliberately a FIXED seed, unlike the sustained lane. This is the
+      # regression evidence: every pull request fuzzes the identical 9,000
+      # cases, so a newly-introduced parser bug shows up as this job turning
+      # red rather than as a corpus that happened to wander somewhere new.
+      # Rotation belongs in the scheduled lane; do not "fix" this one too.
       - name: Bounded deterministic fuzz smoke
         run: |
           mkdir -p "$RUNNER_TEMP/winnow-fuzz-smoke"
@@ -93,11 +105,14 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
+        # `offset` separates the two legs. Both derive their seed from the same
+        # run id, so without it address and thread would fuzz an identical
+        # sequence and the second sanitizer would add nothing (SEC-017, #130).
         include:
           - sanitizer: address
-            seed: "0x57494e4e4f574153"
+            offset: 1
           - sanitizer: thread
-            seed: "0x57494e4e4f575453"
+            offset: 2
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
         with:
@@ -106,12 +121,27 @@ jobs:
       - name: Sustained deterministic fuzz under ${{ matrix.sanitizer }} sanitizer
         env:
           FUZZ_DIR: ${{ runner.temp }}/winnow-fuzz-${{ matrix.sanitizer }}
+          # A constant seed made every weekly run repeat the same 25,000 cases,
+          # so the schedule bought no new coverage after its first execution.
+          # The run id rotates the corpus while keeping any failure exactly
+          # reproducible from a number recorded in the artifact. `replay_seed`
+          # overrides it for a manual dispatch, which is how a failure found
+          # here is re-run locally.
+          #
+          # A re-run of a failed run reuses its run id by design: the point of
+          # a re-run is to reproduce, not to fuzz something new.
+          RESOLVED_SEED: ${{ inputs.replay_seed || format('{0}{1}', github.run_id, matrix.offset) }}
         run: |
           mkdir -p "$FUZZ_DIR"
+          # Written before the run, not after: a 60-minute timeout or a hard
+          # kill leaves no stdout, and `if: always()` would then upload an
+          # artifact that cannot say what it was fuzzing.
+          printf '%s\n' "$RESOLVED_SEED" > "$FUZZ_DIR/seed.txt"
+          echo "sustained fuzz: sanitizer=${{ matrix.sanitizer }} seed=$RESOLVED_SEED"
           set -o pipefail
           swift run --configuration release --sanitize "${{ matrix.sanitizer }}" WinnowFuzz \
             --iterations 25000 \
-            --seed "${{ matrix.seed }}" \
+            --seed "$RESOLVED_SEED" \
             --max-input 65536 \
             --artifact-dir "$FUZZ_DIR" \
             2>&1 | tee "$FUZZ_DIR/run.log"

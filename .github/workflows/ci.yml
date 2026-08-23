@@ -39,8 +39,23 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  # Runs for every event, including pull requests from forks, so it is
+  # GitHub-hosted and ephemeral. A fork pull request is untrusted code, and
+  # this repository is public: running it on the persistent self-hosted runner
+  # put attacker-controlled code on a long-lived host that reaches the owner's
+  # network (SEC-005, #128). The exposure was credential and lateral-movement
+  # risk rather than a bad build, and no secret was needed to realise it.
+  #
+  # Nothing is lost by hosting it. The package suite needs no local node —
+  # DifferentialTests and the signet suites are gated behind WINNOW_DIFF and
+  # WINNOW_SIGNET, which are set nowhere in this workflow, and the signet
+  # suites dial loopback in any case. macos-latest is also measurably faster
+  # than the self-hosted VMs for this job.
+  #
+  # This job is unconditional on purpose: a fork pull request must not be able
+  # to pass by skipping it, which is what a same-repository `if:` would do.
   package-tests:
-    runs-on: [self-hosted, macos, x86_64]
+    runs-on: macos-latest
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
@@ -50,6 +65,22 @@ jobs:
         run: swift test
         # Env-gated suites (DifferentialTests, signet integration) skip
         # cleanly without WINNOW_DIFF/WINNOW_SIGNET and no local node.
+
+  # The self-hosted runners are x86_64 and macos-latest is arm64, so hosting
+  # the job above would silently drop Intel coverage of the package suite.
+  # This keeps it, on trusted events only: a `push` to main runs code that is
+  # already in the repository. It never runs on `pull_request`, so fork code
+  # cannot reach the persistent host.
+  package-tests-intel:
+    if: github.event_name != 'pull_request'
+    runs-on: [self-hosted, macos, x86_64]
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+      - name: Swift package tests on x86_64
+        run: swift test
 
   app-build:
     # GitHub-hosted: the self-hosted VMs are CLT-only for now (no Xcode.app).
