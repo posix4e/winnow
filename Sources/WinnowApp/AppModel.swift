@@ -116,16 +116,39 @@ final class AppModel {
         /// Peer discovery ran out of candidates with zero connections.
         case peerDiscoveryFailed
 
-        /// The filter row uses actor-polled progress while a scan is active,
-        /// falling back to the last committed wallet snapshot in other phases.
-        func filterScanText(fallbackScanned: UInt32, fallbackTip: UInt32) -> String {
+        /// Where the filter scan has actually reached, or `nil` when there is
+        /// no honest number to give.
+        ///
+        /// Outside a running scan the only source is the committed wallet
+        /// snapshot, and for a wallet that has never scanned that is zeroed --
+        /// which is where "block 0 of 0" came from. #87 fixed the phase the
+        /// report came from; the same string was still reachable in every
+        /// other phase (#99), because `status` is refreshed by events rather
+        /// than by the once-a-second phase poll.
+        ///
+        /// Rendering a zero as progress is worse than rendering nothing: the
+        /// status line above already says what the wallet is doing, so the
+        /// screen is not silent when this returns nil.
+        func filterScanText(fallbackScanned: UInt32, fallbackTip: UInt32) -> String? {
             let progress: (scanned: UInt32, tip: UInt32)
             switch self {
             case let .filters(scanned, tip):
                 progress = (scanned, tip)
-            default:
+            case .synced:
+                // The scan finished, so the snapshot is the truth -- and it is
+                // the durable readout, since the status line above disappears
+                // at .synced.
                 progress = (fallbackScanned, fallbackTip)
+            case .idle, .connecting, .headers, .peerDiscoveryFailed:
+                // No scan is running, so the snapshot is either zeroed (never
+                // scanned) or a completed scan from a previous launch. Neither
+                // is this scan's position. `.idle` means there is no stack at
+                // all, so there is nothing to report by construction.
+                return nil
             }
+            // A tip of zero is the same absence one step further in: the chain
+            // height has not been read yet, so there is no denominator.
+            guard progress.tip > 0 else { return nil }
             return "block \(min(progress.scanned, progress.tip).formatted()) of \(progress.tip.formatted())"
         }
     }

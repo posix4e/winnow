@@ -57,13 +57,15 @@ struct HomeView: View {
                     }
                     // nextScanHeight is the NEXT block to scan, so a fully
                     // scanned tip reads "tip+1 of tip" — clamp the display.
-                    LabeledContent(
-                        "Filter scan",
-                        value: model.syncPhase.filterScanText(
-                            fallbackScanned: model.status.nextScanHeight,
-                            fallbackTip: model.status.tipHeight
-                        )
-                    )
+                    // Absent when no scan has produced a position yet: the
+                    // status line above is already saying what is happening,
+                    // and a zeroed row said "block 0 of 0" (#99).
+                    if let filterScan = model.syncPhase.filterScanText(
+                        fallbackScanned: model.status.nextScanHeight,
+                        fallbackTip: model.status.tipHeight
+                    ) {
+                        LabeledContent("Filter scan", value: filterScan)
+                    }
                     LabeledContent("Peers", value: "\(model.status.peerCount)")
                     if model.status.syncing, model.syncStatusText == nil {
                         ProgressView("Scanning filters…")
