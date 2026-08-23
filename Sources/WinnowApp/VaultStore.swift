@@ -193,6 +193,18 @@ actor VaultStore {
                         records[recordIndex].allUtxos[spent].spent =
                             WalletUTXO.SpentMarker(spentBy: txid, height: match.height)
                         changed = true
+                    } else if let pending = records[recordIndex].allUtxos.firstIndex(where: {
+                        $0.spent != nil && $0.spent?.height == nil
+                            && $0.txid == input.previousOutput.txid
+                            && $0.vout == input.previousOutput.vout
+                    }) {
+                        // Tombstoned when the spend was signed, now confirmed:
+                        // the only moment its height can be learned. Without
+                        // this the row is never prunable and a rollback cannot
+                        // tell an in-flight spend from a buried one.
+                        records[recordIndex].allUtxos[pending].spent =
+                            WalletUTXO.SpentMarker(spentBy: txid, height: match.height)
+                        changed = true
                     }
                 }
                 for (vout, output) in tx.outputs.enumerated() {

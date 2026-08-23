@@ -936,6 +936,33 @@ public actor Wallet {
                             && $0.txid == input.previousOutput.txid
                             && $0.vout == input.previousOutput.vout
                     }) else {
+                        // A coin we already tombstoned at commit, now being
+                        // confirmed. The marker was written with no height
+                        // because the spend was only in flight; this is the
+                        // moment that stops being true, and it is the only
+                        // place the height can be learned.
+                        //
+                        // Without it every own spend leaves a row that pruning
+                        // can never reach -- pruning only measures depth, and
+                        // a nil height has none -- and a rollback cannot tell
+                        // "still in flight" from "confirmed and buried", which
+                        // is the whole reason the height is recorded.
+                        //
+                        // `spentBy` is rewritten to the confirming transaction
+                        // rather than kept: under RBF the replacement is what
+                        // confirms, and a marker naming the superseded txid
+                        // describes a transaction that no longer exists.
+                        if let pendingIndex = state.allUtxos.firstIndex(where: {
+                            $0.spent?.height == nil && $0.spent != nil
+                                && $0.txid == input.previousOutput.txid
+                                && $0.vout == input.previousOutput.vout
+                        }) {
+                            state.allUtxos[pendingIndex].spent =
+                                WalletUTXO.SpentMarker(spentBy: txid, height: match.height)
+                        }
+                        // Accounting is unchanged: before tombstones this row
+                        // was gone by now, so it never contributed here, and
+                        // the pending-send path below supplies the amounts.
                         allInputsOurs = false
                         continue
                     }

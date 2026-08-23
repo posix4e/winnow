@@ -101,6 +101,49 @@ struct SpentCoinTombstoneTests {
         }
     }
 
+    /// The transition between the two states, which the other tests skip by
+    /// only ever looking at one end of it.
+    ///
+    /// A coin spent by our own send is tombstoned at commit with no height,
+    /// and the block that confirms that send is the only place the height can
+    /// be learned. Miss it and the row is never prunable -- pruning measures
+    /// depth and a nil height has none -- and a rollback cannot tell an
+    /// in-flight spend from a buried one.
+    @Test("a pending tombstone gains its height when the spend confirms")
+    func pendingTombstoneIsUpgradedOnConfirmation() async throws {
+        let (wallet, fundingTxid) = try await fundedWallet()
+        let prepared = try await wallet.buildSend(
+            payments: [Payment(amount: 100_000, scriptPubKey: destination)],
+            feeRateSatPerVByte: 2, chainTip: 840_000, randomness: { 0.5 })
+        try await wallet.commit(prepared)
+        #expect(await wallet.allUtxos.first { $0.txid == fundingTxid }?.spent?.height == nil)
+
+        try await wallet.apply(match: fakeMatch(height: 200,
+                                                transactions: [prepared.built.transaction]))
+
+        let row = try #require(await wallet.allUtxos.first { $0.txid == fundingTxid })
+        #expect(row.spent?.height == 200, "the confirming block is where the height comes from")
+        #expect(row.spent?.spentBy == prepared.built.transaction.txid)
+    }
+
+    /// …and once it has a height it can finally be pruned. Without the upgrade
+    /// every own spend leaves a row that pruning can never reach, so the
+    /// bounded-storage claim is false for the case that dominates.
+    @Test("an own spend becomes prunable once it confirms")
+    func ownSpendBecomesPrunable() async throws {
+        let (wallet, fundingTxid) = try await fundedWallet()
+        let prepared = try await wallet.buildSend(
+            payments: [Payment(amount: 100_000, scriptPubKey: destination)],
+            feeRateSatPerVByte: 2, chainTip: 840_000, randomness: { 0.5 })
+        try await wallet.commit(prepared)
+        try await wallet.apply(match: fakeMatch(height: 200,
+                                                transactions: [prepared.built.transaction]))
+
+        try await wallet.recordScanHeight(200 + Wallet.spentCoinHorizon + 1)
+        #expect(await wallet.allUtxos.contains { $0.txid == fundingTxid } == false,
+                "a confirmed own spend must not leave a permanent row")
+    }
+
     // MARK: - The file format
 
     /// A state file written before this change has no `spent` key anywhere.
