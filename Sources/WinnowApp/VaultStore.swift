@@ -21,11 +21,25 @@ struct VaultRecord: Codable, Equatable, Identifiable, Sendable {
     var createdAtHeight: UInt32
     var nextReceiveIndex: UInt32 = 0
     var nextChangeIndex: UInt32 = 0
-    /// Vault UTXOs discovered by filter matches. `chain` is the descriptor's
-    /// multipath choice (0 receive, 1 change), mirroring `WalletUTXO`.
-    var utxos: [WalletUTXO] = []
+    /// Every vault coin row, spent ones included. Mutations go through this;
+    /// reads should use `utxos`, which hides the tombstones.
+    var allUtxos: [WalletUTXO] = []
+
+    /// The coins this vault actually has.
+    ///
+    /// Computed rather than stored so a spent row cannot reach the balance,
+    /// the spend screen, or `createSpend` by anyone forgetting to filter --
+    /// `VaultDetailView` passes this straight into coin selection (#127).
+    var utxos: [WalletUTXO] { allUtxos.filter { !$0.isSpent } }
 
     var balance: Int64 { utxos.reduce(0) { $0 + $1.amount } }
+
+    /// The stored property is `allUtxos` while the on-disk key stays `utxos`,
+    /// so a vaults.json written before #127 loads unchanged.
+    private enum CodingKeys: String, CodingKey {
+        case id, name, descriptor, createdAtHeight, nextReceiveIndex, nextChangeIndex
+        case allUtxos = "utxos"
+    }
 }
 
 enum VaultStorageOpenResult: Equatable, Sendable {
@@ -168,10 +182,16 @@ actor VaultStore {
             for tx in match.block.transactions {
                 let txid = tx.txid
                 for input in tx.inputs {
-                    if let spent = records[recordIndex].utxos.firstIndex(where: {
-                        $0.txid == input.previousOutput.txid && $0.vout == input.previousOutput.vout
+                    // Indexed into `allUtxos`, unspent rows only: an index into
+                    // the filtered view would address the wrong row.
+                    if let spent = records[recordIndex].allUtxos.firstIndex(where: {
+                        !$0.isSpent
+                            && $0.txid == input.previousOutput.txid
+                            && $0.vout == input.previousOutput.vout
                     }) {
-                        records[recordIndex].utxos.remove(at: spent)
+                        // Marked, not removed, so a reorg can put it back.
+                        records[recordIndex].allUtxos[spent].spent =
+                            WalletUTXO.SpentMarker(spentBy: txid, height: match.height)
                         changed = true
                     }
                 }
@@ -180,13 +200,13 @@ actor VaultStore {
                     guard vout <= Int(UInt32.max) else {
                         throw VaultStorageError.invalidState("transaction output index is out of range")
                     }
-                    if let existing = records[recordIndex].utxos.firstIndex(where: {
+                    if let existing = records[recordIndex].allUtxos.firstIndex(where: {
                         $0.txid == txid && $0.vout == UInt32(vout)
                     }) {
                         // Re-applied block or pending change confirming.
-                        records[recordIndex].utxos[existing].height = match.height
+                        records[recordIndex].allUtxos[existing].height = match.height
                     } else {
-                        records[recordIndex].utxos.append(WalletUTXO(
+                        records[recordIndex].allUtxos.append(WalletUTXO(
                             txid: txid, vout: UInt32(vout), amount: output.value,
                             scriptPubKey: output.scriptPubKey,
                             chain: AddressChain(rawValue: choice) ?? .receive,
@@ -273,14 +293,22 @@ actor VaultStore {
                                       changeScriptPubKey: Data?, changeIndex: UInt32) throws -> Bool {
         let txid = transaction.txid
         for input in transaction.inputs {
-            records[index].utxos.removeAll {
-                $0.txid == input.previousOutput.txid && $0.vout == input.previousOutput.vout
+            // No height: this spend exists only in the transaction we just
+            // signed. A rollback must leave these reserved while it restores
+            // confirmed spends, or the vault re-selects coins its own
+            // in-flight transaction already spends.
+            for position in records[index].allUtxos.indices
+            where !records[index].allUtxos[position].isSpent
+                && records[index].allUtxos[position].txid == input.previousOutput.txid
+                && records[index].allUtxos[position].vout == input.previousOutput.vout {
+                records[index].allUtxos[position].spent =
+                    WalletUTXO.SpentMarker(spentBy: txid, height: nil)
             }
         }
         if let changeScriptPubKey,
            let vout = transaction.outputs.firstIndex(where: { $0.scriptPubKey == changeScriptPubKey }) {
             let output = transaction.outputs[vout]
-            records[index].utxos.append(WalletUTXO(
+            records[index].allUtxos.append(WalletUTXO(
                 txid: txid, vout: UInt32(vout), amount: output.value,
                 scriptPubKey: changeScriptPubKey, chain: .change,
                 index: changeIndex, height: 0))

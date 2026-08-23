@@ -48,10 +48,10 @@ final class VaultStoreSecurityTests: XCTestCase {
         let fixture = try makeFixture()
         var funded = fixture.record
         funded.nextReceiveIndex = 1
-        funded.utxos = [try funding(vault: fixture.vault, amount: 10_000)]
+        funded.allUtxos = [try funding(vault: fixture.vault, amount: 10_000)]
 
         var duplicateOutpoint = funded
-        duplicateOutpoint.utxos.append(funded.utxos[0])
+        duplicateOutpoint.allUtxos.append(funded.allUtxos[0])
         for records in [[fixture.record, fixture.record], [duplicateOutpoint]] {
             let url = try write(records)
             defer { try? FileManager.default.removeItem(at: url) }
@@ -77,7 +77,7 @@ final class VaultStoreSecurityTests: XCTestCase {
         for utxos in candidates {
             var record = fixture.record
             record.nextReceiveIndex = 1
-            record.utxos = utxos
+            record.allUtxos = utxos
             let url = try write([record])
             defer { try? FileManager.default.removeItem(at: url) }
             let store = VaultStore()

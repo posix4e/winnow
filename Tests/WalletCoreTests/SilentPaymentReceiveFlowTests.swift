@@ -51,7 +51,7 @@ struct SilentPaymentReceiveFlowTests {
         _ = try await Wallet.create(network: .signet, keyStore: store, storageURL: storageURL,
                                     entropy: testEntropy, creationHeight: 100)
         var state = try JSONDecoder().decode(WalletState.self, from: Data(contentsOf: storageURL))
-        state.utxos.append(WalletUTXO(txid: Data(repeating: 0xD2, count: 32), vout: 0,
+        state.allUtxos.append(WalletUTXO(txid: Data(repeating: 0xD2, count: 32), vout: 0,
                                       amount: amount, scriptPubKey: script,
                                       chain: .receive, index: 0, height: 101,
                                       silentPaymentTweak: tweak))
@@ -140,7 +140,7 @@ struct SilentPaymentReceiveFlowTests {
         // re-open (the pipeline chunk will route this through the wallet; the
         // schema and signing path are what's under test).
         var state = try JSONDecoder().decode(WalletState.self, from: Data(contentsOf: storageURL))
-        state.utxos.append(WalletUTXO(txid: tx.txid, vout: UInt32(vout),
+        state.allUtxos.append(WalletUTXO(txid: tx.txid, vout: UInt32(vout),
                                       amount: tx.outputs[vout].value,
                                       scriptPubKey: tx.outputs[vout].scriptPubKey,
                                       chain: .receive, index: 0, height: 101,
@@ -223,7 +223,7 @@ struct SilentPaymentReceiveFlowTests {
                                     storageURL: storageURL, entropy: testEntropy,
                                     creationHeight: 100)
         var state = try JSONDecoder().decode(WalletState.self, from: Data(contentsOf: storageURL))
-        state.utxos.append(WalletUTXO(txid: txid, vout: 0, amount: 150_000, scriptPubKey: script,
+        state.allUtxos.append(WalletUTXO(txid: txid, vout: 0, amount: 150_000, scriptPubKey: script,
                                       chain: .receive, index: 0, height: 101,
                                       silentPaymentTweak: tweak))
         try JSONEncoder().encode(state).write(to: storageURL, options: .atomic)

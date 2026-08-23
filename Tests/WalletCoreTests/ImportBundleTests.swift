@@ -280,7 +280,7 @@ struct ImportBundleTests {
             spendPrivateKey: try #require(spend.privateKey), tweak: tweak)
         var state = try JSONDecoder().decode(WalletState.self,
                                              from: Data(contentsOf: storageURL))
-        state.utxos.append(WalletUTXO(
+        state.allUtxos.append(WalletUTXO(
             txid: Data(repeating: 0xC1, count: 32), vout: 0, amount: 150_000,
             scriptPubKey: script, chain: .receive, index: 0, height: 101,
             silentPaymentTweak: tweak))

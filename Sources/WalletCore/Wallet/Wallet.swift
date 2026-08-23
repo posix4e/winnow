@@ -110,10 +110,44 @@ public struct WalletUTXO: Equatable, Sendable, Codable {
     /// spending it until `Wallet.coinbaseMaturity` confirmations; the flag is
     /// absent from older state files and treated as false.
     public var isCoinbase: Bool
+    /// Set when this coin has been spent. The row is kept rather than deleted
+    /// so a reorg can put it back (#127).
+    ///
+    /// Rescanning forward from the fork cannot recreate a coin whose *creating*
+    /// transaction is below the fork, and `HistoryEntry` cannot help: it stores
+    /// aggregates -- txid, height, received, spent, fee -- with no outpoints,
+    /// scripts, or derivation indices. From "this transaction spent 50,000 sats
+    /// of ours" there is no way back to *which coins*. So the one fact that was
+    /// being thrown away is retained, and everything else is still re-derived.
+    public var spent: SpentMarker?
+
+    /// What spent a coin, and when.
+    public struct SpentMarker: Equatable, Sendable, Codable {
+        /// The transaction that spent it.
+        public var spentBy: Data
+        /// The height that confirmed the spend, or nil while the spend exists
+        /// only in our own pending send.
+        ///
+        /// The distinction is what stops a rollback from double-spending the
+        /// wallet against itself: a coin whose spender is still in flight must
+        /// stay reserved even when the rollback puts confirmed coins back,
+        /// because the broadcaster will keep re-relaying that transaction.
+        public var height: UInt32?
+
+        public init(spentBy: Data, height: UInt32?) {
+            self.spentBy = spentBy
+            self.height = height
+        }
+    }
+
+    /// True once the coin has been spent, confirmed or pending.
+    public var isSpent: Bool { spent != nil }
 
     public init(txid: Data, vout: UInt32, amount: Int64, scriptPubKey: Data,
                 chain: AddressChain, index: UInt32, height: UInt32,
-                silentPaymentTweak: Data? = nil, isCoinbase: Bool = false) {
+                silentPaymentTweak: Data? = nil, isCoinbase: Bool = false,
+                spent: SpentMarker? = nil) {
+        self.spent = spent
         self.txid = txid
         self.vout = vout
         self.amount = amount
@@ -136,6 +170,7 @@ public struct WalletUTXO: Equatable, Sendable, Codable {
     // JSON: txid display hex, scriptPubKey hex (human-inspectable state file).
     private enum CodingKeys: String, CodingKey {
         case txid, vout, amount, scriptPubKey, chain, index, height, silentPaymentTweak, isCoinbase
+        case spent
     }
 
     public init(from decoder: any Decoder) throws {
@@ -164,7 +199,11 @@ public struct WalletUTXO: Equatable, Sendable, Codable {
                   index: try container.decode(UInt32.self, forKey: .index),
                   height: try container.decode(UInt32.self, forKey: .height),
                   silentPaymentTweak: tweak,
-                  isCoinbase: try container.decodeIfPresent(Bool.self, forKey: .isCoinbase) ?? false)
+                  isCoinbase: try container.decodeIfPresent(Bool.self, forKey: .isCoinbase) ?? false,
+                  // Absent in every state file written before #127, which is
+                  // exactly right: those wallets deleted spent rows, so any row
+                  // still present is unspent.
+                  spent: try container.decodeIfPresent(SpentMarker.self, forKey: .spent))
     }
 
     public func encode(to encoder: any Encoder) throws {
@@ -178,6 +217,8 @@ public struct WalletUTXO: Equatable, Sendable, Codable {
         try container.encode(height, forKey: .height)
         // Absent for descriptor outputs, so pre-SP state files stay identical.
         try container.encodeIfPresent(silentPaymentTweak?.hex, forKey: .silentPaymentTweak)
+        // Absent for live coins, so an unspent row is byte-identical to before.
+        try container.encodeIfPresent(spent, forKey: .spent)
         if isCoinbase { try container.encode(true, forKey: .isCoinbase) }
     }
 }
@@ -334,7 +375,15 @@ public struct WalletState: Codable, Equatable, Sendable {
     /// Height of the next block whose filter must be scanned (mirrors the
     /// FilterSync progress after the last scan).
     public var nextScanHeight: UInt32
-    public var utxos: [WalletUTXO]
+    /// Every coin row, spent ones included. Mutations go through this; reads
+    /// should almost always use `utxos`, which hides the tombstones.
+    public var allUtxos: [WalletUTXO]
+    /// The coins the wallet actually has.
+    ///
+    /// Computed rather than stored so that a spent row cannot reach balance,
+    /// coin selection, or the UI by anyone forgetting to filter -- the filter
+    /// is the accessor, not N call sites.
+    public var utxos: [WalletUTXO] { allUtxos.filter { !$0.isSpent } }
     public var history: [HistoryEntry]
     /// Feerate samples (sat/vB) from our own confirmed transactions, newest last.
     public var observedFeeRates: [Double]
@@ -351,7 +400,7 @@ public struct WalletState: Codable, Equatable, Sendable {
         self.nextReceiveIndex = nextReceiveIndex
         self.nextChangeIndex = nextChangeIndex
         self.nextScanHeight = nextScanHeight
-        self.utxos = utxos
+        allUtxos = utxos
         self.history = history
         self.observedFeeRates = observedFeeRates
         pendingSends = []
@@ -370,7 +419,7 @@ public struct WalletState: Codable, Equatable, Sendable {
         nextReceiveIndex = try container.decode(UInt32.self, forKey: .nextReceiveIndex)
         nextChangeIndex = try container.decode(UInt32.self, forKey: .nextChangeIndex)
         nextScanHeight = try container.decode(UInt32.self, forKey: .nextScanHeight)
-        utxos = try container.decode([WalletUTXO].self, forKey: .utxos)
+        allUtxos = try container.decode([WalletUTXO].self, forKey: .utxos)
         history = try container.decode([HistoryEntry].self, forKey: .history)
         observedFeeRates = try container.decodeIfPresent([Double].self, forKey: .observedFeeRates) ?? []
         pendingSends = try container.decodeIfPresent([PendingSend].self, forKey: .pendingSends) ?? []
@@ -417,6 +466,24 @@ public struct WalletState: Codable, Equatable, Sendable {
                 forKey: .history, in: container,
                 debugDescription: "wallet history or fee samples contain invalid values")
         }
+    }
+
+    /// Written by hand because the stored property is `allUtxos` while the
+    /// on-disk key stays `utxos`: the file format does not change, so a state
+    /// file written before #127 loads unchanged and one written after is
+    /// byte-identical until a coin is actually spent.
+    public func encode(to encoder: any Encoder) throws {
+        var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encode(descriptor, forKey: .descriptor)
+        try container.encode(network, forKey: .network)
+        try container.encode(creationHeight, forKey: .creationHeight)
+        try container.encode(nextReceiveIndex, forKey: .nextReceiveIndex)
+        try container.encode(nextChangeIndex, forKey: .nextChangeIndex)
+        try container.encode(nextScanHeight, forKey: .nextScanHeight)
+        try container.encode(allUtxos, forKey: .utxos)
+        try container.encode(history, forKey: .history)
+        try container.encode(observedFeeRates, forKey: .observedFeeRates)
+        try container.encode(pendingSends, forKey: .pendingSends)
     }
 }
 
@@ -620,6 +687,12 @@ public actor Wallet {
     /// aggregate against `BitcoinAmount.maximum` before mutation.
     public var balance: Int64 { state.utxos.reduce(0) { $0 + $1.amount } }
     public var utxos: [WalletUTXO] { state.utxos }
+    /// Every coin row, spent ones included.
+    ///
+    /// For rollback and diagnostics only. Never for balance, coin selection,
+    /// or anything the user reads as money -- use `utxos` for those, which is
+    /// filtered by construction.
+    public var allUtxos: [WalletUTXO] { state.allUtxos }
     /// UTXOs consensus allows spending at the last scanned height.
     public var spendableUtxos: [WalletUTXO] { state.utxos.filter(isMature) }
 
@@ -676,7 +749,10 @@ public actor Wallet {
     /// claimed scripts in the filter stream.
     public func watchScripts() throws -> [Data] {
         var scripts = Set(try watchMap().keys)
-        for utxo in state.utxos {
+        // Spent rows included. Their scripts must stay in the filter stream so
+        // a rescan after a reorg can re-find the coin (#127), and watching a
+        // script we already know about discloses nothing new.
+        for utxo in state.allUtxos {
             scripts.insert(utxo.scriptPubKey)
         }
         return Array(scripts)
@@ -724,7 +800,36 @@ public actor Wallet {
     /// emit the creation/import height while the UI shows the filter actor.
     public func recordScanHeight(_ nextScanHeight: UInt32) throws {
         state.nextScanHeight = nextScanHeight
+        pruneSpentCoins(scannedTo: nextScanHeight)
         try persist()
+    }
+
+    /// How far back spent rows are kept.
+    ///
+    /// A tombstone exists so a reorg can restore the coin, so it only needs to
+    /// outlive the deepest reorg worth surviving. Bitcoin reorgs beyond a
+    /// handful of blocks are extraordinary; 100 is the same depth consensus
+    /// already uses for coinbase maturity, which makes it a familiar number
+    /// rather than a new one to justify.
+    ///
+    /// Past this depth the information is gone and a reorg that deep needs a
+    /// full re-derive from `creationHeight` instead. That is correct but slow,
+    /// and a reorg that deep is a different kind of event anyway (#127).
+    public static let spentCoinHorizon: UInt32 = 100
+
+    /// Drops spent rows buried deeper than the horizon, so the state file does
+    /// not grow without bound in a wallet that spends often.
+    ///
+    /// Only *confirmed* spends are pruned. A spend with no height is still in
+    /// flight, has no depth to measure, and must stay until a block decides
+    /// what happened to it.
+    private func pruneSpentCoins(scannedTo nextScanHeight: UInt32) {
+        guard nextScanHeight > Self.spentCoinHorizon else { return }
+        let cutoff = nextScanHeight - Self.spentCoinHorizon
+        state.allUtxos.removeAll { utxo in
+            guard let spentHeight = utxo.spent?.height else { return false }
+            return spentHeight < cutoff
+        }
     }
 
     /// Per-height silent-payment candidate scripts for a filter batch: the
@@ -823,13 +928,22 @@ public actor Wallet {
 
             if !isCoinbase {
                 for input in tx.inputs {
-                    guard let index = state.utxos.firstIndex(where: {
-                        $0.txid == input.previousOutput.txid && $0.vout == input.previousOutput.vout
+                    // Indexed into `allUtxos`, and only unspent rows count: a
+                    // tombstone is not a coin, and an index into the filtered
+                    // view would address the wrong row here.
+                    guard let index = state.allUtxos.firstIndex(where: {
+                        !$0.isSpent
+                            && $0.txid == input.previousOutput.txid
+                            && $0.vout == input.previousOutput.vout
                     }) else {
                         allInputsOurs = false
                         continue
                     }
-                    let utxo = state.utxos.remove(at: index)
+                    // Marked, not removed: rescanning forward from a fork
+                    // cannot recreate a coin created below it (#127).
+                    state.allUtxos[index].spent = WalletUTXO.SpentMarker(spentBy: txid,
+                                                                         height: match.height)
+                    let utxo = state.allUtxos[index]
                     spentAmount += utxo.amount
                     effect.spent.append(MatchEffect.Spend(txid: utxo.txid, vout: utxo.vout,
                                                           spentBy: txid, height: match.height))
@@ -849,17 +963,19 @@ public actor Wallet {
                 guard output.value > 0,
                       let (chain, index) = map[output.scriptPubKey]
                 else { continue }
-                if let existing = state.utxos.firstIndex(where: { $0.txid == txid && $0.vout == UInt32(vout) }) {
+                if let existing = state.allUtxos.firstIndex(where: {
+                    $0.txid == txid && $0.vout == UInt32(vout)
+                }) {
                     // Already known: either a re-applied block, or our own
                     // pending change output being confirmed — update its height.
-                    state.utxos[existing].height = match.height
+                    state.allUtxos[existing].height = match.height
                     continue
                 }
                 let utxo = WalletUTXO(txid: txid, vout: UInt32(vout), amount: output.value,
                                       scriptPubKey: output.scriptPubKey, chain: chain,
                                       index: index, height: match.height,
                                       isCoinbase: isCoinbase)
-                state.utxos.append(utxo)
+                state.allUtxos.append(utxo)
                 receivedAmount += output.value
                 effect.received.append(utxo)
                 switch chain {
@@ -876,14 +992,17 @@ public actor Wallet {
             // above, and folded into `receivedAmount` so a tx paying us both
             // ways still yields one merged history entry.
             for found in silentPaymentsByTxid[txid] ?? [] {
+                // Checked against every row, spent ones included: a coin that
+                // has been spent must not be re-added as live by a re-applied
+                // block.
                 guard found.amount > 0,
-                      !state.utxos.contains(where: { $0.txid == found.txid && $0.vout == found.vout })
+                      !state.allUtxos.contains(where: { $0.txid == found.txid && $0.vout == found.vout })
                 else { continue }
                 let utxo = WalletUTXO(txid: found.txid, vout: found.vout, amount: found.amount,
                                       scriptPubKey: found.scriptPubKey, chain: .receive,
                                       index: 0, height: match.height,
                                       silentPaymentTweak: found.tweak)
-                state.utxos.append(utxo)
+                state.allUtxos.append(utxo)
                 receivedAmount += found.amount
                 effect.received.append(utxo)
             }
@@ -945,7 +1064,10 @@ public actor Wallet {
             next = state.history.first(where: { $0.txid == txid })?.replacedBy
         }
         state.history[root].replacedBy = nil
-        state.utxos.removeAll { utxo in descendants.contains(utxo.txid) }
+        // A genuine removal, not a tombstone: these are outputs of transactions
+        // that were replaced and never existed on the surviving chain, so a
+        // rescan would not re-find them and there is nothing to restore.
+        state.allUtxos.removeAll { utxo in descendants.contains(utxo.txid) }
         state.pendingSends.removeAll { pending in
             pending.txid.map(descendants.contains) ?? false
         }
@@ -973,7 +1095,9 @@ public actor Wallet {
 
         let pending = state.pendingSends.remove(at: index)
         guard let pendingTxid = pending.txid else { return pending }
-        state.utxos.removeAll { $0.txid == pendingTxid }
+        // Outputs of the superseded pending send -- removed, not tombstoned,
+        // for the same reason as the descendants above.
+        state.allUtxos.removeAll { $0.txid == pendingTxid }
         if let historyIndex = state.history.firstIndex(where: { $0.txid == pendingTxid }) {
             state.history[historyIndex].replacedBy = transaction.txid
         }
@@ -1088,14 +1212,21 @@ public actor Wallet {
     /// on-chain-unspent limbo that forward-only scanning cannot repair.
     public func commit(_ prepared: PreparedSend) throws {
         let signed = prepared.built.transaction
-        state.utxos.removeAll { utxo in prepared.selected.contains { $0.outpoint == utxo.outpoint } }
+        // Tombstoned with no height: the spend exists only in our own pending
+        // transaction. A rollback must leave these reserved even while it
+        // restores confirmed spends, or the wallet re-selects coins its own
+        // in-flight transaction is already spending and double-spends itself.
+        for index in state.allUtxos.indices
+        where prepared.selected.contains(where: { $0.outpoint == state.allUtxos[index].outpoint }) {
+            state.allUtxos[index].spent = WalletUTXO.SpentMarker(spentBy: signed.txid, height: nil)
+        }
         if let change = prepared.change {
             guard let vout = prepared.changeOutputIndex,
                   signed.outputs.indices.contains(Int(vout)),
                   signed.outputs[Int(vout)].scriptPubKey == change.scriptPubKey,
                   signed.outputs[Int(vout)].value == change.amount
             else { throw WalletError.changeOutputMissing }
-            state.utxos.append(WalletUTXO(txid: signed.txid, vout: vout, amount: change.amount,
+            state.allUtxos.append(WalletUTXO(txid: signed.txid, vout: vout, amount: change.amount,
                                           scriptPubKey: change.scriptPubKey, chain: .change,
                                           index: prepared.changeIndex, height: 0))
             state.nextChangeIndex += 1
@@ -1209,7 +1340,9 @@ public actor Wallet {
 
         let signed = prepared.built.transaction
         var updated = state
-        updated.utxos.removeAll {
+        // The replaced transaction's own change output: superseded, never on
+        // chain, nothing to restore.
+        updated.allUtxos.removeAll {
             $0.txid == prepared.originalTxid && $0.vout == prepared.originalChangeOutputIndex
         }
         if let change = prepared.change {
@@ -1218,7 +1351,7 @@ public actor Wallet {
                   signed.outputs[Int(vout)].scriptPubKey == change.scriptPubKey,
                   signed.outputs[Int(vout)].value == change.amount
             else { throw WalletError.changeOutputMissing }
-            updated.utxos.append(WalletUTXO(txid: signed.txid, vout: vout, amount: change.amount,
+            updated.allUtxos.append(WalletUTXO(txid: signed.txid, vout: vout, amount: change.amount,
                                           scriptPubKey: change.scriptPubKey, chain: .change,
                                           index: prepared.changeIndex, height: 0))
         }
