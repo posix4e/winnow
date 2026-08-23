@@ -23,11 +23,15 @@ struct PeerCooldownTests {
             .appendingPathComponent("winnow-cooldown-peers-\(UUID().uuidString).json")
     }
 
+    /// Reads the peers file in whichever format it holds. The seeding below
+    /// deliberately writes the pre-#3 bare array, so these also exercise the
+    /// migration: an old file must still load, and its entries are classed
+    /// `persisted` because that is what they are.
     static func storedPeers(_ url: URL) throws -> Set<PeerEndpoint> {
         guard let data = try? Data(contentsOf: url),
-              let stored = try? JSONDecoder().decode([PeerEndpoint].self, from: data)
+              let stored = PersistedPeers.decode(data)
         else { return [] }
-        return Set(stored)
+        return Set(stored.map(\.endpoint))
     }
 
     // MARK: - The escalation schedule, without a clock

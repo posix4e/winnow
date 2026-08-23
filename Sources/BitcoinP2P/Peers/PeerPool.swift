@@ -53,6 +53,12 @@ public actor PeerPool {
 
     private var peers: [PeerConnection] = []
     private var knownGood: Set<PeerEndpoint> = []
+    /// Where each known-good peer was originally found. A successful dial
+    /// promotes an endpoint into `knownGood` whatever its origin, so without
+    /// this the pool forgets it ever had diverse sources (#3).
+    private var knownSource: [PeerEndpoint: PeerSource] = [:]
+    /// The source class of every currently connected peer, parallel to `peers`.
+    private var seatedSources: [PeerEndpoint: PeerSource] = [:]
     private var monitorTask: Task<Void, Never>?
     private var started = false
     private var replenishing = false
@@ -116,8 +122,10 @@ public actor PeerPool {
         self.now = now
         if let peersFileURL,
            let data = try? Data(contentsOf: peersFileURL),
-           let stored = try? JSONDecoder().decode([PeerEndpoint].self, from: data) {
-            knownGood = Set(stored)
+           let stored = PersistedPeers.decode(data) {
+            knownGood = Set(stored.map(\.endpoint))
+            knownSource = Dictionary(stored.map { ($0.endpoint, $0.source) },
+                                     uniquingKeysWith: { first, _ in first })
         }
     }
 
@@ -385,13 +393,18 @@ public actor PeerPool {
                 if next >= queue.count && !resolvedSeeds {
                     resolvedSeeds = true
                     var seen = excluded
-                    seen.formUnion(queue)
+                    seen.formUnion(queue.map(\.endpoint))
                     queue.append(contentsOf: await seedCandidates(excluding: seen))
                 }
                 while next < queue.count, running < maxParallelDials,
                       attemptsThisRound < maxDialAttempts {
-                    let endpoint = queue[next]
+                    let candidate = queue[next]
                     next += 1
+                    // Skipped before the dial, not after: a candidate the
+                    // policy would refuse costs a connection attempt and a
+                    // slot in the race for nothing.
+                    guard policy.admits(candidate, given: seatedCandidates()) else { continue }
+                    let endpoint = candidate.endpoint
                     running += 1
                     attemptsThisRound += 1
                     group.addTask { [params, relayPreference, dialTimeout] in
@@ -408,40 +421,78 @@ public actor PeerPool {
                 guard running > 0, let (endpoint, dialed) = await group.next() else { break }
                 running -= 1
                 guard let peer = dialed else { continue }
-                if started, needed > 0, !peers.contains(where: { $0.endpoint == endpoint }) {
+                let source = queue.first { $0.endpoint == endpoint }?.source ?? .persisted
+                let candidate = PeerCandidate(endpoint: endpoint, source: source)
+                // Re-checked on arrival as well as before the dial. Dials race,
+                // so two candidates from one block or one class can be in
+                // flight together and the second must still be refused.
+                if started, needed > 0, !peers.contains(where: { $0.endpoint == endpoint }),
+                   policy.admits(candidate, given: seatedCandidates()) {
                     peers.append(peer)
+                    seatedSources[endpoint] = source
                     needed -= 1
-                    if knownGood.insert(endpoint).inserted { persistKnownGood() }
+                    if knownGood.insert(endpoint).inserted {
+                        knownSource[endpoint] = source
+                        persistKnownGood()
+                    }
                 } else {
-                    await peer.disconnect() // slot filled while this dial was in flight
+                    await peer.disconnect() // slot filled, or diversity refused it
                 }
             }
         }
         exhausted = peers.count < peerCount
     }
 
+    /// The diversity rules this pool enforces, sized to its slot count.
+    private var policy: DiversityPolicy { DiversityPolicy(peerCount: peerCount) }
+
+    /// What is connected right now, with each peer's origin.
+    private func seatedCandidates() -> [PeerCandidate] {
+        peers.map {
+            PeerCandidate(endpoint: $0.endpoint, source: seatedSources[$0.endpoint] ?? .persisted)
+        }
+    }
+
     /// Manual peers, then persisted good peers, then hardcoded fallbacks.
-    private func localCandidates(excluding connected: Set<PeerEndpoint>) -> [PeerEndpoint] {
-        let ordered = manualPeers + Array(knownGood.subtracting(manualPeers)) + params.fallbackPeers
+    ///
+    /// A persisted peer keeps the class it was first found under, so a peer
+    /// originally discovered through a DNS seed still counts as one for
+    /// diversity rather than collapsing into `persisted` after its first
+    /// connection.
+    private func localCandidates(excluding connected: Set<PeerEndpoint>) -> [PeerCandidate] {
+        var ordered: [PeerCandidate] = []
+        for endpoint in manualPeers {
+            ordered.append(PeerCandidate(endpoint: endpoint, source: .manual))
+        }
+        for endpoint in knownGood.subtracting(manualPeers) {
+            ordered.append(PeerCandidate(endpoint: endpoint,
+                                         source: knownSource[endpoint] ?? .persisted))
+        }
+        for endpoint in params.fallbackPeers {
+            ordered.append(PeerCandidate(endpoint: endpoint, source: .fallback))
+        }
         var seen = connected
-        return ordered.filter { seen.insert($0).inserted }
+        return ordered.filter { seen.insert($0.endpoint).inserted }
     }
 
     /// DNS-seed results (DoH, then getaddrinfo). Called only when local
     /// candidates did not fill the pool.
-    private func seedCandidates(excluding connected: Set<PeerEndpoint>) async -> [PeerEndpoint] {
+    private func seedCandidates(excluding connected: Set<PeerEndpoint>) async -> [PeerCandidate] {
         let seeds = await seedResolver.resolveSeeds(
             params.dnsSeeds, port: params.defaultPort,
             allowPrivate: params.allowsPrivateSeedAddresses
         )
         var seen = connected
         return seeds.filter { seen.insert($0).inserted }
+            .map { PeerCandidate(endpoint: $0, source: .dnsSeed) }
     }
 
     private func persistKnownGood() {
         guard let peersFileURL else { return }
-        let endpoints = Array(knownGood.prefix(100))
-        if let data = try? JSONEncoder().encode(endpoints) {
+        let stored = knownGood.prefix(100).map {
+            PeerCandidate(endpoint: $0, source: knownSource[$0] ?? .persisted)
+        }
+        if let data = try? JSONEncoder().encode(PersistedPeers(Array(stored))) {
             try? data.write(to: peersFileURL, options: .atomic)
         }
     }
