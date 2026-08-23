@@ -38,6 +38,74 @@ struct HeaderStorageAppendTests {
         return result
     }
 
+    /// A checkpoint-rooted chain and its params, so the marker layout can be
+    /// exercised without a real 77 MB mainnet header file.
+    ///
+    /// The checkpoint is a header from a synthetic chain, carrying the work of
+    /// everything up to it — which is what `NetworkParams.Checkpoint` means and
+    /// what `load` puts back when it reads the prefix.
+    static func checkpointRooted() throws -> (params: NetworkParams, tipHash: Data) {
+        let synthetic = makeSyntheticChain(length: 3, watchHeight: 2)
+        let genesisParams = synthetic.params
+        let checkpointHeight: UInt32 = 3
+        let header = synthetic.blocks[Int(checkpointHeight)].header
+
+        var work = UInt256()
+        for height in 0 ... checkpointHeight {
+            work = work + (try HeaderChain.checkedWork(for: synthetic.blocks[Int(height)].header,
+                                                       params: genesisParams, height: height))
+        }
+        let params = NetworkParams(
+            network: .signet, magic: genesisParams.magic, defaultPort: genesisParams.defaultPort,
+            genesisTime: genesisParams.genesisTime, genesisBits: genesisParams.genesisBits,
+            genesisNonce: genesisParams.genesisNonce,
+            genesisMerkleRoot: genesisParams.genesisMerkleRoot,
+            genesisHash: genesisParams.genesisHash, powLimit: genesisParams.powLimit,
+            dnsSeeds: [],
+            checkpoint: NetworkParams.Checkpoint(height: checkpointHeight,
+                                                 header: header.serialized,
+                                                 chainwork: work.bigEndianData))
+        return (params, header.hash)
+    }
+
+    /// The production path, and the one every other test here misses.
+    ///
+    /// Since #89 a mainnet wallet starts from the checkpoint, which writes the
+    /// *marker* layout: a 48-byte prefix with the count at offset 44, not the
+    /// 4-byte prefix with the count at 0 that a genesis-rooted chain uses. The
+    /// second batch of a mainnet first launch is therefore the first time an
+    /// append ever runs against that layout — in production, and until now
+    /// with no test behind it.
+    ///
+    /// Getting the offsets the wrong way round would be loud rather than
+    /// silent: the next load refuses the file and the wallet resyncs. But it
+    /// would corrupt the header file of every mainnet user on their second
+    /// batch, and swapping the two layouts' offsets would break no test.
+    @Test("appending to a checkpoint-rooted file uses the marker layout's offsets")
+    func appendToCheckpointRootedFile() async throws {
+        let (params, checkpointTip) = try Self.checkpointRooted()
+        let url = Self.url()
+        defer { try? FileManager.default.removeItem(at: url) }
+
+        let chain = try HeaderChain(params: params, storageURL: url, start: .checkpoint)
+        #expect(await chain.startHeight == 3, "fixture precondition: the marker layout")
+
+        let first = Self.headers(after: checkpointTip, count: 3, time: 1_900_000_000)
+        _ = try await chain.connect(first)
+        let second = Self.headers(after: first[first.count - 1].hash, count: 4, time: 1_900_100_000)
+        _ = try await chain.connect(second)
+        #expect(await chain.height == 10)
+
+        let reloaded = try HeaderChain(params: params, storageURL: url, start: .checkpoint)
+        #expect(await reloaded.height == 10)
+        #expect(await reloaded.tipHash == chain.tipHash)
+        #expect(await reloaded.startHeight == 3)
+
+        // 48-byte prefix, not 4 — the whole point of this case.
+        let bytes = try Data(contentsOf: url)
+        #expect(bytes.count == 48 + 8 * BlockHeader.serializedSize)
+    }
+
     /// The case a single-batch test cannot reach: the second append must start
     /// where the first one finished. An offset that is wrong by even one record
     /// reloads as a broken chain.
