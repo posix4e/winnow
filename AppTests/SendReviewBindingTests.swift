@@ -78,7 +78,6 @@ final class SendReviewBindingTests: XCTestCase {
         let preview = AppModel.SendPreview(
             destination: "tb1q-reviewed",
             payments: [Payment(amount: 20_000, scriptPubKey: destinationScript)],
-            silentPayments: [],
             feeRateSatPerVByte: 2,
             fee: 500,
             changeAmount: 79_500,

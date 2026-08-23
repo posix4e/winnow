@@ -192,7 +192,6 @@ eclipse.
 | Professional provider | identity and account data required by its contract, proposed transactions | another provider's private key | Planned |
 | Provider directory/referral layer | choices, and possibly clicks if designed badly | recovery material or hidden behavioral tracking | Decision required |
 | Selected miner | raw transaction, connection metadata, credentials, status queries | wallet history unrelated to the submission | Planned |
-| Silent Payment tweak provider | IP address, network, fixed public block ranges | scan key, spend key, address, matched output, balance | Experimental |
 | Export recipient | exactly the bundle the user chooses to share | unredacted recovery material in logs or previews | Implemented |
 
 Multiple peers reduce dependence on one view. Header synchronization tries
@@ -372,32 +371,20 @@ Public automation excludes mnemonics, entropy, private keys, secret nonces, and
 unredacted recovery screens. Any export must be protected according to the
 authority it carries.
 
-## 9. Silent Payments: send works, receive is experimental
+## 9. Silent Payments: on the alpha branch, not in this build
 
 BIP352 Silent Payments give a recipient a reusable code without publishing
 that code or an obvious address-reuse pattern on chain. Sending is
-self-contained: eligible input keys and the recipient's code derive a unique
-Taproot output.
+self-contained. Receiving is not: finding payments to a silent code requires
+per-block tweak data, and no public infrastructure serves it — a compact-filter
+peer does not. That dependency, not the cryptography, is why the feature is not
+in this build.
 
-Receiving is harder on a phone. The recipient cannot query a BIP158 filter for
-one static script because each output is derived from sender inputs. The phone
-must first obtain or calculate transaction tweaks, derive candidate scripts,
-and only then test those candidates against ordinary compact filters. Once a
-match is credited, that output's script stays on the watch list: later spends
-appear in the same basic filter as the prevout scriptPubKey, and omitting it
-would leave a ghost UTXO that import verification also could not disprove.
-
-Downloading every block avoids an index but erases the bandwidth benefit of a
-mobile light client. The current JSON tweak fixture proves an algorithmic
-boundary, not a production privacy service. The planned block-dn-compatible
-path requests fixed public ranges, validates and caches curve points, compares
-providers when possible, derives candidates locally, and treats Winnow's
-existing filter/full-block path as authoritative for positive matches.
-
-A provider sees an IP address and broad requested ranges and can omit data.
-Receive therefore remains off by default and experimental. The current story
-did not complete Silent Payment receive, export/import, and spend; that is an
-unmet acceptance criterion tracked in [issue 40](https://github.com/posix4e/winnow/issues/40).
+The implementation lives on the `alpha` branch. A wallet that has received a
+silent payment can only be opened by a build from there, because the coin
+carries a per-output tweak that is required to derive its signing key; a build
+of this branch refuses such a wallet rather than showing a balance it cannot
+spend.
 
 ## 10. Reproducible evidence
 
@@ -438,8 +425,9 @@ that recovery words never appear in a video frame.
   heirs, resolve disputes, enforce loan repayment, or replace legal advice.
 - **Not private-miner submission today.** P2P is the shipping broadcast path;
   selected-miner and export-only routes are planned.
-- **Not completed Silent Payment receiving.** Sending is implemented;
-  production mobile receiving remains experimental.
+- **No Silent Payment support in this build.** Both send and receive live on
+  the `alpha` branch; receiving additionally depends on tweak-data
+  infrastructure that does not exist publicly.
 - **Not mainnet release evidence.** Signet integration does not prove readiness
   to hold valuable mainnet funds.
 

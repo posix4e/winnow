@@ -47,7 +47,6 @@ final class SpendExclusionTests: XCTestCase {
         AppModel.SendPreview(
             destination: "tb1p-recipient",
             payments: [Payment(amount: 1000, scriptPubKey: Data([0x51, 0x20] + repeatElement(0xAA, count: 32)))],
-            silentPayments: [],
             feeRateSatPerVByte: 2,
             fee: 100,
             changeAmount: nil,

@@ -85,9 +85,6 @@ public enum WinnowStoryCLI {
             }
             try system.boot(simulator.udid)
             try system.buildAndInstall(udid: simulator.udid)
-            if state.activeCheckpoint == .silentPayments {
-                try ensureIndexServer(state: &state, store: store)
-            }
             try store.save(state)
             try launchActive(state, system: system, reset: false)
             if state.checkpoints[StoryCheckpoint.preflight.rawValue]?.status != .passed {
@@ -249,166 +246,7 @@ public enum WinnowStoryCLI {
             let state = try store.load()
             let persona = option("--persona", in: arguments) ?? "lina"
             let companion = StoryCompanion(state: state)
-            if arguments.contains("--silent") {
-                print(try await companion.silentAddress(for: persona))
-            } else {
-                print(try companion.standardAddress(for: persona))
-            }
-
-        case "companion-silent-send":
-            var state = try store.load()
-            let label = option("--label", in: arguments) ?? "lina-to-sofia-silent"
-            let persona = option("--from", in: arguments) ?? "lina"
-            guard state.activeCheckpoint == .silentPayments else {
-                throw StoryModelError.invalidTransition(
-                    "companion silent sends are only available during the silent-payments checkpoint")
-            }
-            guard let inputTxid = option("--txid", in: arguments),
-                  let inputAmount = option("--input-amount", in: arguments).flatMap(Int64.init),
-                  let inputHeight = option("--height", in: arguments).flatMap(UInt32.init),
-                  let recipient = option("--to", in: arguments),
-                  let amount = option("--amount", in: arguments).flatMap(Int64.init) else {
-                throw StoryModelError.invalidTransition(
-                    "companion-silent-send requires --txid, --input-amount, --height, --to, and --amount")
-            }
-            let inputVout = option("--vout", in: arguments).flatMap(UInt32.init) ?? 0
-            let feeRate = option("--fee-rate", in: arguments).flatMap(Double.init) ?? 2
-            let prepared: StoryCompanionTransaction
-            if let saved = state.companionTransactions?[label] {
-                guard saved.personaID == persona else {
-                    throw StoryModelError.invalidTransition("saved companion send \(label) belongs to \(saved.personaID)")
-                }
-                prepared = saved
-            } else {
-                prepared = try await StoryCompanion(state: state).prepareSilentSend(
-                    label: label, from: persona, inputTxid: inputTxid,
-                    inputVout: inputVout, inputAmount: inputAmount,
-                    inputHeight: inputHeight, recipient: recipient,
-                    amount: amount, feeRateSatPerVByte: feeRate)
-                var transactions = state.companionTransactions ?? [:]
-                transactions[label] = prepared
-                state.companionTransactions = transactions
-                state.updatedAt = Date()
-                try store.save(state) // persist exact bytes before any relay
-            }
-
-            var result = prepared
-            if result.relayPeerCount == 0 {
-                guard let raw = Data(hex: result.rawTransaction) else {
-                    throw StoryModelError.invalidTransition("saved companion transaction is malformed")
-                }
-                let peersURL = store.paths.runDirectory.appending(path: "companion-peers.json")
-                let pool = PeerPool(params: .signet, peersFileURL: peersURL)
-                await pool.start()
-                let broadcaster = try TxBroadcaster(pool: pool)
-                let txid = try await broadcaster.broadcast(raw, feeRateSatPerVByte: feeRate)
-                let deadline = ContinuousClock.now + .seconds(20)
-                var served = 0
-                while ContinuousClock.now < deadline {
-                    let statuses = await broadcaster.relayStatus(txid)
-                    served = statuses.values.filter { $0 == .served }.count
-                    if served > 0 { break }
-                    try await Task.sleep(for: .milliseconds(200))
-                }
-                await pool.stop()
-                guard served > 0 else {
-                    throw StoryModelError.invalidTransition(
-                        "no public signet peer requested the prepared transaction; rerun to relay the same bytes")
-                }
-                result.relayPeerCount = served
-                var transactions = state.companionTransactions ?? [:]
-                transactions[label] = result
-                state.companionTransactions = transactions
-                state.updatedAt = Date()
-                try store.save(state)
-            }
-            print("txid: \(result.txid)")
-            print("tweak-data: \(result.tweakData)")
-            print("amount: \(result.amount) sats")
-            print("fee: \(result.fee) sats")
-            print("relayed-to: \(result.relayPeerCount) public signet peer(s)")
-
-        case "companion-silent-bump":
-            var state = try store.load()
-            let originalLabel = option("--label", in: arguments) ?? "lina-to-sofia-silent"
-            let replacementLabel = option("--replacement-label", in: arguments)
-                ?? "\(originalLabel)-rbf"
-            let recipientPersona = option("--to-persona", in: arguments) ?? "sofia"
-            let feeRate = option("--fee-rate", in: arguments).flatMap(Double.init) ?? 10
-            let prepareOnly = arguments.contains("--prepare-only")
-            let silentStatus = state.checkpoints[StoryCheckpoint.silentPayments.rawValue]?.status
-            guard silentStatus != .passed else {
-                throw StoryModelError.invalidTransition(
-                    "the silent-payment checkpoint already passed; no replacement is allowed")
-            }
-            if !prepareOnly, state.activeCheckpoint != .silentPayments {
-                throw StoryModelError.invalidTransition(
-                    "relay requires the silent-payments checkpoint to be active; use --prepare-only while it is deferred")
-            }
-            guard let original = state.companionTransactions?[originalLabel] else {
-                throw StoryModelError.invalidTransition(
-                    "missing saved companion transaction \(originalLabel)")
-            }
-
-            var result: StoryCompanionTransaction
-            if let saved = state.companionTransactions?[replacementLabel] {
-                guard saved.replaces == original.txid,
-                      saved.personaID == original.personaID else {
-                    throw StoryModelError.invalidTransition(
-                        "saved replacement \(replacementLabel) does not replace \(originalLabel)")
-                }
-                result = saved
-            } else {
-                result = try await StoryCompanion(state: state).prepareSilentFeeBump(
-                    label: replacementLabel, replacing: original,
-                    recipientPersonaID: recipientPersona,
-                    feeRateSatPerVByte: feeRate)
-                var transactions = state.companionTransactions ?? [:]
-                transactions[replacementLabel] = result
-                state.companionTransactions = transactions
-                state.updatedAt = Date()
-                try store.save(state) // exact replacement bytes precede relay
-            }
-
-            if !prepareOnly, result.relayPeerCount == 0 {
-                guard let raw = Data(hex: result.rawTransaction),
-                      let transaction = try? Transaction.decode(raw) else {
-                    throw StoryModelError.invalidTransition("saved companion replacement is malformed")
-                }
-                let actualFeeRate = Double(result.fee)
-                    / Double(TransactionBuilder.vsize(of: transaction))
-                let peersURL = store.paths.runDirectory.appending(path: "companion-peers.json")
-                let pool = PeerPool(params: .signet, peersFileURL: peersURL)
-                await pool.start()
-                let broadcaster = try TxBroadcaster(pool: pool)
-                let txid = try await broadcaster.broadcast(raw, feeRateSatPerVByte: actualFeeRate)
-                let deadline = ContinuousClock.now + .seconds(20)
-                var served = 0
-                while ContinuousClock.now < deadline {
-                    let statuses = await broadcaster.relayStatus(txid)
-                    served = statuses.values.filter { $0 == .served }.count
-                    if served > 0 { break }
-                    try await Task.sleep(for: .milliseconds(200))
-                }
-                await pool.stop()
-                guard served > 0 else {
-                    throw StoryModelError.invalidTransition(
-                        "no public signet peer requested the saved replacement; rerun to relay the same bytes")
-                }
-                result.relayPeerCount = served
-                var transactions = state.companionTransactions ?? [:]
-                transactions[replacementLabel] = result
-                state.companionTransactions = transactions
-                state.updatedAt = Date()
-                try store.save(state)
-            }
-            print("txid: \(result.txid)")
-            print("replaces: \(result.replaces ?? original.txid)")
-            print("tweak-data: \(result.tweakData)")
-            print("amount: \(result.amount) sats")
-            print("fee: \(result.fee) sats")
-            print("relayed-to: \(result.relayPeerCount) public signet peer(s)")
-            if prepareOnly { print("prepared-only: true") }
+            print(try companion.standardAddress(for: persona))
 
         case "keys":
             let companion = StoryCompanion(state: try store.load())
@@ -440,25 +278,6 @@ public enum WinnowStoryCLI {
                 psbtBase64: readInput(option("--psbt", in: arguments)))
             try store.save(result.state)
             print(result.psbt)
-
-        case "add-tweak":
-            guard let height = option("--height", in: arguments).flatMap(UInt32.init),
-                  let hex = option("--hex", in: arguments) else {
-                throw StoryModelError.invalidTransition("add-tweak requires --height and --hex")
-            }
-            try store.addTweak(height: height, hex: hex)
-            print("Added tweak data for block \(height).")
-
-        case "index-url":
-            let state = try store.load()
-            print("http://127.0.0.1:\(state.indexPort)")
-
-        case "index-server":
-            let state = try store.load()
-            let fixture = SilentIndexFixture(tweaksURL: store.paths.tweaks)
-            try await fixture.start(port: state.indexPort)
-            print("Silent index listening on http://127.0.0.1:\(state.indexPort)")
-            await withCheckedContinuation { (_: CheckedContinuation<Void, Never>) in }
 
         case "verify":
             var state = try store.load()
@@ -670,9 +489,6 @@ public enum WinnowStoryCLI {
             print("\(checkpoint == state.activeCheckpoint ? "→" : " ") [\(status.rawValue)] \(checkpoint.title)")
         }
         print("\nNext: \(state.activeCheckpoint.instruction)")
-        if state.activeCheckpoint == .silentPayments {
-            print("Silent index: http://127.0.0.1:\(state.indexPort)")
-        }
         if state.activeCheckpoint == .sofiaOnboarding {
             print("Recovery check: enter the simulator passcode when Winnow asks, or choose Features → Face ID → Enrolled and then Matching Face. Never record the words.")
         }
@@ -692,13 +508,9 @@ public enum WinnowStoryCLI {
           ./scripts/winnow-story checkpoint CHECKPOINT --pass|--waiting|--defer|--fail --run NAME [--note TEXT] [--txid ID] [--height N] [--label TEXT] [--persona ID]
           ./scripts/winnow-story verify --run NAME
           ./scripts/winnow-story address --run NAME --persona lina [--silent]
-          ./scripts/winnow-story companion-silent-send --run NAME --from lina --txid ID --vout N --input-amount SATS --height N --to SILENT_ADDRESS --amount SATS [--fee-rate RATE] [--label TEXT]
-          ./scripts/winnow-story companion-silent-bump --run NAME [--label TEXT] [--replacement-label TEXT] [--to-persona sofia] [--fee-rate RATE] [--prepare-only]
           ./scripts/winnow-story keys --run NAME
           ./scripts/winnow-story cosign-inheritance --run NAME --as leo|marina --psbt FILE
           ./scripts/winnow-story musig-nonce|musig-sign --run NAME --psbt FILE
-          ./scripts/winnow-story add-tweak --run NAME --height N --hex POINT
-          ./scripts/winnow-story index-url --run NAME
           ./scripts/winnow-story finish --run NAME
         """)
     }

@@ -68,10 +68,6 @@ targets:
         # Signing, seed export/reveal, and destructive key operations
         # authenticate the device owner; Face ID may satisfy that prompt.
         INFOPLIST_KEY_NSFaceIDUsageDescription: "Face ID confirms it's you before Winnow signs or reveals wallet secrets."
-        # The manual story runner serves only the explicitly enabled silent-
-        # payment fixture on the simulator host. Public app traffic remains
-        # HTTPS/P2P; this allows that localhost development URL.
-        INFOPLIST_KEY_NSAppTransportSecurity_NSAllowsLocalNetworking: YES
         # Sync-while-active by design: no UIBackgroundModes.
         CODE_SIGN_STYLE: Automatic
 

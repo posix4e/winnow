@@ -167,9 +167,6 @@ public struct ImportBundle: Codable, Equatable, Sendable {
                               utxos: [WalletUTXO], history: [HistoryEntry],
                               nextReceiveIndex: UInt32, nextChangeIndex: UInt32,
                               mnemonic: String? = nil) throws -> ImportBundle {
-        if mnemonic == nil, utxos.contains(where: { $0.silentPaymentTweak != nil }) {
-            throw WalletError.silentPaymentExportRequiresMnemonic
-        }
         return ImportBundle(
             network: network,
             descriptor: descriptor,
@@ -179,7 +176,6 @@ public struct ImportBundle: Codable, Equatable, Sendable {
                 UTXO(txid: utxo.txid.displayHex, vout: utxo.vout, amount: utxo.amount,
                      scriptPubKey: utxo.scriptPubKey.hex, chain: utxo.chain.rawValue,
                      index: utxo.index, height: utxo.height,
-                     silentPaymentTweak: utxo.silentPaymentTweak?.hex,
                      isCoinbase: utxo.isCoinbase ? true : nil)
             },
             transactions: history.map { entry in
@@ -287,23 +283,17 @@ public struct ImportBundle: Codable, Equatable, Sendable {
             guard let chain = AddressChain(rawValue: utxo.chain) else {
                 throw WalletError.invalidBundle("bad chain \(utxo.chain)")
             }
-            let silentPaymentTweak: Data?
-            if let tweakHex = utxo.silentPaymentTweak {
-                guard version >= 2 else {
-                    throw WalletError.invalidBundle("silentPaymentTweak requires version 2")
-                }
-                guard let tweak = Data(hex: tweakHex),
-                      SilentPaymentReceiving.isValidTweak(tweak)
-                else {
-                    throw WalletError.invalidBundle("bad silentPaymentTweak")
-                }
-                silentPaymentTweak = tweak
-            } else {
-                silentPaymentTweak = nil
+            // Refused rather than ignored, for the same reason the wallet
+            // state decoder refuses one: the tweak is required to sign for
+            // that coin, and this build has no BIP352 code. Importing it
+            // without the tweak would restore a coin that cannot be spent
+            // and does not say so.
+            if utxo.silentPaymentTweak != nil {
+                throw WalletError.silentPaymentWalletNeedsAlphaBuild
             }
             return WalletUTXO(txid: Data(txid.reversed()), vout: utxo.vout, amount: utxo.amount,
                               scriptPubKey: scriptPubKey, chain: chain, index: utxo.index,
-                              height: utxo.height, silentPaymentTweak: silentPaymentTweak,
+                              height: utxo.height,
                               isCoinbase: utxo.isCoinbase ?? false)
         }
         var seen = Set<Transaction.Outpoint>()
@@ -407,11 +397,9 @@ extension Wallet {
 
         var descriptor: Descriptor?
         var accountKey: HDKey?
-        var importMasterKey: HDKey?
         if let mnemonic = bundle.mnemonic {
             try BIP39.validate(mnemonic: mnemonic)
             let master = try HDKey(seed: BIP39.seed(mnemonic: mnemonic))
-            importMasterKey = master
             let coinType = Self.coinType(for: network)
             let account = try BIP86.accountKey(from: master, coinType: coinType, account: 0)
             let origin = Descriptor.KeyOrigin(fingerprint: master.fingerprint,
@@ -452,32 +440,10 @@ extension Wallet {
         // outputs use their BIP86 coordinates. Silent-payment outputs use the
         // mnemonic-derived BIP352 spend key plus their persisted tweak.
         for utxo in utxos {
-            let expected: Data
-            if let tweak = utxo.silentPaymentTweak {
-                guard let importMasterKey else {
-                    throw WalletError.invalidBundle(
-                        "silent-payment UTXOs require a mnemonic")
-                }
-                let origin = try Self.origin(of: descriptor)
-                guard origin.path.count == 3,
-                      origin.path[2] >= HDKey.hardenedOffset
-                else {
-                    throw WalletError.invalidDescriptor("missing BIP86 account in key origin")
-                }
-                let account = origin.path[2] - HDKey.hardenedOffset
-                let spend = try SilentPaymentReceiving.spendKey(
-                    from: importMasterKey, coinType: Self.coinType(for: network), account: account)
-                guard let spendPrivateKey = spend.privateKey else {
-                    throw WalletError.invalidBundle("silent-payment spend key is unavailable")
-                }
-                expected = try SilentPaymentReceiving.outputScript(
-                    spendPrivateKey: spendPrivateKey, tweak: tweak)
-            } else {
-                expected = try descriptor
-                    .derived(index: utxo.index,
-                             network: Self.hdNetwork(for: network))[utxo.chain.rawValue]
-                    .scriptPubKey
-            }
+            let expected = try descriptor
+                .derived(index: utxo.index,
+                         network: Self.hdNetwork(for: network))[utxo.chain.rawValue]
+                .scriptPubKey
             guard expected == utxo.scriptPubKey else {
                 throw WalletError.invalidBundle(
                     "utxo \(utxo.txid.displayHex):\(utxo.vout) scriptPubKey does not match the descriptor")
@@ -506,12 +472,10 @@ extension Wallet {
                                 replacedBy: replacedBy)
         }
 
-        let fromReceiveUTXOs = (utxos.filter {
-            $0.silentPaymentTweak == nil && $0.chain == .receive
-        }.map(\.index).max().map { $0 + 1 }) ?? 0
-        let fromChangeUTXOs = (utxos.filter {
-            $0.silentPaymentTweak == nil && $0.chain == .change
-        }.map(\.index).max().map { $0 + 1 }) ?? 0
+        let fromReceiveUTXOs = (utxos.filter { $0.chain == .receive }
+            .map(\.index).max().map { $0 + 1 }) ?? 0
+        let fromChangeUTXOs = (utxos.filter { $0.chain == .change }
+            .map(\.index).max().map { $0 + 1 }) ?? 0
         // Prefer the exported cursor so a spent-out restore does not
         // reissue address 0. Never go below the UTXO-derived floor — a
         // tampered-low cursor would otherwise reuse a live coin's address.
