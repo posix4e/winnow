@@ -1,7 +1,7 @@
 import Foundation
 import Network
 
-public enum PeerError: Error, Equatable {
+public enum PeerError: LocalizedError, Equatable {
     case timeout
     case notConnected
     case disconnected(String)
@@ -9,6 +9,21 @@ public enum PeerError: Error, Equatable {
     /// Peer did not signal NODE_COMPACT_FILTERS (BIP157 service bit 6).
     case missingCompactFilters(services: UInt64)
     case protocolViolation(String)
+
+    /// Without this every reason recorded through `localizedDescription` read
+    /// as "BitcoinP2P.PeerError error 4", which is the same discarded-diagnosis
+    /// problem #82 is about — one layer down.
+    public var errorDescription: String? {
+        switch self {
+        case .timeout: "The peer did not answer in time."
+        case .notConnected: "The connection to the peer was not open."
+        case let .disconnected(reason): "The peer disconnected (\(reason))."
+        case let .handshakeFailed(reason): "The peer handshake failed (\(reason))."
+        case let .missingCompactFilters(services):
+            "The peer does not serve compact block filters (services \(services))."
+        case let .protocolViolation(reason): "The peer violated the protocol (\(reason))."
+        }
+    }
 
     /// Whether this is the connection failing rather than the peer being
     /// dishonest — the distinction that decides between a cooldown and a

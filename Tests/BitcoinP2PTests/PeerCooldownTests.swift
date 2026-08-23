@@ -91,14 +91,21 @@ struct PeerCooldownTests {
         #expect(await pool.connectedPeers().count == 1)
 
         let chain = try HeaderChain(params: synthetic.params)
-        var failed = false
+        var thrown: (any Error)?
         do {
             try await pool.syncHeaders(chain, timeoutPerPeer: .milliseconds(300),
                                        maxAttempts: 2, maxTransportRetries: 1)
         } catch {
-            failed = true
+            thrown = error
         }
-        #expect(failed, "fixture precondition: the sync had to fail on a timeout")
+        // Assert *which* failure, not merely that one happened. An earlier
+        // version of this test accepted any error, which let the sync start
+        // reporting "no Bitcoin peers are available" — false, and less
+        // truthful than the behaviour being fixed — without any test noticing.
+        guard case .allPeersCoolingDown? = thrown as? PeerPoolHeaderSyncError else {
+            Issue.record("expected allPeersCoolingDown, got \(String(describing: thrown))")
+            return
+        }
 
         await pool.stop()
         #expect(try Self.storedPeers(file).contains(endpoint),
@@ -152,6 +159,26 @@ struct PeerCooldownTests {
                 "a slow peer stays known-good for the next launch")
         #expect(remaining.contains(bannedEndpoint) == false,
                 "a peer that sent bad data must be struck from the file")
+    }
+
+    /// `noPeers` has to keep meaning "there is nothing to dial", or the error
+    /// the user sees is worse than the bug this change removed.
+    @Test("a pool with no candidates at all still reports noPeers")
+    func genuinelyPeerlessStillReportsNoPeers() async throws {
+        let synthetic = makeSyntheticChain(length: 4, watchHeight: 2)
+        let pool = PeerPool(params: synthetic.params, peerCount: 0, manualPeers: [])
+        await pool.start()
+        let chain = try HeaderChain(params: synthetic.params)
+
+        var thrown: (any Error)?
+        do {
+            try await pool.syncHeaders(chain, timeoutPerPeer: .milliseconds(200), maxAttempts: 1)
+        } catch {
+            thrown = error
+        }
+        #expect((thrown as? PeerPoolHeaderSyncError) == .noPeers,
+                "an empty candidate universe is the one case noPeers is for")
+        await pool.stop()
     }
 
     // MARK: - Cooling is temporary

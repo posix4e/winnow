@@ -3,6 +3,9 @@ import Foundation
 public enum PeerPoolHeaderSyncError: LocalizedError, Equatable {
     case noPeers
     case exhausted(attempts: Int, lastError: String)
+    /// Every peer is briefly cooling off after a slow reply. Distinct from
+    /// `noPeers`, which means there is nothing to dial at all (#82).
+    case allPeersCoolingDown(cooling: Int, lastError: String)
 
     public var errorDescription: String? {
         switch self {
@@ -10,6 +13,8 @@ public enum PeerPoolHeaderSyncError: LocalizedError, Equatable {
             "No Bitcoin peers are available for block-header sync."
         case let .exhausted(attempts, lastError):
             "Winnow tried \(attempts) Bitcoin peer\(attempts == 1 ? "" : "s"), but none supplied a usable block-header chain. Last error: \(lastError)"
+        case let .allPeersCoolingDown(cooling, lastError):
+            "\(cooling) Bitcoin peer\(cooling == 1 ? " was" : "s were") slow to answer and \(cooling == 1 ? "is" : "are") being rested briefly. Syncing will resume on its own. Last error: \(lastError)"
         }
     }
 }
@@ -255,8 +260,24 @@ public actor PeerPool {
         var transportRetries = 0
         var lastError: (any Error)?
 
-        while attempts < maxAttempts, transportRetries <= maxTransportRetries {
+        while attempts < maxAttempts, transportRetries < maxTransportRetries {
             guard let peer = peers.first else {
+                // An empty pool used to mean there were no candidates. Since
+                // transport failures cool endpoints off rather than banning
+                // them, it can now mean "everyone is briefly unavailable" —
+                // which is a normal transient state, not a peerless one.
+                //
+                // Reporting it as `noPeers` would tell the user no Bitcoin
+                // peers are available at all while a peer sits thirty seconds
+                // from eligibility. That is the same overreaction #82 exists
+                // to remove, moved up a layer and made less truthful than
+                // before the change.
+                if !coolingEndpoints.isEmpty || transportRetries > 0 {
+                    throw PeerPoolHeaderSyncError.allPeersCoolingDown(
+                        cooling: coolingEndpoints.count,
+                        lastError: lastError?.localizedDescription
+                            ?? "the connected peers stopped answering")
+                }
                 if attempts == 0 { throw PeerPoolHeaderSyncError.noPeers }
                 break
             }
@@ -303,6 +324,15 @@ public actor PeerPool {
             if burnedAPeer { attempts += 1 }
         }
 
+        // Two ways out of that loop: peers burned, or transport retries spent.
+        // Only the first is exhaustion. Reporting the second as "tried 0 peers"
+        // is both wrong and unhelpful — the peers exist and are resting.
+        if attempts == 0, !coolingEndpoints.isEmpty || transportRetries > 0 {
+            throw PeerPoolHeaderSyncError.allPeersCoolingDown(
+                cooling: max(coolingEndpoints.count, 1),
+                lastError: lastError?.localizedDescription
+                    ?? "the connected peers stopped answering")
+        }
         throw PeerPoolHeaderSyncError.exhausted(
             attempts: attempts,
             lastError: lastError?.localizedDescription ?? "no additional peers were available")

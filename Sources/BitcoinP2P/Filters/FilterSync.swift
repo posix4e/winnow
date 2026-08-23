@@ -3,6 +3,9 @@ import Foundation
 
 public enum FilterSyncError: LocalizedError, Equatable, Sendable {
     case noPeers
+    /// Every peer is briefly resting after a slow reply — transient, unlike
+    /// `noPeers`, which means there is nothing to dial at all.
+    case peersCoolingDown(Int)
     /// Peers (or a peer vs. our pinned chain) disagree on filter commitments.
     case checkpointMismatch(String)
     case badPeerResponse(String)
@@ -15,6 +18,8 @@ public enum FilterSyncError: LocalizedError, Equatable, Sendable {
         switch self {
         case .noPeers:
             "No Bitcoin peers are available for compact-filter synchronization."
+        case let .peersCoolingDown(count):
+            "\(count) Bitcoin peer\(count == 1 ? " is" : "s are") resting briefly after a slow reply. Scanning will resume on its own."
         case let .checkpointMismatch(reason):
             "Bitcoin peers disagreed about compact-filter checkpoints (\(reason))."
         case let .badPeerResponse(reason):
@@ -163,7 +168,14 @@ public actor FilterSync {
                      extraScripts: (@Sendable (ClosedRange<UInt32>) async throws -> [UInt32: [Data]])? = nil,
                      onMatch: @Sendable (BlockMatch) async throws -> Void) async throws {
         var peers = await pool.connectedPeers()
-        guard !peers.isEmpty else { throw FilterSyncError.noPeers }
+        guard !peers.isEmpty else {
+            // Same distinction as `PeerPool.syncHeaders`: since transport
+            // failures cool peers off rather than banning them, an empty pool
+            // is routinely a transient state rather than a peerless one, and
+            // saying "no peers are available" would be untrue (#82).
+            let cooling = await pool.coolingEndpoints.count
+            throw cooling > 0 ? FilterSyncError.peersCoolingDown(cooling) : FilterSyncError.noPeers
+        }
 
         // 1. Headers to tip. A stale or broken peer is evicted and the pool
         // retries another peer without discarding already-persisted progress.
