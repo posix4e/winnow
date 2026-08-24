@@ -302,3 +302,119 @@ struct PSBTDiffTests {
                 "Core-finalized tx differs from ours")
     }
 }
+
+/// Whether the envelope conversion Core forces on us loses anything (#58, S8).
+///
+/// #58 requires that "unsupported fields and policy mismatches fail without
+/// lossy conversion". That clause had no teeth until the interop work made it
+/// concrete: Core 31.1 cannot read PSBTv2 and our parser will not read the v0
+/// it returns, so *every* exchange with Core is converted in both directions.
+/// A conversion nobody has audited is exactly where a field goes quietly
+/// missing.
+///
+/// The conversion drops five key types — `PSBT_IN_PREVIOUS_TXID` (0x0E),
+/// `PSBT_IN_OUTPUT_INDEX` (0x0F), `PSBT_IN_SEQUENCE` (0x10),
+/// `PSBT_OUT_AMOUNT` (0x03) and `PSBT_OUT_SCRIPT` (0x04). The claim under test
+/// is that this is relocation rather than loss: each of those is carried by
+/// the unsigned transaction that BIP174 puts in the global map, so the v0
+/// envelope holds the same information in a different place.
+@Suite("PSBT envelope conversion is lossless", .enabled(if: diffEnabled))
+struct PSBTConversionDiffTests {
+    private func fixturePSBT() throws -> PSBT {
+        let key = try testMaster().derived(path: "m/86'/1'/0'/0/0")
+        let internalKey = BIP86.xonlyPublicKey(of: key)
+        let script = try BIP86.scriptPubKey(internalKey: internalKey)
+        let other = try BIP86.scriptPubKey(
+            internalKey: BIP86.xonlyPublicKey(of: testMaster().derived(path: "m/86'/1'/0'/0/1")))
+        let tx = try TransactionBuilder.build(
+            inputs: [Transaction.Outpoint(txid: Data(hex: String(repeating: "3a", count: 32))!, vout: 3),
+                     Transaction.Outpoint(txid: Data(hex: String(repeating: "5c", count: 32))!, vout: 0)],
+            payments: [Payment(amount: 30_000, scriptPubKey: other)],
+            change: Payment(amount: 19_000, scriptPubKey: script),
+            changePosition: 1)
+        return try PSBT(unsignedTx: tx, inputs: [
+            PSBT.InputInfo(spentOutput: SighashBIP341.SpentOutput(amount: 25_000, scriptPubKey: script),
+                           key: PSBT.TaprootKey(internalKey: internalKey, masterFingerprint: 0,
+                                                path: [0x8000_0056])),
+            PSBT.InputInfo(spentOutput: SighashBIP341.SpentOutput(amount: 25_000, scriptPubKey: script),
+                           key: PSBT.TaprootKey(internalKey: internalKey, masterFingerprint: 0,
+                                                path: [0x8000_0056])),
+        ], outputs: [PSBT.OutputInfo(key: nil), PSBT.OutputInfo(key: nil)])
+    }
+
+    /// Everything the conversion drops must be recoverable from the unsigned
+    /// transaction it writes into the global map. If any of these disagree the
+    /// conversion is lossy and #58's clause is violated.
+    @Test("the dropped v2 fields are all carried by the unsigned transaction")
+    func droppedFieldsSurviveInTheTransaction() throws {
+        let psbt = try fixturePSBT()
+        let unsigned = try psbt.unsignedTransaction()
+        for (index, input) in psbt.inputs.enumerated() {
+            let previousTxid = try #require(input.pairs.first { $0.type == 0x0E }?.value)
+            let outputIndex = try #require(input.pairs.first { $0.type == 0x0F }?.value)
+            #expect(previousTxid == unsigned.inputs[index].previousOutput.txid,
+                    "input \(index): PSBT_IN_PREVIOUS_TXID is not what the transaction says")
+            #expect(outputIndex.withUnsafeBytes { $0.loadUnaligned(as: UInt32.self) }
+                == unsigned.inputs[index].previousOutput.vout,
+                "input \(index): PSBT_IN_OUTPUT_INDEX is not what the transaction says")
+            if let sequence = input.pairs.first(where: { $0.type == 0x10 })?.value {
+                #expect(sequence.withUnsafeBytes { $0.loadUnaligned(as: UInt32.self) }
+                    == unsigned.inputs[index].sequence,
+                    "input \(index): PSBT_IN_SEQUENCE is not what the transaction says")
+            }
+        }
+        for (index, output) in psbt.outputs.enumerated() {
+            if let amount = output.pairs.first(where: { $0.type == 0x03 })?.value {
+                #expect(amount.withUnsafeBytes { $0.loadUnaligned(as: Int64.self) }
+                    == unsigned.outputs[index].value,
+                    "output \(index): PSBT_OUT_AMOUNT is not what the transaction says")
+            }
+            if let script = output.pairs.first(where: { $0.type == 0x04 })?.value {
+                #expect(script == unsigned.outputs[index].scriptPubKey,
+                        "output \(index): PSBT_OUT_SCRIPT is not what the transaction says")
+            }
+        }
+    }
+
+    /// The other direction: nothing *except* those five types is dropped, so a
+    /// field we do not recognise cannot vanish silently on the way to Core.
+    @Test("no unrecognised field is dropped by the conversion")
+    func onlyTheRelocatedTypesAreDropped() throws {
+        var psbt = try fixturePSBT()
+        // A key type neither we nor Core assign meaning to. If the conversion
+        // filters by anything other than the five relocated types, this goes
+        // missing without a word — which is precisely the failure #58 names.
+        let sentinel = PSBT.KeyValue(type: 0x7E, value: Data([0xDE, 0xAD, 0xBE, 0xEF]))
+        psbt.inputs[0].pairs.append(sentinel)
+        let envelope = try v0Envelope(psbt)
+        let maps = try v0InputMaps(base64: envelope, inputCount: psbt.inputs.count)
+        #expect(maps[0].contains { $0.key == sentinel.key && $0.value == sentinel.value },
+                "an unrecognised input field was silently dropped converting to v0")
+
+        let dropped: Set<UInt8> = [0x0E, 0x0F, 0x10]
+        let expected = psbt.inputs[0].pairs.filter { !dropped.contains($0.type) }
+        #expect(maps[0].count == expected.count,
+                "the conversion dropped \(expected.count - maps[0].count) field(s) beyond the relocated three")
+    }
+
+    /// Core must accept what the conversion produces. A lossless envelope that
+    /// Core rejects would be no use, and this is the assertion that would fail
+    /// if a future field made the envelope malformed.
+    @Test("Core parses the converted envelope and agrees about the inputs")
+    func coreAcceptsTheEnvelope() throws {
+        let psbt = try fixturePSBT()
+        let decoded = try BitcoinCLI.runObject(["decodepsbt", try v0Envelope(psbt)])
+        let inputs = try BitcoinCLI.array(decoded, "inputs")
+        #expect(inputs.count == psbt.inputs.count, "Core sees a different number of inputs")
+        let tx = try #require(decoded["tx"] as? [String: Any], "no unsigned transaction in the envelope")
+        let vin = try BitcoinCLI.array(tx, "vin")
+        let unsigned = try psbt.unsignedTransaction()
+        for (index, input) in unsigned.inputs.enumerated() {
+            let coreIn = try #require(vin[index] as? [String: Any])
+            #expect(coreIn["txid"] as? String == input.previousOutput.txid.displayHex,
+                    "input \(index): Core read a different previous txid")
+            #expect(coreIn["vout"] as? Int == Int(input.previousOutput.vout),
+                    "input \(index): Core read a different output index")
+        }
+    }
+}
