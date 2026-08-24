@@ -68,7 +68,7 @@ actor LoopbackNode {
          lieAboutFilterCommitments: Bool = false, lieSalt: UInt8 = 0xFF,
          cfcheckptStopHashOverride: Data? = nil,
          autoRequestDelay: Duration? = nil, transactions: [Transaction] = [],
-         listenPort: UInt16? = nil, versionDelay: Duration = .zero) {
+         startSilent: Bool = false, versionDelay: Duration = .zero) {
         self.params = params
         self.services = services
         self.chain = chain
@@ -80,23 +80,30 @@ actor LoopbackNode {
         self.autoRequestDelay = autoRequestDelay
         self.transactions = Dictionary(uniqueKeysWithValues: transactions.map { ($0.txid, $0) })
         self.versionDelay = versionDelay
-        self.listenPort = listenPort
+        serving = !startSilent
         framer = MessageFramer(magic: params.magic)
     }
 
-    private let listenPort: UInt16?
+    /// Whether the node completes a handshake. A silent node still accepts
+    /// and holds connections — the client's dial times out — so the port
+    /// stays bound while the node is refusing. `beginServing()` flips it.
+    private var serving: Bool
+    /// Connections accepted while silent, cancelled on `stop()`.
+    private var heldWhileSilent: [NWConnection] = []
 
     var endpoint: PeerEndpoint { PeerEndpoint(host: "127.0.0.1", port: port) }
 
     func start() async throws {
-        // Local endpoint reuse: `retryAfterExhaustion` deliberately closes a
-        // listener and rebinds the same port, and without SO_REUSEADDR the
-        // kernel can still be holding it — which surfaces on a loaded CI
-        // machine as "Address already in use" and nowhere else (#144).
+        // Always an ephemeral port, and never rebound. A node that needs to
+        // refuse before it serves starts silent and flips with
+        // `beginServing()`, so its port is held for the node's whole life.
+        // Releasing a port and re-binding it later raced with the other nodes
+        // this suite starts concurrently: the kernel is free to hand the
+        // released port to one of them, and the rebind then fails with
+        // "Address already in use" on a loaded runner and nowhere else.
         let parameters = NWParameters.tcp
         parameters.allowLocalEndpointReuse = true
-        let listener = try NWListener(using: parameters,
-                                      on: listenPort.flatMap { NWEndpoint.Port(rawValue: $0) } ?? .any)
+        let listener = try NWListener(using: parameters, on: .any)
         self.listener = listener
         listener.newConnectionHandler = { connection in
             Task { await self.handle(connection) }
@@ -127,7 +134,15 @@ actor LoopbackNode {
 
     func stop() {
         connection?.cancel()
+        for held in heldWhileSilent { held.cancel() }
+        heldWhileSilent.removeAll()
         listener?.cancel()
+    }
+
+    /// Starts answering handshakes on the already-bound listener. The port
+    /// does not change, so a client that was refused can simply dial again.
+    func beginServing() {
+        serving = true
     }
 
     private func capturePortAndResume(_ resumeOnce: ResumeOnce) {
@@ -190,6 +205,13 @@ actor LoopbackNode {
     }
 
     private func handle(_ connection: NWConnection) async {
+        // Silent: accept and hold, never handshake. The client sees a TCP
+        // connect that goes nowhere and gives up on its own dial timeout.
+        guard serving else {
+            connection.start(queue: DispatchQueue(label: "org.winnow.tests.loopback.silent"))
+            heldWhileSilent.append(connection)
+            return
+        }
         self.connection = connection
         framer = MessageFramer(magic: params.magic)
         do {
