@@ -153,13 +153,15 @@ struct PeerPoolTests {
 
     @Test("exhaustion then retry once a candidate is viable fills the pool")
     func retryAfterExhaustion() async throws {
-        // Grab a free port, then close it: the pool's first round is refused.
-        let reserved = LoopbackNode(params: params)
-        try await reserved.start()
-        let port = await reserved.port
-        await reserved.stop()
+        // One listener, bound for the whole test. It starts silent, so the
+        // first round finds nothing to handshake with and exhausts; then it
+        // serves, on the same port. The port is never released, so no other
+        // node in this suite can take it.
+        let node = LoopbackNode(params: params, startSilent: true)
+        try await node.start()
+        defer { Task { await node.stop() } }
+        let endpoint = await node.endpoint
 
-        let endpoint = PeerEndpoint(host: "127.0.0.1", port: port)
         let pool = PeerPool(params: params, peerCount: 1, manualPeers: [endpoint],
                             dialTimeout: .milliseconds(400))
         await pool.start()
@@ -168,9 +170,7 @@ struct PeerPoolTests {
         #expect(status.exhausted)
 
         // The same endpoint now serves: retry connects without a restart.
-        let node = LoopbackNode(params: params, listenPort: port)
-        try await node.start()
-        defer { Task { await node.stop() } }
+        await node.beginServing()
         await pool.retry()
         status = await pool.connectionStatus
         #expect(status.connected == 1)
