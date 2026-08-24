@@ -585,9 +585,6 @@ public actor Wallet {
     private let keyStore: any KeyStore
     private let storageURL: URL?
     private var state: WalletState
-    /// Transient silent-payment scan state: the scanner (which holds b_scan —
-    /// deliberately weaker than the signing rule below, a view key can't
-    /// spend) and the filter-stage candidates by height. Never persisted.
 
     init(network: BitcoinNetwork, descriptor: Descriptor, accountKey: HDKey,
          keyStore: any KeyStore, storageURL: URL?, state: WalletState) throws {
@@ -747,9 +744,8 @@ public actor Wallet {
     ///
     /// Descriptor lookahead finds new BIP86 payments. Known UTXO scripts find
     /// *spends* of coins we already hold — BIP158 basic filters include the
-    /// prevout scriptPubKey. Silent-payment outputs are not on the descriptor
-    /// chains, so omitting them lets a third-party spend (or a no-change send
-    /// that never confirms locally) pass the filter unnoticed: `apply` would
+    /// prevout scriptPubKey — so a third-party spend (or a no-change send that
+    /// never confirms locally) cannot pass the filter unnoticed: `apply` would
     /// have removed the UTXO if the block had been fetched. Import
     /// verification (`docs/import.md` §3) relies on this same list to put
     /// claimed scripts in the filter stream.
@@ -780,9 +776,7 @@ public actor Wallet {
 
     /// Forward-only filter scan (docs/read-side.md §2.5): matched blocks are
     /// applied to the UTXO set and history; the scan position mirrors into the
-    /// persisted state afterwards. With a tweak index, silent-payment
-    /// candidates ride the same filter stream (fail-closed — see
-    /// FilterSync.sync).
+    /// persisted state afterwards.
     public func scan(using sync: FilterSync) async throws {
         let scripts = try watchScripts()
         try await sync.sync(watchScripts: scripts) { match in
@@ -1085,11 +1079,6 @@ public actor Wallet {
     /// PSBT creator → per-input key-path signer → finalizer/extractor. The
     /// change output, when any, goes to the next unused internal address.
     ///
-    /// `silentPayments` are BIP352 destinations: their P2TR output scripts are
-    /// derived after coin selection, when the input set and its keys are known
-    /// (BIP352 §Creating outputs), and replace the same-size placeholders used
-    /// for fee estimation. Signing stays SIGHASH_DEFAULT — the BIP352-safe
-    /// sighash for taproot inputs.
     /// `chainTip` is the validated header-chain tip, and carries no default:
     /// omitting it is what stamps a fingerprint onto the chain (#139), so every
     /// call site is made to decide rather than inherit a silent zero.
@@ -1400,11 +1389,12 @@ public actor Wallet {
         }
         var psbt = try PSBT(unsignedTx: transaction, inputs: inputInfo, outputs: outputInfo)
         for (index, utxo) in selected.enumerated() {
-            // `keyPathSecret`, never `tweakedPrivateKey` directly: a
-            // silent-payment UTXO's output key has no TapTweak, so BIP86
-            // coordinates would sign it with the wrong key — valid-looking
-            // and unspendable. Both sends and replacements come through here.
-            try psbt.signKeyPath(input: index, tweakedPrivateKey: keyPathSecret(for: utxo))
+            // BIP86 key-path spend: the output key is the account key tweaked
+            // by the coin's own chain/index coordinates. Both sends and
+            // replacements come through here.
+            try psbt.signKeyPath(
+                input: index,
+                tweakedPrivateKey: tweakedPrivateKey(chain: utxo.chain, index: utxo.index))
         }
         try psbt.finalize()
         return (psbt, try psbt.extractedTransaction())
@@ -1455,10 +1445,6 @@ public actor Wallet {
 
     /// The key-path secret that signs for a UTXO: the BIP86 tweaked key of
     /// the taproot output key.
-    private func keyPathSecret(for utxo: WalletUTXO) throws -> Data {
-        try tweakedPrivateKey(chain: utxo.chain, index: utxo.index)
-    }
-
 
     // MARK: - Export
 

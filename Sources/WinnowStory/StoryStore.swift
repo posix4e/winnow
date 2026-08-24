@@ -7,7 +7,6 @@ public struct StoryPaths: Sendable, Equatable {
     public let root: URL
     public let runDirectory: URL
     public let privateState: URL
-    public let tweaks: URL
     public let artifacts: URL
 
     public init(repository: URL, runID: String) {
@@ -15,7 +14,6 @@ public struct StoryPaths: Sendable, Equatable {
         root = repository.appending(path: ".build/winnow-story/runs", directoryHint: .isDirectory)
         runDirectory = root.appending(path: runID, directoryHint: .isDirectory)
         privateState = runDirectory.appending(path: "private.json")
-        tweaks = runDirectory.appending(path: "tweaks.json")
         artifacts = runDirectory.appending(path: "artifacts", directoryHint: .isDirectory)
     }
 }
@@ -40,7 +38,6 @@ public struct StoryStore: Sendable {
         let state = StoryRunState(runID: paths.runDirectory.lastPathComponent,
                                   environment: environment, secrets: secrets, now: now)
         try save(state)
-        try writeJSON([String: [String]](), to: paths.tweaks, permissions: 0o600)
         return state
     }
 
@@ -104,22 +101,6 @@ public struct StoryStore: Sendable {
         try data.write(to: paths.privateState, options: .atomic)
         try FileManager.default.setAttributes([.posixPermissions: 0o600],
                                               ofItemAtPath: paths.privateState.path)
-    }
-
-    public func loadTweaks() throws -> [String: [String]] {
-        guard FileManager.default.fileExists(atPath: paths.tweaks.path) else { return [:] }
-        return try Self.decoder.decode([String: [String]].self, from: Data(contentsOf: paths.tweaks))
-    }
-
-    public func addTweak(height: UInt32, hex: String) throws {
-        guard hex.count == 66, hex.allSatisfy(\.isHexDigit) else {
-            throw StoryModelError.invalidTransition("a silent-payment tweak must be a 33-byte hex point")
-        }
-        var tweaks = try loadTweaks()
-        var values = tweaks[String(height)] ?? []
-        if !values.contains(hex.lowercased()) { values.append(hex.lowercased()) }
-        tweaks[String(height)] = values
-        try writeJSON(tweaks, to: paths.tweaks, permissions: 0o600)
     }
 
     public func finish(_ state: StoryRunState, now: Date = Date()) throws {

@@ -451,9 +451,8 @@ extension Wallet {
         }
 
         let utxos = try bundle.claimedUTXOs()
-        // Validate every claim from key material in the bundle. Descriptor
-        // outputs use their BIP86 coordinates. Silent-payment outputs use the
-        // mnemonic-derived BIP352 spend key plus their persisted tweak.
+        // Validate every claim from key material in the bundle: descriptor
+        // outputs are re-derived from their BIP86 coordinates.
         for utxo in utxos {
             let expected = try descriptor
                 .derived(index: utxo.index,

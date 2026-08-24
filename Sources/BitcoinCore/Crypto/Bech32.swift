@@ -47,8 +47,8 @@ public enum Bech32 {
         hrp.map { $0 >> 5 } + [0] + hrp.map { $0 & 31 }
     }
 
-    /// `maxLength` is the BIP173 90-char limit by default; BIP352 silent
-    /// payment addresses (117 chars) raise it to their suggested 1023.
+    /// `maxLength` is the BIP173 90-char limit by default; a scheme that
+    /// defines a longer ceiling passes its own.
     public static func encode(hrp: String, data: [UInt8], encoding: Encoding,
                               maxLength: Int = 90) throws -> String {
         guard !hrp.isEmpty, hrp.utf8.allSatisfy({ $0 >= 33 && $0 <= 126 }) else {

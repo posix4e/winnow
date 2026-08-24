@@ -167,8 +167,9 @@ public actor FilterSync {
         progress.filterHeaders[String(height)].flatMap { Data(hex: $0) }
     }
 
-    /// `extraScripts` supplies per-height additions to the watch list (the
-    /// silent-payment candidate scripts, which change every block). It is
+    /// `extraScripts` supplies per-height additions to the watch list, for
+    /// payment types whose output scripts are not fixed by the descriptor and
+    /// so cannot be enumerated up front. It is
     /// deliberately fail-closed: a throw aborts the sync before the frontier
     /// advances. Continuing a batch without its extra scripts would let a
     /// forward-only scan skip those payments permanently and invisibly — an

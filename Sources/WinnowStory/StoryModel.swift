@@ -330,8 +330,6 @@ public struct StoryRunState: Codable, Sendable, Equatable {
     public var activeCheckpoint: StoryCheckpoint
     public var recordingPID: Int32?
     public var recordingStage: String?
-    public var indexPort: UInt16
-    public var indexPID: Int32?
     public var musigSecretNonces: [String: String]
     /// Exact public PSBTs for Mateo's current/completed nonce session. Keeping
     /// these beside the protected nonces makes both CLI rounds idempotent:
@@ -359,8 +357,6 @@ public struct StoryRunState: Codable, Sendable, Equatable {
         activeCheckpoint = .preflight
         recordingPID = nil
         recordingStage = nil
-        indexPort = UInt16(19_000 + StoryRunState.stableHash(runID) % 1_000)
-        indexPID = nil
         musigSecretNonces = [:]
         musigNoncePSBT = nil
         musigPartialPSBT = nil

@@ -345,11 +345,6 @@ public enum WinnowStoryCLI {
                 state.recordingPID = nil
                 state.recordingStage = nil
             }
-            if system.isAlive(pid: state.indexPID) { _ = kill(state.indexPID!, SIGTERM) }
-            // A finished/deferred run must not advertise a fixture process
-            // that no longer exists. Resume will start a fresh one if the
-            // silent-payment checkpoint is explicitly revisited.
-            state.indexPID = nil
             if let udid = state.environment.simulatorUDID {
                 try system.collectRunEvidence(udid: udid, runID: state.runID,
                                               destination: store.paths.artifacts)
@@ -391,24 +386,6 @@ public enum WinnowStoryCLI {
 
         default:
             usage()
-        }
-    }
-
-    private static func ensureIndexServer(state: inout StoryRunState, store: StoryStore) throws {
-        if let pid = state.indexPID, kill(pid, 0) == 0 { return }
-        let process = Process()
-        process.executableURL = URL(fileURLWithPath: CommandLine.arguments[0])
-        process.arguments = ["index-server", "--run", state.runID]
-        process.currentDirectoryURL = store.paths.repository
-        process.standardOutput = FileHandle.nullDevice
-        process.standardError = FileHandle.nullDevice
-        try process.run()
-        state.indexPID = process.processIdentifier
-        state.updatedAt = Date()
-        Thread.sleep(forTimeInterval: 0.25)
-        guard kill(process.processIdentifier, 0) == 0 else {
-            throw StorySystemError.command("silent index", process.terminationStatus,
-                                           "fixture exited during startup")
         }
     }
 
@@ -507,7 +484,7 @@ public enum WinnowStoryCLI {
           ./scripts/winnow-story review-media --run NAME [--approve]
           ./scripts/winnow-story checkpoint CHECKPOINT --pass|--waiting|--defer|--fail --run NAME [--note TEXT] [--txid ID] [--height N] [--label TEXT] [--persona ID]
           ./scripts/winnow-story verify --run NAME
-          ./scripts/winnow-story address --run NAME --persona lina [--silent]
+          ./scripts/winnow-story address --run NAME --persona lina
           ./scripts/winnow-story keys --run NAME
           ./scripts/winnow-story cosign-inheritance --run NAME --as leo|marina --psbt FILE
           ./scripts/winnow-story musig-nonce|musig-sign --run NAME --psbt FILE
