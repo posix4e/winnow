@@ -225,19 +225,17 @@ final class AppModel {
 
     enum DefaultsKey {
         static let network = "network"
-        /// Peer, explorer and tweak-index settings are per network, the way
-        /// storage already is. A signet node dialed first on mainnet spends
-        /// the pool's opening attempts on a peer that rejects the handshake,
-        /// and a signet explorer or tweak index answers mainnet queries with
-        /// confidently wrong data. See #81.
+        /// Peer and explorer settings are per network, the way storage
+        /// already is. A signet node dialed first on mainnet spends the pool's
+        /// opening attempts on a peer that rejects the handshake, and a signet
+        /// explorer answers mainnet queries with confidently wrong data.
+        /// See #81.
         static func manualPeers(_ network: BitcoinNetwork) -> String { "manualPeers.\(network.rawValue)" }
         static func esploraURL(_ network: BitcoinNetwork) -> String { "esploraURL.\(network.rawValue)" }
         /// The pre-#81 flat keys, migrated once into the active network.
         static let legacyManualPeers = "manualPeers"
         static let legacyEsploraURL = "esploraURL"
         /// Deliberately global: a preference, not a chain-specific endpoint.
-        /// With no tweak index for the current network the sync fails visibly
-        /// and tells the user to set one, rather than skipping heights.
         static let verifyFromGenesis = "verifyFromGenesis"
         /// Set at wallet creation, cleared only by the backup sheet's
         /// confirmed Done — a relaunch in between resumes the backup.
@@ -1522,7 +1520,7 @@ final class AppModel {
 
     /// Per-network wallets: switching network opens that network's own state
     /// (or onboarding when it has none) with a freshly built stack.
-    /// Moves any pre-#81 flat peer/explorer/tweak-index settings into the
+    /// Moves any pre-#81 flat peer/explorer settings into the
     /// network that was active when the app last wrote them, then removes the
     /// flat keys so the migration runs once.
     ///
