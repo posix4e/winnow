@@ -134,4 +134,49 @@ struct TransactionTests {
                             transactions: good.transactions + good.transactions)
         #expect(!doubled.hasValidMerkleRoot)
     }
+    /// A serialized script may exceed `MAX_SCRIPT_SIZE`.
+    ///
+    /// Consensus's 10,000-byte limit is a rule about *running* a script, not
+    /// about carrying one. A transaction may create an output whose
+    /// scriptPubKey is larger — it is unspendable, and the block holding it is
+    /// still valid. Bitcoin Core decodes such a transaction without complaint;
+    /// this asserts we do too.
+    ///
+    /// Found by the sustained signet soak, not by reasoning: the scan reached
+    /// a real block carrying a 99,919-byte script, rejected it as a protocol
+    /// violation, evicted the peer, was served the same block by the next one,
+    /// and never advanced again. A wallet that stops seeing its own payments
+    /// at an arbitrary block is the failure this pins.
+    @Test("a script larger than MAX_SCRIPT_SIZE still parses", arguments: [10_001, 99_919])
+    func oversizedSerializedScript(scriptSize: Int) throws {
+        var raw = Data()
+        raw.append(contentsOf: [0x02, 0x00, 0x00, 0x00])          // version 2
+        raw.append(0x01)                                          // 1 input
+        raw.append(Data(repeating: 0, count: 32))                 // prevout txid
+        raw.append(contentsOf: [0xFF, 0xFF, 0xFF, 0xFF])          // prevout vout
+        raw.append(0x00)                                          // empty scriptSig
+        raw.append(contentsOf: [0xFF, 0xFF, 0xFF, 0xFF])          // sequence
+        raw.append(0x01)                                          // 1 output
+        raw.append(Data(repeating: 0, count: 8))                  // value 0
+        // Minimal compactSize length, then an OP_RETURN-prefixed run of that
+        // size. Minimal matters: our serializer emits the shortest form, so a
+        // padded length would fail the round trip for reasons unrelated to the
+        // bound under test.
+        if scriptSize <= 0xFFFF {
+            raw.append(0xFD)
+            raw.append(contentsOf: withUnsafeBytes(of: UInt16(scriptSize).littleEndian) { Data($0) })
+        } else {
+            raw.append(0xFE)
+            raw.append(contentsOf: withUnsafeBytes(of: UInt32(scriptSize).littleEndian) { Data($0) })
+        }
+        raw.append(0x6A)
+        raw.append(Data(repeating: 0, count: scriptSize - 1))
+        raw.append(contentsOf: [0x00, 0x00, 0x00, 0x00])          // locktime
+
+        let decoded = try Transaction.decode(raw)
+        #expect(decoded.outputs.count == 1)
+        #expect(decoded.outputs[0].scriptPubKey.count == scriptSize,
+                "the script was truncated or refused")
+        #expect(decoded.serialized(includeWitness: false) == raw, "round trip")
+    }
 }
