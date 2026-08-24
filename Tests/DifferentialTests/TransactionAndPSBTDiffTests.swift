@@ -104,28 +104,6 @@ struct PSBTDiffTests {
     /// unsigned transaction; per-input/output maps keep every pair except the
     /// BIP370-only ones (previous txid / output index / sequence on inputs,
     /// amount / script on outputs).
-    private func v0Envelope(_ psbt: PSBT) throws -> String {
-        var data = Data([0x70, 0x73, 0x62, 0x74, 0xFF])
-        func serializeMap(_ pairs: [PSBT.KeyValue], into data: inout Data) {
-            for pair in pairs.sorted(by: { $0.key.lexicographicallyPrecedes($1.key) }) {
-                data.appendVarInt(UInt64(pair.key.count))
-                data.append(pair.key)
-                data.appendVarInt(UInt64(pair.value.count))
-                data.append(pair.value)
-            }
-            data.append(0)
-        }
-        let unsigned = try psbt.unsignedTransaction().serialized(includeWitness: false)
-        serializeMap([PSBT.KeyValue(type: 0x00, value: unsigned)], into: &data)
-        for input in psbt.inputs {
-            serializeMap(input.pairs.filter { ![0x0E, 0x0F, 0x10].contains($0.type) }, into: &data)
-        }
-        for output in psbt.outputs {
-            serializeMap(output.pairs.filter { ![0x03, 0x04].contains($0.type) }, into: &data)
-        }
-        return data.base64EncodedString()
-    }
-
     private func fixture() throws -> (secret: Data, internalKey: Data, script: Data, tx: Transaction) {
         let key = try testMaster().derived(path: "m/86'/1'/0'/0/0")
         let internalKey = BIP86.xonlyPublicKey(of: key)
