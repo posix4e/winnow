@@ -78,6 +78,19 @@ public struct ImportBundle: Codable, Equatable, Sendable {
         /// Present only in a bundle written by an `alpha` build. Decoded so
         /// the import can refuse it — never set by this build, which is why
         /// it is not an initializer parameter.
+        ///
+        /// The synthesized `Codable` here is load-bearing: any future explicit
+        /// `CodingKeys` or `init(from:)` must keep this key decodable under
+        /// exactly this name, or the refusal silently stops firing. The test
+        /// "an import bundle claiming a silent-payment UTXO is refused" is what
+        /// proves it still does — it writes the literal JSON key, so omitting,
+        /// skipping or renaming the property all fail it loudly. Deleting the
+        /// property instead breaks the build, which is the better outcome.
+        ///
+        /// Note that a decoded bundle can still *hold* the dangerous value in
+        /// memory. Every consumer today reaches UTXOs through `claimedUTXOs()`,
+        /// which is where the refusal lives; a future consumer reading `utxos`
+        /// directly would see the raw claim unguarded.
         public private(set) var silentPaymentTweak: String?
         /// True only for an output created by a coinbase transaction. Optional
         /// so older bundles remain readable; absence means false.
