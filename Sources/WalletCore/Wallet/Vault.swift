@@ -17,6 +17,10 @@ public enum VaultError: Error, Equatable {
 extension VaultError: LocalizedError {
     public var errorDescription: String? {
         switch self {
+        // `reason` is interpolated, so it must always be a developer-authored
+        // literal describing the shape that failed — never user input, and
+        // never any part of the descriptor itself, which can carry key
+        // material. Every current caller passes a literal.
         case let .invalidDescriptor(reason): "The vault descriptor is invalid: \(reason)."
         case let .scriptMismatch(index, choice):
             "Vault key \(choice)/\(index) does not produce the stored Bitcoin output."
