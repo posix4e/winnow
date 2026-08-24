@@ -78,4 +78,35 @@ struct SilentPaymentRefusalTests {
             _ = try bundle.claimedUTXOs()
         }
     }
+
+    /// Paying *to* a silent-payment address is the one place a user meets the
+    /// removal head-on, and the generic decoder called it invalid — which is
+    /// false. The address is well-formed; this build just cannot pay it.
+    @Test("an sp1 destination is named as a silent payment, not called invalid",
+          arguments: ["sp1qqgste7k9hx0qftg6qmwlkqtwuy6cycyavzmzj85c6qdfhjdpdjtdgqjuexzk6murw56suy3e0rd2cgqvycxttddwsvgxe2usfpxumr70xc9pkqwv",
+                      "tsp1qqgste7k9hx0qftg6qmwlkqtwuy6cycyavzmzj85c6qdfhjdpdjtdgqjuexzk6murw56suy3e0rd2cgqvycxttddwsvgxe2usfpxumr70xc9pkqwv"])
+    func silentPaymentDestinationIsNamed(address: String) throws {
+        for network in [BitcoinNetwork.mainnet, .signet] {
+            var thrown: (any Error)?
+            do { _ = try AddressDecoder.scriptPubKey(for: address, network: network) }
+            catch { thrown = error }
+            let error = try #require(thrown as? AddressError)
+            #expect(error == .silentPaymentAddress(address),
+                    "got \(error) — an sp1 code reported as invalid tells the user a falsehood")
+            let message = try #require(error.errorDescription)
+            #expect(message.lowercased().contains("alpha"),
+                    "the message must say where the feature went")
+        }
+    }
+
+    /// The control: a genuinely malformed address must still be called
+    /// invalid, or the case above is just swallowing every failure.
+    @Test("a malformed address is still invalid")
+    func malformedAddressStillInvalid() throws {
+        var thrown: (any Error)?
+        do { _ = try AddressDecoder.scriptPubKey(for: "bc1qnotarealaddress", network: .mainnet) }
+        catch { thrown = error }
+        #expect(thrown as? AddressError != nil)
+        #expect((thrown as? AddressError).map { if case .silentPaymentAddress = $0 { false } else { true } } == true)
+    }
 }
