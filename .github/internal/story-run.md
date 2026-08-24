@@ -27,7 +27,7 @@ clips, and the site—not Winnow's production UI.
 
 This is one flow of funds, not a gallery of unrelated features. Sofía keeps a
 small Brisa Café hot-wallet balance for customers and suppliers. After the
-standard and silent-payment scenes, she sweeps café savings into the Rivera
+standard payment scenes, she sweeps café savings into the Rivera
 family's 2-of-3 cold reserve, held by Elena, Harbor Exchange, and Ceiba Trust.
 Elena plus Leo return ordinary operating liquidity to Brisa Café. Leo plus
 Marina demonstrate recovery without Elena and direct legacy funds toward
@@ -123,13 +123,7 @@ reopened or failed.
    `winnow-story address --persona lina`, pay it, confirm relay, immediately
    bump the fee, and record the original as replaced and the replacement as
    confirmed.
-4. **Experimental silent payments.** Accept the real warning. `resume` starts the run-local
-   height-only tweak index and prints its URL. Enter that URL in Settings.
-   Receive Lina's payment with `companion-silent-send` using her confirmed
-   supplier-payment output, prove the credited output can be spent, then use
-   `address --persona lina --silent` to send silently back to her. Add known
-   public tweak points with `add-tweak --height N --hex POINT`.
-5. **Brisa Café's Rivera cold reserve.** `keys` prints the named Elena, Leo,
+4. **Brisa Café's Rivera cold reserve.** `keys` prints the named Elena, Leo,
    and Marina expressions. Create the 2-of-3 vault, then fund it by sweeping
    savings from Sofía's already-funded hot wallet—do not introduce unrelated
    faucet coins. Copy the creator PSBT into files and use
@@ -137,19 +131,18 @@ reopened or failed.
    return operating liquidity to Sofía's hot wallet. Exercise Leo+Marina for
    next-of-kin recovery, directing the recovered amount toward the joint
    reserve while preserving and verifying cold-vault change.
-6. **Rivera joint reserve.** Fund Elena+Mateo's 2-of-2 MuSig2 reserve from the
+5. **Rivera joint reserve.** Fund Elena+Mateo's 2-of-2 MuSig2 reserve from the
    preceding cold/recovery flow. Copy the initial
    PSBT to `musig-nonce`; combine Mateo's result with Elena's UI nonce without
    leaving the screen; feed the combined nonce PSBT to `musig-sign`; combine,
    aggregate, broadcast, and confirm. The runner removes Mateo's secret nonce
    immediately after round two so it cannot be reused.
-7. **Replacement phone.** Capture watch-only export before silent funds. After
-   silent receipt, capture the seed-required error and the redacted seed export.
+6. **Replacement phone.** Capture the watch-only export and the redacted seed export.
    Resume launches an isolated replacement-phone namespace using Sofía's same
    identity; import, verify forward, and compare balance/history/spendability.
-8. **Privacy tour.** Capture connected public peers, configure the selected
+7. **Privacy tour.** Capture connected public peers, configure the selected
    explorer, cancel its address/transaction disclosure warning, capture the
-   experimental silent-payment disclosure, manual-peer controls, and bundled design papers. Do not switch
+   manual-peer controls, and bundled design papers. Do not switch
    to or fund mainnet.
 
 Each successful broadcast is recorded as `--waiting`; public signet confirmation
@@ -158,7 +151,7 @@ has no artificial failure timeout. If an app defect blocks a stage, mark it
 resume the same run at that checkpoint.
 
 Transaction stages need separate labels when they contain multiple broadcasts:
-the two silent transfers; cold-reserve funding plus its ordinary and recovery
+cold-reserve funding plus its ordinary and recovery
 spends; and joint-reserve funding plus its MuSig2 spend. Run `verify` after each
 confirmation. `finish` refuses to pass unless every required transaction and
 both inter-wallet money links have authenticated evidence.
