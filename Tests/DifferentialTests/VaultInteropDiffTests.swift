@@ -215,4 +215,128 @@ struct VaultInteropDiffTests {
                 "the co-signed spend did not confirm")
         trace("confirmed \(txid.prefix(16))… — unsigned was \(unsignedBase64.prefix(12))…")
     }
+    /// Can Core co-sign a MuSig2 vault? (#58, S8)
+    ///
+    /// #58 is explicit that MuSig2 compatibility must never be inferred from
+    /// ordinary PSBT support, and the script-path result above is exactly the
+    /// evidence someone would be tempted to infer it from. So it is asked
+    /// separately.
+    ///
+    /// Key-path MuSig2 needs a two-round protocol: every participant publishes
+    /// a public nonce (BIP373 `PSBT_IN_MUSIG2_PUB_NONCE`, 0x1B), then each
+    /// partial-signs against the aggregate of those nonces
+    /// (`PSBT_IN_MUSIG2_PARTIAL_SIG`, 0x1C). A wallet that can parse a
+    /// `musig()` descriptor and call the output solvable has said nothing
+    /// about whether it implements either round.
+    ///
+    /// No mining here on purpose: `walletprocesspsbt` works from the PSBT's
+    /// own witness UTXO, so a fabricated one answers the question in a second
+    /// rather than in a hundred blocks. If Core ever does contribute, the
+    /// on-chain spend becomes worth building — and this test failing is how
+    /// we would find out.
+    @Test("Core's MuSig2 participation, whatever it currently is")
+    func coreMuSig2Participation() async throws {
+        func trace(_ step: String) { FileHandle.standardError.write(Data("musig: \(step)\n".utf8)) }
+        let core = try coreParticipant(wallet: "interop")
+        let ourMaster = try HDKey(seed: BIP39.seed(
+            mnemonic: BIP39.mnemonic(entropy: Data([0x60] + Data(repeating: 0, count: 15)))))
+        let ourAccount = try ourMaster.derived(path: "m/86'/1'/0'")
+        // BIP390: participants carry no derivation of their own when the
+        // musig() itself has the suffix.
+        let ourBare = "[\(String(format: "%08x", ourMaster.fingerprint))/86'/1'/0']"
+            + ourAccount.neutered.serialized(network: .testnet)
+        let vault = try Vault("tr(musig(\(core.publicExpression),\(ourBare))/<0;1>/*)",
+                              network: .signet)
+
+        // Agreement first, as with the script-path vault.
+        let ourText = vault.descriptor.serialized()
+        let derived = try BitcoinCLI.runJSON(["deriveaddresses", ourText, "[0,1]"])
+        let coreAddresses = ((derived as? [Any])?.first as? [Any])?.compactMap { $0 as? String }
+        let ourAddresses = try (0 ..< 2).map { try vault.address(index: UInt32($0)) }
+        #expect(coreAddresses == ourAddresses, "Core and Winnow disagree about musig addresses")
+        trace("descriptor agreement over \(ourAddresses.count) musig addresses")
+
+        // Core holds one of the two participant keys.
+        let wallet = "musig-interop-\(UInt32.random(in: 0 ..< 1_000_000))"
+        _ = try BitcoinCLI.run(["-named", "createwallet", "wallet_name=\(wallet)", "blank=true"])
+        let body = String(ourText.split(separator: "#")[0])
+        let corePublicOurSpelling = core.publicExpression
+            .replacingOccurrences(of: "h/", with: "'/").replacingOccurrences(of: "h]", with: "']")
+        let privateText = body.replacingOccurrences(of: corePublicOurSpelling,
+                                                    with: core.privateExpression)
+        #expect(privateText != body, "Core's participant key was not substituted")
+        let checksum = try BitcoinCLI.string(
+            BitcoinCLI.runObject(["getdescriptorinfo", privateText]), "checksum")
+        let imported = try BitcoinCLI.runJSON(
+            ["importdescriptors",
+             #"[{"desc":"\#(privateText)#\#(checksum)","timestamp":"now","active":true,"range":[0,2]}]"#],
+            wallet: wallet)
+        let importOK = ((imported as? [Any])?.first as? [String: Any])?["success"] as? Bool
+        #expect(importOK == true, "Core refused a musig descriptor holding one private key")
+        let addressInfo = try BitcoinCLI.runObject(["getaddressinfo", ourAddresses[0]], wallet: wallet)
+        trace("Core wallet: ismine=\(String(describing: addressInfo["ismine"]))"
+            + " solvable=\(String(describing: addressInfo["solvable"]))")
+
+        // Round 1 from our side: our nonce goes in, Core's does not yet exist.
+        let script = try vault.scriptPubKey(index: 0)
+        let utxo = WalletUTXO(txid: Data(repeating: 0x7C, count: 32), vout: 0, amount: 200_000,
+                              scriptPubKey: script, chain: .receive, index: 0, height: 500)
+        let payout = try BIP86.scriptPubKey(
+            internalKey: BIP86.xonlyPublicKey(of: testMaster().derived(path: "m/86'/1'/9'/0/4")))
+        var psbt = try vault.createSpend(
+            utxos: [utxo], payments: [Payment(amount: 50_000, scriptPubKey: payout)],
+            changeIndex: 0, feeRateSatPerVByte: 2, chainTip: 600)
+        let context = try vault.muSig2Context(choice: 0, index: 0)
+        var secretNonces = try vault.muSig2AttachNonce(
+            &psbt, input: 0, context: context, master: ourMaster, knownUTXOs: [utxo],
+            ownedOutputCoordinates: [.init(choice: 1, index: 0)])
+        _ = secretNonces
+        let ourNonces = psbt.inputs[0].pairs.filter { $0.type == 0x1B }.count
+        #expect(ourNonces == 1, "we did not attach our own nonce")
+
+        // The question. finalize=false for the same reason as the script-path
+        // case: finalizing would consume anything Core added.
+        let handed = try v0Envelope(psbt)
+        let processed = try BitcoinCLI.runObject(
+            ["walletprocesspsbt", handed, "true", "DEFAULT", "true", "false"], wallet: wallet)
+        let returned = try BitcoinCLI.string(processed, "psbt")
+        let maps = try v0InputMaps(base64: returned, inputCount: psbt.inputs.count)
+        let nonces = maps[0].filter { $0.type == 0x1B }.count
+        let partials = maps[0].filter { $0.type == 0x1C }.count
+        trace("Core returned nonces=\(nonces) partials=\(partials) "
+            + "complete=\(String(describing: processed["complete"]))")
+
+        // Core contributes a nonce: BIP373 round 1 is implemented, which
+        // ordinary PSBT support would never have told us.
+        #expect(nonces == ourNonces + 1, "Core did not contribute a MuSig2 public nonce")
+        #expect(partials == 0, "a partial signature before every nonce is in would be a protocol error")
+
+        // And here is exactly where interop stops.
+        //
+        // BIP373 keys a nonce by <participant pubkey><aggregate pubkey>. We
+        // write the *root aggregate* P; Core writes the taproot-*tweaked*
+        // output key Q. Same descriptor, same participants, identical
+        // addresses — and two nonce entries neither side can look the other's
+        // up by, which is why round 2 cannot proceed between us.
+        //
+        // Which of the two BIP373 actually mandates is a question about the
+        // spec text rather than about this run, and is deliberately not
+        // settled here. What this establishes is that they disagree, and
+        // precisely how — the part that was unknown.
+        let outputKey = Data(script.dropFirst(2))
+        var ourAggregate: Data?
+        var coreAggregate: Data?
+        for pair in maps[0] where pair.type == 0x1B {
+            let aggregate = Data(pair.key.dropFirst().dropFirst(33))
+            if aggregate.dropFirst() == outputKey { coreAggregate = aggregate }
+            else { ourAggregate = aggregate }
+        }
+        let mine = try #require(ourAggregate, "our own nonce went missing from the round trip")
+        let theirs = try #require(coreAggregate, "Core's nonce is not keyed by the tweaked output key")
+        #expect(mine == context.aggregate, "we key the nonce by the root aggregate")
+        #expect(theirs.dropFirst() == outputKey, "Core keys the nonce by the tweaked output key")
+        #expect(mine != theirs,
+                "the two now agree on the aggregate key: round 2 and an on-chain MuSig2 co-sign are worth building")
+        trace("round 1 works on both sides; round 2 is blocked by the aggregate-key encoding")
+    }
 }

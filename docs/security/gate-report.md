@@ -161,8 +161,11 @@ every address, and it spends nothing.
    - *Mixed-wallet PSBT fixtures:* **done for script-path.** Bitcoin Core holds
      one key of three in a `tr(NUMS, sortedmulti_a(2,…))` vault and co-signs a
      spend that confirms — #58's acceptance bar. The envelope conversion every
-     Core exchange forces is proven lossless. **MuSig2/BIP390 signing remains
-     untested**, and is not inferred from any of it.
+     Core exchange forces is proven lossless. **MuSig2/BIP390 reaches round 1 and stops:** Core
+     contributes a BIP373 nonce, but keys it by the tweaked output key
+     where we key by the root aggregate, so neither side can consume the
+     other's. Named, pinned by test, and not inferred from the
+     script-path result.
    - *Device Keychain and screenshot checks:* the simulator half is done and
      the claims are observations now rather than readings. **The hardware half
      is not, and cannot be:** that iOS enforces the protection class when the
