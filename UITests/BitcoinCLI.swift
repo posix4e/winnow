@@ -27,7 +27,7 @@ enum BitcoinCLI {
     /// The node's BIP325 signet challenge (hex); its signing key lives in the
     /// "miner" wallet of the same datadir.
     static let challengeHex =
-        "512103c0fd3f9280629b86d7adcfe340bc6b2a01ad0696c4c3d624315d805ae73d7a9751ae"
+        "512102d4d3dfe322ab358061c7e08beebb48dc06a4c175342b975ecd0d55a79e6d6cdc51ae"
     static let challenge = Data(hex: challengeHex)!
 
     /// The HOST home directory: inside the iOS simulator NSHomeDirectory()

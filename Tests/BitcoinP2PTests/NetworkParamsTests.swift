@@ -40,11 +40,13 @@ struct NetworkParamsTests {
         #expect(NetworkParams.signetMagic(challenge: NetworkParams.signetChallenge)
             == NetworkParams.signet.magic)
 
-        let challenge = Data(hex: "512103c0fd3f9280629b86d7adcfe340bc6b2a01ad0696c4c3d624315d805ae73d7a9751ae")!
+        // The differential fixture's challenge (scripts/signet-fixture).
+        let challenge = Data(hex: "512102d4d3dfe322ab358061c7e08beebb48dc06a4c175342b975ecd0d55a79e6d6cdc51ae")!
         let custom = NetworkParams.customSignet(challenge: challenge, defaultPort: 38_401)
-        // Verified against a live node running this challenge (its version
-        // message arrives prefixed with this magic).
-        #expect(custom.magic == Data(hex: "906aeac3"))
+        // Verified against a live node running this challenge: the differential
+        // suite completes a handshake with it, which it could not do if this
+        // derivation and the node's own magic disagreed.
+        #expect(custom.magic == Data(hex: "25a1f709"))
         #expect(custom.defaultPort == 38_401)
         #expect(custom.network == .signet)
         #expect(custom.genesisHash == NetworkParams.signet.genesisHash)
