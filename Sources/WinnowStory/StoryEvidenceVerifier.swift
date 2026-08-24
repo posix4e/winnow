@@ -158,7 +158,6 @@ public struct StoryEvidenceAudit: Sendable, Equatable {
         let minimumVerified: [StoryCheckpoint: Int] = [
             .customerFunding: 1,
             .supplierRBF: 1,
-            .silentPayments: 2,
             .inheritanceVault: 3,
             .jointReserve: 2,
         ]
@@ -171,7 +170,7 @@ public struct StoryEvidenceAudit: Sendable, Equatable {
         }
 
         let hotIDs = Set(evidence.filter {
-            [.customerFunding, .supplierRBF, .silentPayments].contains($0.checkpoint)
+            [.customerFunding, .supplierRBF].contains($0.checkpoint)
                 && $0.status == .verified
         }.map(\.txid))
         let cold = evidence.filter { $0.checkpoint == .inheritanceVault && $0.status == .verified }

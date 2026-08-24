@@ -61,7 +61,6 @@ public enum StoryCheckpoint: String, Codable, CaseIterable, Sendable {
     case sofiaOnboarding = "sofia-onboarding"
     case customerFunding = "customer-funding"
     case supplierRBF = "supplier-rbf"
-    case silentPayments = "silent-payments"
     case inheritanceVault = "inheritance-vault"
     case jointReserve = "joint-reserve"
     case replacementPhone = "replacement-phone"
@@ -74,7 +73,6 @@ public enum StoryCheckpoint: String, Codable, CaseIterable, Sendable {
         case .sofiaOnboarding: "Sofía opens Brisa Café’s wallet"
         case .customerFunding: "First customer payment"
         case .supplierRBF: "Supplier payment and fee replacement"
-        case .silentPayments: "Sofía and Lina use silent payments"
         case .inheritanceVault: "Brisa Café’s Rivera cold reserve"
         case .jointReserve: "Rivera joint reserve"
         case .replacementPhone: "Backup and replacement phone"
@@ -100,14 +98,12 @@ public enum StoryCheckpoint: String, Codable, CaseIterable, Sendable {
             "Keep Receive open, fund the displayed address once, capture unconfirmed detection, then mark this checkpoint waiting until signet confirms it."
         case .supplierRBF:
             "Pay Lina’s standard address, capture review and relay, replace the fee immediately, and verify the replacement confirms."
-        case .silentPayments:
-            "Accept the silent-payment warning, set the local fixture URL, receive Lina’s silent payment, then send to Lina’s silent address."
         case .inheritanceVault:
             "Sweep Brisa Café savings from Sofía’s hot wallet into the Elena/Leo/Marina 2-of-3 cold reserve. Return operating money with Elena+Leo, then exercise Leo+Marina recovery toward the family reserve."
         case .jointReserve:
             "Fund Elena and Mateo’s 2-of-2 MuSig2 reserve from the preceding cold/recovery flow, complete nonce and signature rounds without leaving the signing screen, then confirm."
         case .replacementPhone:
-            "Export safely, import into Sofía’s replacement-phone namespace, verify forward history, balance, and silent-payment spendability."
+            "Export safely, import into Sofía’s replacement-phone namespace, verify forward history and balance."
         case .privacyTour:
             "Capture public peers, server/privacy warnings, manual-peer controls, and bundled design papers without switching to mainnet."
         case .publish:
@@ -136,14 +132,6 @@ public struct StoryEvent: Codable, Sendable, Equatable {
         self.persona = persona
         self.fields = fields
     }
-}
-
-/// Versioned developer contract for the run-local silent-payment fixture.
-/// The HTTP response at `/tweaks/{height}` is a JSON array of compressed
-/// 33-byte public tweak points encoded as lowercase hex.
-public enum SilentTweakIndexContract {
-    public static let version = 1
-    public static let route = "/tweaks/{height}"
 }
 
 public enum StoryCheckpointStatus: String, Codable, Sendable {
@@ -268,7 +256,6 @@ public struct StoryCompanionTransaction: Codable, Sendable, Equatable {
     public var personaID: String
     public var txid: String
     public var rawTransaction: String
-    public var tweakData: String
     public var amount: Int64
     public var fee: Int64
     public var relayPeerCount: Int
@@ -277,7 +264,7 @@ public struct StoryCompanionTransaction: Codable, Sendable, Equatable {
     public var replaces: String?
 
     public init(label: String, personaID: String, txid: String,
-                rawTransaction: String, tweakData: String,
+                rawTransaction: String,
                 amount: Int64, fee: Int64, relayPeerCount: Int = 0,
                 replaces: String? = nil) {
         version = Self.currentVersion
@@ -285,7 +272,6 @@ public struct StoryCompanionTransaction: Codable, Sendable, Equatable {
         self.personaID = personaID
         self.txid = txid
         self.rawTransaction = rawTransaction
-        self.tweakData = tweakData
         self.amount = amount
         self.fee = fee
         self.relayPeerCount = relayPeerCount
@@ -344,8 +330,6 @@ public struct StoryRunState: Codable, Sendable, Equatable {
     public var activeCheckpoint: StoryCheckpoint
     public var recordingPID: Int32?
     public var recordingStage: String?
-    public var indexPort: UInt16
-    public var indexPID: Int32?
     public var musigSecretNonces: [String: String]
     /// Exact public PSBTs for Mateo's current/completed nonce session. Keeping
     /// these beside the protected nonces makes both CLI rounds idempotent:
@@ -373,8 +357,6 @@ public struct StoryRunState: Codable, Sendable, Equatable {
         activeCheckpoint = .preflight
         recordingPID = nil
         recordingStage = nil
-        indexPort = UInt16(19_000 + StoryRunState.stableHash(runID) % 1_000)
-        indexPID = nil
         musigSecretNonces = [:]
         musigNoncePSBT = nil
         musigPartialPSBT = nil

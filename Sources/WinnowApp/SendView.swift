@@ -20,7 +20,7 @@ struct SendReviewInputs: Equatable {
     var amount: Int64? { Int64(amountText) }
 }
 
-/// Send to any standard address or an sp1…/tsp1… silent payment code: fee
+/// Send to any standard address: fee
 /// selection (FeePolicy presets + the peers' feefilter floor + override), a
 /// review step, then sign + broadcast via TxBroadcaster. Relay status comes
 /// from the broadcaster's events; confirmation arrives as a filter match
@@ -49,11 +49,6 @@ struct SendView: View {
         Double(overrideText.trimmingCharacters(in: .whitespaces))
     }
 
-    private var destinationIsSilentPayment: Bool {
-        let trimmed = destination.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
-        return trimmed.hasPrefix("sp1") || trimmed.hasPrefix("tsp1")
-    }
-
     private var reviewInputs: SendReviewInputs {
         SendReviewInputs(destination: destination, amountText: amountText,
                          priority: priority, overrideText: overrideText,
@@ -64,7 +59,7 @@ struct SendView: View {
         NavigationStack {
             Form {
                 Section("Destination") {
-                    TextField("Address or sp1… silent payment code", text: $destination)
+                    TextField("Bitcoin address", text: $destination)
                         .font(.system(.footnote, design: .monospaced))
                         .autocorrectionDisabled()
                         .textInputAutocapitalization(.never)
@@ -85,15 +80,6 @@ struct SendView: View {
                         }
                 }
 
-                if destinationIsSilentPayment {
-                    Section {
-                        Label("Silent payments are experimental", systemImage: "flask")
-                            .foregroundStyle(.orange)
-                        Text("Sending does not use a tweak-data service, but receiving support and interoperability are still developing. Confirm that the recipient actively supports BIP352.")
-                            .font(.footnote)
-                            .foregroundStyle(.secondary)
-                    }
-                }
 
                 Section {
                     Picker("Priority", selection: $priority) {
@@ -131,11 +117,9 @@ struct SendView: View {
 
                 if let preview, sentTxid == nil {
                     Section("Review") {
-                        LabeledContent("Pays", value: !preview.silentPayments.isEmpty
-                                       ? "silent payment (derived P2TR output)"
-                                       : abbreviated(preview.destination))
-                        LabeledContent("Amount", value: satsText(preview.payments.map(\.amount).reduce(0, +)
-                                                                   + preview.silentPayments.map(\.amount).reduce(0, +)))
+                        LabeledContent("Pays", value: abbreviated(preview.destination))
+                        LabeledContent("Amount",
+                                       value: satsText(preview.payments.map(\.amount).reduce(0, +)))
                         LabeledContent("Fee", value: satsText(preview.fee))
                         LabeledContent("Rate", value: feeRateText(preview.feeRateSatPerVByte))
                         LabeledContent("Inputs", value: "\(preview.inputCount)")

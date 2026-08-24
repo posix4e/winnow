@@ -233,7 +233,6 @@ private func exercise(_ target: Target, data: Data, rng: inout SplitMix64) throw
                 try require(script.count <= 42, "address produced an oversized standard script")
             }
         }
-        _ = try? SilentPaymentAddress(string)
     case .importBundle:
         guard data.count <= 4_000_000, let bundle = try? JSONDecoder().decode(ImportBundle.self, from: data) else { return }
         let serialized = try bundle.serialized()

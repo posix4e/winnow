@@ -4,6 +4,10 @@ import Foundation
 
 public enum AddressError: Error, Equatable, LocalizedError {
     case invalidAddress(String)
+    /// A BIP352 silent-payment code. Well-formed, and not something this build
+    /// can pay: reporting it as invalid would be false, and would send the user
+    /// looking for the wrong problem.
+    case silentPaymentAddress(String)
     /// Address belongs to a different network (HRP or base58 prefix mismatch).
     case wrongNetwork(String)
     case unsupportedWitnessVersion(Int)
@@ -13,6 +17,8 @@ public enum AddressError: Error, Equatable, LocalizedError {
         switch self {
         case .invalidAddress:
             "That is not a valid Bitcoin address."
+        case .silentPaymentAddress:
+            "That is a silent-payment address, and this build cannot pay one. Silent payments moved to the alpha build — nothing is wrong with the address."
         case .wrongNetwork:
             "That address belongs to a different Bitcoin network."
         case let .unsupportedWitnessVersion(version):
@@ -39,6 +45,11 @@ public enum AddressDecoder {
     /// Decodes an address to its output scriptPubKey, enforcing the network.
     public static func scriptPubKey(for address: String, network: BitcoinNetwork) throws -> Data {
         let lowercased = address.lowercased()
+        // Checked before anything else: an sp1…/tsp1… code is well-formed and
+        // unpayable here, which is a different fact from a malformed address.
+        if lowercased.hasPrefix("sp1") || lowercased.hasPrefix("tsp1") {
+            throw AddressError.silentPaymentAddress(address)
+        }
         if lowercased.hasPrefix("bc1") || lowercased.hasPrefix("tb1") {
             let expectedPrefix = hrp(for: network) + "1"
             guard lowercased.hasPrefix(expectedPrefix) else {

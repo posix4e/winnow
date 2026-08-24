@@ -367,7 +367,6 @@ actor VaultStore {
             for utxo in record.utxos {
                 guard utxo.txid.count == 32,
                       utxo.amount > 0, utxo.amount <= BitcoinAmount.maximum,
-                      utxo.silentPaymentTweak == nil,
                       utxo.index < maximumWatchCount
                 else {
                     throw VaultStorageError.invalidState("vault output metadata is invalid")

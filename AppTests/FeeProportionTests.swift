@@ -20,15 +20,13 @@ import WalletCore
 /// job.
 @Suite("Fee proportion warning")
 struct FeeProportionTests {
-    private func preview(amount: Int64, fee: Int64,
-                         silent: [SilentPayment] = []) -> AppModel.SendPreview {
+    private func preview(amount: Int64, fee: Int64) -> AppModel.SendPreview {
         AppModel.SendPreview(
             destination: "tb1p-recipient",
             payments: amount > 0
                 ? [Payment(amount: amount,
                            scriptPubKey: Data([0x51, 0x20] + repeatElement(0xAA, count: 32)))]
                 : [],
-            silentPayments: silent,
             feeRateSatPerVByte: 5,
             fee: fee,
             changeAmount: nil,
@@ -78,23 +76,6 @@ struct FeeProportionTests {
         #expect(preview(amount: 1_000, fee: 501).feeProportion != nil)
     }
 
-    /// Silent payments leave the wallet the same way and cost the same fee, so
-    /// they are counted. The amount is known at review time even though the
-    /// output script is not.
-    @Test("a silent payment counts toward the amount sent")
-    func silentPaymentsCounted() throws {
-        let master = try HDKey(seed: Data(repeating: 0x5A, count: 32))
-        let scan = try master.derived(path: "m/352'/1'/0'/1'/0")
-        let spend = try master.derived(path: "m/352'/1'/0'/0'/0")
-        let address = try SilentPaymentAddress(scanKey: scan.neutered.publicKey,
-                                               spendKey: spend.neutered.publicKey,
-                                               hrp: SilentPayment.hrp(for: .signet))
-        let silent = SilentPayment(amount: 500, address: address)
-        let disproportionate = preview(amount: 0, fee: 715, silent: [silent])
-        #expect(disproportionate.feeProportion != nil)
-        let fine = preview(amount: 0, fee: 100, silent: [silent])
-        #expect(fine.feeProportion == nil)
-    }
 
     /// The warning has to name the actual numbers; a generic caution tells the
     /// user nothing they can act on.

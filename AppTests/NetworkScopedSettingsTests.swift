@@ -39,17 +39,14 @@ final class NetworkScopedSettingsTests: XCTestCase {
     func testSettingsDoNotCrossBetweenNetworks() {
         defaults.set(["127.0.0.1:38333"], forKey: Key.manualPeers(.signet))
         defaults.set("https://signet.example/api", forKey: Key.esploraURL(.signet))
-        defaults.set("https://signet.example/tweaks", forKey: Key.spIndexURL(.signet))
 
         let signet = AppModel.networkScopedSettings(defaults: defaults, network: .signet)
         XCTAssertEqual(signet.manualPeers, ["127.0.0.1:38333"])
         XCTAssertEqual(signet.esploraURL, "https://signet.example/api")
-        XCTAssertEqual(signet.spIndexURL, "https://signet.example/tweaks")
 
         let mainnet = AppModel.networkScopedSettings(defaults: defaults, network: .mainnet)
         XCTAssertEqual(mainnet.manualPeers, [], "a signet peer must not be dialed on mainnet")
         XCTAssertEqual(mainnet.esploraURL, "", "a signet explorer must not answer mainnet queries")
-        XCTAssertEqual(mainnet.spIndexURL, "", "a signet tweak index must not drive mainnet recovery")
     }
 
     /// Each network keeps its own value rather than the last one written
@@ -69,7 +66,6 @@ final class NetworkScopedSettingsTests: XCTestCase {
     func testScopedKeysDifferPerNetwork() {
         XCTAssertNotEqual(Key.manualPeers(.signet), Key.manualPeers(.mainnet))
         XCTAssertNotEqual(Key.esploraURL(.signet), Key.esploraURL(.mainnet))
-        XCTAssertNotEqual(Key.spIndexURL(.signet), Key.spIndexURL(.mainnet))
     }
 
     // MARK: - Migration of existing installs
@@ -80,14 +76,12 @@ final class NetworkScopedSettingsTests: XCTestCase {
     func testLegacySettingsMigrateIntoTheActiveNetwork() {
         defaults.set(["127.0.0.1:38333"], forKey: Key.legacyManualPeers)
         defaults.set("https://old.example/api", forKey: Key.legacyEsploraURL)
-        defaults.set("https://old.example/tweaks", forKey: Key.legacySpIndexURL)
 
         AppModel.migrateLegacyNetworkSettings(defaults: defaults, into: .signet)
 
         let signet = AppModel.networkScopedSettings(defaults: defaults, network: .signet)
         XCTAssertEqual(signet.manualPeers, ["127.0.0.1:38333"])
         XCTAssertEqual(signet.esploraURL, "https://old.example/api")
-        XCTAssertEqual(signet.spIndexURL, "https://old.example/tweaks")
 
         // And they must not appear on the other network.
         let mainnet = AppModel.networkScopedSettings(defaults: defaults, network: .mainnet)
@@ -100,13 +94,11 @@ final class NetworkScopedSettingsTests: XCTestCase {
     func testMigrationRemovesTheLegacyKeys() {
         defaults.set(["127.0.0.1:38333"], forKey: Key.legacyManualPeers)
         defaults.set("https://old.example/api", forKey: Key.legacyEsploraURL)
-        defaults.set("https://old.example/tweaks", forKey: Key.legacySpIndexURL)
 
         AppModel.migrateLegacyNetworkSettings(defaults: defaults, into: .signet)
 
         XCTAssertNil(defaults.stringArray(forKey: Key.legacyManualPeers))
         XCTAssertNil(defaults.string(forKey: Key.legacyEsploraURL))
-        XCTAssertNil(defaults.string(forKey: Key.legacySpIndexURL))
     }
 
     /// Migrating must not overwrite a value the user has already set under the
@@ -140,6 +132,5 @@ final class NetworkScopedSettingsTests: XCTestCase {
         let mainnet = AppModel.networkScopedSettings(defaults: defaults, network: .mainnet)
         XCTAssertEqual(mainnet.manualPeers, [])
         XCTAssertEqual(mainnet.esploraURL, "")
-        XCTAssertEqual(mainnet.spIndexURL, "")
     }
 }

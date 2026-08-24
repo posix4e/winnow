@@ -81,16 +81,16 @@ struct WinnowStoryTests {
         try state.transition(.sofiaOnboarding, to: .passed)
         try state.transition(.customerFunding, to: .passed)
         try state.transition(.supplierRBF, to: .passed)
-        try state.transition(.silentPayments, to: .deferred,
+        try state.transition(.inheritanceVault, to: .deferred,
                              note: "Held for a later experimental run")
 
-        #expect(state.checkpoints[StoryCheckpoint.silentPayments.rawValue]?.status == .deferred)
-        #expect(state.activeCheckpoint == .inheritanceVault)
-        #expect(state.checkpoints[StoryCheckpoint.inheritanceVault.rawValue]?.status == .active)
+        #expect(state.checkpoints[StoryCheckpoint.inheritanceVault.rawValue]?.status == .deferred)
+        #expect(state.activeCheckpoint == .jointReserve)
+        #expect(state.checkpoints[StoryCheckpoint.jointReserve.rawValue]?.status == .active)
         let incomplete = StoryCheckpoint.allCases.dropLast().filter {
             state.checkpoints[$0.rawValue]?.status != .passed
         }
-        #expect(incomplete.contains(.silentPayments))
+        #expect(incomplete.contains(.inheritanceVault))
     }
 
     @Test("older states migrate and private state is owner-only")
@@ -156,8 +156,8 @@ struct WinnowStoryTests {
 
         try add(1, .customerFunding)
         try add(2, .supplierRBF)
-        try add(3, .silentPayments)
-        try add(4, .silentPayments)
+        try add(3, .supplierRBF)
+        try add(4, .supplierRBF)
         try add(5, .inheritanceVault, [txid(1)])
         try add(6, .inheritanceVault, [txid(5)])
         try add(7, .inheritanceVault, [txid(6)])
@@ -225,11 +225,15 @@ struct WinnowStoryTests {
             }
         }
 
+        // Derived, not a literal: the claim is "every stage, both formats",
+        // and a hardcoded count turns adding or removing a checkpoint into an
+        // unrelated test failure that says nothing about what broke.
+        let expected = (StoryCheckpoint.allCases.count - 1) * 2
         let listed = try FileManager.default.contentsOfDirectory(
             at: store.paths.artifacts, includingPropertiesForKeys: nil)
-        #expect(listed.count == 18)
+        #expect(listed.count == expected)
         let inventory = try store.mediaInventory()
-        #expect(inventory.count == 18)
+        #expect(inventory.count == expected)
         #expect(try store.mediaReviewViolations(nil).contains {
             $0.contains("has not been approved")
         })
@@ -326,98 +330,8 @@ struct WinnowStoryTests {
         #expect(result.stdout.utf8.count == data.count)
     }
 
-    @Test("silent index serves exactly the documented height endpoint")
-    func silentIndexContract() throws {
-        let repository = try repository()
-        defer { try? FileManager.default.removeItem(at: repository) }
-        let store = StoryStore(repository: repository, runID: "index")
-        _ = try store.create(environment: environment())
-        let point = "02" + String(repeating: "11", count: 32)
-        try store.addTweak(height: 321, hex: point)
-        let fixture = SilentIndexFixture(tweaksURL: store.paths.tweaks)
-        let response = String(decoding: fixture.response(path: "/tweaks/321"), as: UTF8.self)
-        #expect(response.contains("200 OK"))
-        #expect(response.contains(point))
-        #expect(String(decoding: fixture.response(path: "/address/query"), as: UTF8.self).contains("404 Not Found"))
-    }
 
-    @Test("companion creates a signed silent send Lina cannot regenerate differently on resume")
-    func companionSilentSend() async throws {
-        let state = deterministicState()
-        let companion = StoryCompanion(state: state)
-        let recipient = try await companion.silentAddress(for: "sofia")
-        let inputTxid = String(repeating: "42", count: 32)
-        let prepared = try await companion.prepareSilentSend(
-            label: "lina-to-sofia-silent", from: "lina",
-            inputTxid: inputTxid, inputVout: 0,
-            inputAmount: 50_000, inputHeight: 321,
-            recipient: recipient, amount: 20_000,
-            feeRateSatPerVByte: 2)
 
-        let raw = try #require(Data(hex: prepared.rawTransaction))
-        let transaction = try Transaction.decode(raw)
-        #expect(transaction.txid.displayHex == prepared.txid)
-        #expect(prepared.tweakData.count == 66)
-        #expect(prepared.fee > 0)
-
-        let scan = try SilentPaymentReceiving.scanKey(
-            from: companion.master(for: "sofia"), coinType: 1, account: 0)
-        let spend = try SilentPaymentReceiving.spendKey(
-            from: companion.master(for: "sofia"), coinType: 1, account: 0)
-        let shared = try SilentPaymentReceiving.sharedSecret(
-            scanPrivateKey: try #require(scan.privateKey),
-            tweakData: try #require(Data(hex: prepared.tweakData)))
-        let outputKeys = transaction.outputs.compactMap { output -> Data? in
-            guard output.scriptPubKey.count == 34,
-                  output.scriptPubKey.prefix(2).elementsEqual([0x51, 0x20]) else { return nil }
-            return Data(output.scriptPubKey.dropFirst(2))
-        }
-        let matches = try SilentPaymentReceiving.scan(
-            outputs: outputKeys, sharedSecret: shared,
-            spendPublicKey: spend.publicKey)
-        #expect(matches.count == 1)
-        #expect(transaction.outputs.contains {
-            $0.value == 20_000 && outputKeys.contains(Data($0.scriptPubKey.dropFirst(2)))
-        })
-    }
-
-    @Test("silent companion fee bump preserves the BIP352 output and is deterministic")
-    func companionSilentFeeBump() async throws {
-        let state = deterministicState()
-        let companion = StoryCompanion(state: state)
-        let recipient = try await companion.silentAddress(for: "sofia")
-        let original = try await companion.prepareSilentSend(
-            label: "lina-to-sofia-silent", from: "lina",
-            inputTxid: String(repeating: "42", count: 32), inputVout: 0,
-            inputAmount: 50_000, inputHeight: 321,
-            recipient: recipient, amount: 20_000,
-            feeRateSatPerVByte: 2)
-
-        let replacement = try await companion.prepareSilentFeeBump(
-            label: "lina-to-sofia-silent-rbf", replacing: original,
-            recipientPersonaID: "sofia", feeRateSatPerVByte: 10)
-        let repeated = try await companion.prepareSilentFeeBump(
-            label: "lina-to-sofia-silent-rbf", replacing: original,
-            recipientPersonaID: "sofia", feeRateSatPerVByte: 10)
-        #expect(replacement == repeated)
-        #expect(replacement.replaces == original.txid)
-        #expect(replacement.tweakData == original.tweakData)
-        #expect(replacement.fee > original.fee)
-        #expect(replacement.relayPeerCount == 0)
-
-        let originalTransaction = try Transaction.decode(
-            try #require(Data(hex: original.rawTransaction)))
-        let replacementTransaction = try Transaction.decode(
-            try #require(Data(hex: replacement.rawTransaction)))
-        #expect(replacementTransaction.inputs.map(\.previousOutput)
-            == originalTransaction.inputs.map(\.previousOutput))
-        let silentOutput = try #require(originalTransaction.outputs.first {
-            $0.value == original.amount
-        })
-        #expect(replacementTransaction.outputs.contains(silentOutput))
-        #expect(replacement.fee >= original.fee
-            + Int64(TransactionBuilder.vsize(of: replacementTransaction)))
-    }
 
     @Test("named inheritance companions produce a finalizable 2-of-3 spend")
     func inheritanceCompanions() throws {

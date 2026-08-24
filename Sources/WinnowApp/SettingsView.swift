@@ -3,8 +3,8 @@ import LocalAuthentication
 import SwiftUI
 import WalletCore
 
-/// Network, manual peers, warned external explorer links, experimental silent
-/// payments, and the live peer status list.
+/// Network, manual peers, warned external explorer links, chain-validation
+/// mode, and the live peer status list.
 struct SettingsView: View {
     @Environment(AppModel.self) private var model
     @Environment(\.scenePhase) private var scenePhase
@@ -12,7 +12,6 @@ struct SettingsView: View {
     @State private var newPeer = ""
     @State private var peerError: String?
     @State private var connectedPeers: [PeerInfo] = []
-    @State private var showSilentPaymentsWarning = false
     @State private var showReadSide = false
     @State private var showPapers = false
     @State private var showDestroyWallet = false
@@ -114,38 +113,6 @@ struct SettingsView: View {
                 }
 
                 Section {
-                    Toggle("Receive silent payments", isOn: Binding(
-                        get: { model.spReceiveEnabled },
-                        set: { enabled in
-                            if enabled {
-                                showSilentPaymentsWarning = true
-                            } else {
-                                model.setSilentPaymentsEnabled(false)
-                            }
-                        }
-                    ))
-                    .accessibilityIdentifier("spReceiveToggle")
-                    if model.spReceiveEnabled {
-                        TextField("Tweak-index server URL (required)", text: Binding(
-                            get: { model.spIndexURLString },
-                            set: { model.setSilentPaymentIndexURL($0) }
-                        ))
-                        .font(.system(.footnote, design: .monospaced))
-                        .autocorrectionDisabled()
-                        .textInputAutocapitalization(.never)
-                        if model.spIndexBaseURL == nil {
-                            Text("Sync pauses until a server URL is set.")
-                                .font(.caption)
-                                .foregroundStyle(.orange)
-                        }
-                    }
-                } header: {
-                    Text("Experimental · Silent payments")
-                } footer: {
-                    Text("Experimental and off by default. Sending works without a service. Receiving currently needs per-block tweak data from a service you choose; ordinary Bitcoin compact-filter peers do not yet serve it. Matching and block verification remain on this device, but omitted tweak data can make Winnow miss a payment.")
-                }
-
-                Section {
                     Toggle("Verify the chain from genesis", isOn: Binding(
                         get: { model.verifyFromGenesis },
                         set: { enabled in Task { await model.setVerifyFromGenesis(enabled) } }
@@ -221,14 +188,6 @@ struct SettingsView: View {
                 Button("OK", role: .cancel) {}
             } message: {
                 Text(destroyError ?? "")
-            }
-            .alert("Enable experimental silent-payment receive?", isPresented: $showSilentPaymentsWarning) {
-                Button("Enable experimental receive") {
-                    model.setSilentPaymentsEnabled(true)
-                }
-                Button("Cancel", role: .cancel) {}
-            } message: {
-                Text("This feature is experimental. The tweak-data service sees your IP following silent-payment blocks, though it does not receive your address or balance. Matching stays on this device. Scanning is forward-only: payments sent while this is off are not detected. An unavailable service pauses sync; a service that omits data can cause a missed payment.")
             }
             .sheet(isPresented: $showReadSide) {
                 ReadSideDocumentView()

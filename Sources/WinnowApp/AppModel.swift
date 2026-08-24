@@ -85,7 +85,6 @@ final class AppModel {
     struct Status: Equatable {
         var balance: Int64 = 0
         var utxoCount = 0
-        var silentUTXOCount = 0
         var history: [HistoryEntry] = []
         var feeBumpableTxids: [Data] = []
         var observedFeeRates: [Double] = []
@@ -209,8 +208,6 @@ final class AppModel {
     private(set) var network: BitcoinNetwork
     private(set) var manualPeers: [String] // "host:port"
     private(set) var esploraURLString: String
-    private(set) var spReceiveEnabled: Bool
-    private(set) var spIndexURLString: String
     /// Off by default: a fresh chain starts from the shipped checkpoint (#89).
     /// On means re-derive every block's work from block 0, which is what the
     /// app did before the checkpoint existed.
@@ -228,22 +225,17 @@ final class AppModel {
 
     enum DefaultsKey {
         static let network = "network"
-        /// Peer, explorer and tweak-index settings are per network, the way
-        /// storage already is. A signet node dialed first on mainnet spends
-        /// the pool's opening attempts on a peer that rejects the handshake,
-        /// and a signet explorer or tweak index answers mainnet queries with
-        /// confidently wrong data. See #81.
+        /// Peer and explorer settings are per network, the way storage
+        /// already is. A signet node dialed first on mainnet spends the pool's
+        /// opening attempts on a peer that rejects the handshake, and a signet
+        /// explorer answers mainnet queries with confidently wrong data.
+        /// See #81.
         static func manualPeers(_ network: BitcoinNetwork) -> String { "manualPeers.\(network.rawValue)" }
         static func esploraURL(_ network: BitcoinNetwork) -> String { "esploraURL.\(network.rawValue)" }
-        static func spIndexURL(_ network: BitcoinNetwork) -> String { "spIndexURL.\(network.rawValue)" }
         /// The pre-#81 flat keys, migrated once into the active network.
         static let legacyManualPeers = "manualPeers"
         static let legacyEsploraURL = "esploraURL"
-        static let legacySpIndexURL = "spIndexURL"
         /// Deliberately global: a preference, not a chain-specific endpoint.
-        /// With no tweak index for the current network the sync fails visibly
-        /// and tells the user to set one, rather than skipping heights.
-        static let spReceiveEnabled = "spReceiveEnabled"
         static let verifyFromGenesis = "verifyFromGenesis"
         /// Set at wallet creation, cleared only by the backup sheet's
         /// confirmed Done — a relaunch in between resumes the backup.
@@ -269,9 +261,7 @@ final class AppModel {
         let scoped = Self.networkScopedSettings(defaults: defaults, network: selectedNetwork)
         manualPeers = scoped.manualPeers
         esploraURLString = scoped.esploraURL
-        spReceiveEnabled = defaults.bool(forKey: DefaultsKey.spReceiveEnabled)
         verifyFromGenesis = defaults.bool(forKey: DefaultsKey.verifyFromGenesis)
-        spIndexURLString = scoped.spIndexURL
         // Test mode preconfigures the local node as the (only) manual peer;
         // custom signets have no DNS seeds.
         if let peer = e2e?.peer, !manualPeers.contains(peer) {
@@ -686,25 +676,10 @@ final class AppModel {
         do {
             var scripts = try await wallet.watchScripts()
             scripts.append(contentsOf: try await vaultStore.watchScripts(network: network))
-            // Silent payments ride the same filter stream. Deliberately
-            // fail-closed: enabled without a server, or with one that errors,
-            // aborts the sync visibly instead of silently skipping heights a
-            // forward-only scan would never revisit (see FilterSync.sync).
-            var extraScripts: (@Sendable (ClosedRange<UInt32>) async throws -> [UInt32: [Data]])?
-            if spReceiveEnabled {
-                guard let baseURL = spIndexBaseURL else {
-                    status.lastSyncError = "Silent payments: set the tweak-index server URL in Settings."
-                    return
-                }
-                let index = TweakIndexHTTPClient(baseURL: baseURL)
-                extraScripts = { range in
-                    try await wallet.silentPaymentCandidateScripts(range: range, index: index)
-                }
-            }
             let broadcaster = stack.broadcaster
             let network = network
             let vaultStore = vaultStore
-            try await filters.sync(watchScripts: scripts, extraScripts: extraScripts,
+            try await filters.sync(watchScripts: scripts,
                                    onReorg: { [weak self] forkHeight in
                 guard let self else { return }
                 try await self.rollBackStores(to: forkHeight)
@@ -746,7 +721,6 @@ final class AppModel {
             snapshot.balance = await wallet.balance
             let utxos = await wallet.utxos
             snapshot.utxoCount = utxos.count
-            snapshot.silentUTXOCount = utxos.filter { $0.silentPaymentTweak != nil }.count
             // Active pending entries first, then newest blocks, with replaced
             // height-0 originals last instead of pinning them as pending.
             snapshot.history = await wallet.history.sorted {
@@ -1136,16 +1110,6 @@ final class AppModel {
         return address
     }
 
-    /// The wallet's static silent payment address. Shown only while the
-    /// silent-payments opt-in is on — payments to it are only *found* via the
-    /// tweak index, so handing it out with the toggle off invites losses.
-    func currentSilentPaymentAddress() async throws -> String {
-        guard let wallet else { throw AppError.noWallet }
-        let address = try await wallet.silentPaymentAddress()
-        e2e?.journal("address.silent", fields: ["address": address])
-        return address
-    }
-
     /// Marks the current receive address used and returns the next one.
     func freshReceiveAddress() async throws -> String {
         guard let wallet else { throw AppError.noWallet }
@@ -1220,7 +1184,6 @@ final class AppModel {
         /// Review UI renders this immutable value, never live text-field state.
         var destination: String
         var payments: [Payment]
-        var silentPayments: [SilentPayment]
         var feeRateSatPerVByte: Double
         var fee: Int64
         var changeAmount: Int64?
@@ -1231,12 +1194,8 @@ final class AppModel {
         var change: Payment?
 
         /// The total leaving the wallet as payment, excluding change and fee.
-        ///
-        /// Silent payments are counted: the amount is known at review time even
-        /// though the output script is derived later, and it leaves the wallet
-        /// the same way.
         var amountSent: Int64 {
-            payments.map(\.amount).reduce(0, +) + silentPayments.map(\.amount).reduce(0, +)
+            payments.map(\.amount).reduce(0, +)
         }
 
         /// How large the fee is next to what is actually being sent, when that
@@ -1253,11 +1212,7 @@ final class AppModel {
 
         /// Whether `built` is the transaction that was reviewed.
         ///
-        /// `resolvedSilentPayments` has to come from the wallet: a BIP352
-        /// output script is derived from the selected inputs' private keys, so
-        /// the review layer cannot compute it and can only be handed it.
-        func authorizes(_ built: BuiltTransaction,
-                        resolvedSilentPayments: [Payment] = []) -> Bool {
+        func authorizes(_ built: BuiltTransaction) -> Bool {
             guard built.fee == fee,
                   built.changeAmount == changeAmount,
                   built.transaction.inputs.map({
@@ -1277,20 +1232,10 @@ final class AppModel {
             // present, which is why the count is pinned and `unmatched` has to
             // end empty rather than merely contain the change.
             //
-            // Silent payments are matched here on the scripts the wallet
-            // derived for them. What that binds is the amount, the presence of
-            // that script, and exhaustiveness — not that the script belongs to
-            // the `sp1…` code on screen, which cannot be checked without the
-            // input keys.
-            //
             // Matching is order-independent throughout: `TransactionBuilder`
             // inserts change at a random position to avoid a chain-analysis
             // fingerprint, so nothing may assume payments-then-change.
-            guard resolvedSilentPayments.count == silentPayments.count,
-                  zip(silentPayments, resolvedSilentPayments)
-                      .allSatisfy({ $0.amount == $1.amount })
-            else { return false }
-            var expected = payments + resolvedSilentPayments
+            var expected = payments
             if let change { expected.append(change) }
             guard built.transaction.outputs.count == expected.count else { return false }
 
@@ -1306,31 +1251,22 @@ final class AppModel {
         }
     }
 
-    /// Parses the destination (any standard address, or an sp1…/tsp1… silent
-    /// payment code) and previews coin selection at the resolved feerate.
+    /// Parses the destination (any standard address) and previews coin
+    /// selection at the resolved feerate.
     func previewSend(destination: String, amount: Int64, priority: FeePolicy.Priority,
                      override: Double?) async throws -> SendPreview {
         guard let wallet else { throw AppError.noWallet }
         let feeRate = await resolvedFeeRate(priority: priority, override: override)
         let trimmed = destination.trimmingCharacters(in: .whitespacesAndNewlines)
         var payments: [Payment] = []
-        var silentPayments: [SilentPayment] = []
-        // Sizing placeholder for the fee math: silent payment outputs are
-        // always P2TR; the real script is derived at signing time (BIP352).
-        let sizing = SilentPayment.sizingScriptPubKey
-        if trimmed.lowercased().hasPrefix("sp1") || trimmed.lowercased().hasPrefix("tsp1") {
-            silentPayments.append(try SilentPayment(amount: amount, address: trimmed, network: network))
-        } else {
-            payments.append(try Payment(amount: amount, address: trimmed, network: network))
-        }
-        let sizingPayments = payments + silentPayments.map { Payment(amount: $0.amount, scriptPubKey: sizing) }
+        payments.append(try Payment(amount: amount, address: trimmed, network: network))
         let utxos = await wallet.spendableUtxos
         let changeScript = try await wallet.scriptPubKey(chain: .change, index: wallet.nextChangeIndex)
-        let selection = try CoinSelection.select(utxos: utxos, payments: sizingPayments,
+        let selection = try CoinSelection.select(utxos: utxos, payments: payments,
                                                  changeScriptPubKey: changeScript,
                                                  feeRateSatPerVByte: feeRate)
         let change = selection.changeAmount.map { Payment(amount: $0, scriptPubKey: changeScript) }
-        return SendPreview(destination: trimmed, payments: payments, silentPayments: silentPayments,
+        return SendPreview(destination: trimmed, payments: payments,
                            feeRateSatPerVByte: feeRate, fee: selection.fee,
                            changeAmount: selection.changeAmount, inputCount: selection.selected.count,
                            selectedOutpoints: selection.selected.map {
@@ -1377,11 +1313,8 @@ final class AppModel {
         // (no stack, disk error), nothing was spent locally — no stranded UTXOs.
         let prepared = try await wallet.buildSend(payments: preview.payments,
                                                   feeRateSatPerVByte: preview.feeRateSatPerVByte,
-                                                  silentPayments: preview.silentPayments,
                                                   chainTip: await chainTipHeight)
-        guard preview.authorizes(prepared.built,
-                                 resolvedSilentPayments: prepared.resolvedSilentPayments)
-        else { throw AppError.sendReviewChanged }
+        guard preview.authorizes(prepared.built) else { throw AppError.sendReviewChanged }
         let txid = try await broadcast(prepared.built.transaction,
                                        feeRateSatPerVByte: preview.feeRateSatPerVByte)
         try await wallet.commit(prepared)
@@ -1389,8 +1322,6 @@ final class AppModel {
         e2e?.journal("transaction.sent", fields: [
             "txid": txid.displayHex,
             "raw": prepared.built.transaction.serialized(includeWitness: true).hex,
-            "silent": String(!preview.silentPayments.isEmpty),
-            "tweakData": prepared.silentPaymentTweakData?.hex ?? "",
         ])
         return txid
         }
@@ -1549,7 +1480,6 @@ final class AppModel {
             "balance": String(status.balance),
             "utxoCount": String(status.utxoCount),
             "historyCount": String(status.history.count),
-            "silentUTXOCount": String(status.silentUTXOCount),
             "nextScanHeight": String(status.nextScanHeight),
             "tipHeight": String(status.tipHeight),
             "peerCount": String(status.peerCount),
@@ -1590,7 +1520,7 @@ final class AppModel {
 
     /// Per-network wallets: switching network opens that network's own state
     /// (or onboarding when it has none) with a freshly built stack.
-    /// Moves any pre-#81 flat peer/explorer/tweak-index settings into the
+    /// Moves any pre-#81 flat peer/explorer settings into the
     /// network that was active when the app last wrote them, then removes the
     /// flat keys so the migration runs once.
     ///
@@ -1610,22 +1540,15 @@ final class AppModel {
             }
             defaults.removeObject(forKey: DefaultsKey.legacyEsploraURL)
         }
-        if let index = defaults.string(forKey: DefaultsKey.legacySpIndexURL) {
-            if defaults.string(forKey: DefaultsKey.spIndexURL(network)) == nil {
-                defaults.set(index, forKey: DefaultsKey.spIndexURL(network))
-            }
-            defaults.removeObject(forKey: DefaultsKey.legacySpIndexURL)
-        }
     }
 
-    /// What a given network's peer, explorer and tweak-index settings are.
+    /// What a given network's peer and explorer settings are.
     /// Pure, so the isolation between networks can be tested without a model.
     static func networkScopedSettings(defaults: UserDefaults, network: BitcoinNetwork)
-        -> (manualPeers: [String], esploraURL: String, spIndexURL: String)
+        -> (manualPeers: [String], esploraURL: String)
     {
         (manualPeers: defaults.stringArray(forKey: DefaultsKey.manualPeers(network)) ?? [],
-         esploraURL: defaults.string(forKey: DefaultsKey.esploraURL(network)) ?? "",
-         spIndexURL: defaults.string(forKey: DefaultsKey.spIndexURL(network)) ?? "")
+         esploraURL: defaults.string(forKey: DefaultsKey.esploraURL(network)) ?? "")
     }
 
     /// Re-reads the per-network settings after `network` changes. These are
@@ -1636,7 +1559,6 @@ final class AppModel {
         let settings = Self.networkScopedSettings(defaults: defaults, network: network)
         manualPeers = settings.manualPeers
         esploraURLString = settings.esploraURL
-        spIndexURLString = settings.spIndexURL
     }
 
     func switchNetwork(to newNetwork: BitcoinNetwork) async {
@@ -1730,29 +1652,8 @@ final class AppModel {
         await reconnect()
     }
 
-    func setSilentPaymentsEnabled(_ enabled: Bool) {
-        spReceiveEnabled = enabled
-        defaults.set(enabled, forKey: DefaultsKey.spReceiveEnabled)
-        e2e?.journal("setting.silentPayments", fields: ["enabled": String(enabled)])
-    }
 
-    func setSilentPaymentIndexURL(_ text: String) {
-        spIndexURLString = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        defaults.set(spIndexURLString, forKey: DefaultsKey.spIndexURL(network))
-        let host = URL(string: spIndexURLString)?.host?.lowercased()
-        e2e?.journal("setting.silentIndex", fields: [
-            "configured": String(!spIndexURLString.isEmpty),
-            "localFixture": String(host == "127.0.0.1" || host == "localhost"),
-        ])
-    }
 
-    /// The tweak-index base URL. Unlike esplora there is no public default to
-    /// fall back to (yet) — the user's own instance is required, and sync
-    /// fails closed while the toggle is on without one.
-    var spIndexBaseURL: URL? {
-        guard let url = URL(string: spIndexURLString), url.scheme != nil else { return nil }
-        return url
-    }
 
     func setEsploraURL(_ text: String) {
         esploraURLString = text.trimmingCharacters(in: .whitespacesAndNewlines)
