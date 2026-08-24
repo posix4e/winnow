@@ -114,7 +114,7 @@
   <p>This is the constraint that makes the rest cheap. It is not a v1 shortcut.</p>
   <h3 id="taproot-only">4.2 Taproot only</h3>
   <p>Receiving is BIP86 P2TR. There is no legacy / nested-segwit / P2WPKH path, and no ECDSA signing path. One output type means one watch-list shape, one sighash, one witness size for fee math (66 bytes for a key-path spend), and no “which address type did this contact use?” branch in the UI.</p>
-  <p>The phone can <em>pay</em> any standard address (bech32/bech32m, base58 P2PKH/P2SH). BIP352 silent payments (<code>sp1…</code> / <code>tsp1…</code>) are explicitly <strong>experimental</strong>. Sending is self-contained. Receiving is off by default because ordinary compact-filter peers do not yet supply the transaction tweaks needed to derive filter candidates; the current implementation follows a user-chosen per-block tweak source, then matches locally against the normal filters and verifies full blocks from P2P peers (<a href="/read-side">read-side</a> §3). The warning names IP disclosure, forward-only detection, and the risk that omitted tweak data can hide a payment.</p>
+  <p>The phone can <em>pay</em> any standard address (bech32/bech32m, base58 P2PKH/P2SH). BIP352 silent payments (<code>sp1…</code> / <code>tsp1…</code>) are <strong>not in this build</strong>. Sending was self-contained; receiving never was, because ordinary compact-filter peers do not supply the transaction tweaks needed to derive filter candidates, so it depended on a user-chosen tweak source, scanned forward only, and could be hidden by omitted data. Both halves live on the <code>alpha</code> branch (<a href="/write-side">write-side</a> §6). A wallet holding a silent-payment coin is refused rather than opened with a balance it cannot move.</p>
   <h3 id="two-modern-multisig-flavors-same-read-path">4.3 Two modern multisig flavors, same read path</h3>
   <p>A vault is another descriptor and another watch list. The phone does not run a coordinator, a coinjoin server, or a notification service for cosigners. The PSBT <em>is</em> the coordinator; AirDrop, a file, a message are the transport. <a href="/vaults">Vaults</a>.</p>
   <h3 id="default-network-is-signet">4.4 Default network is signet</h3>
@@ -135,8 +135,7 @@
   <ul>
   <li>Always-on mempool / background 0-conf / live fee histograms</li>
   <li>Historical filter back-scan</li>
-  <li>Silent-payment labels and historical backfill for periods when receive scanning was off</li>
-  <li>BIP37, Electrum, or any “ask a node about my address”</li>
+    <li>BIP37, Electrum, or any “ask a node about my address”</li>
   <li>An embedded consensus engine or fraud-proof verifier</li>
   <li>A vault coordinator server</li>
   <li>Cloud backup of the seed</li>
@@ -148,7 +147,7 @@
   <p>The suite is ~200 tests plus those UI scenarios, on every push.</p>
   <hr />
   <h2 id="status">8. Status</h2>
-  <p>Protocol core, both vault schemes, silent-payment send and opt-in receive, and the P2P read/write path are complete and vector-tested. The app runs on signet. Mainnet is available and treated as needing more care than a picker flip.</p>
+  <p>Protocol core, both vault schemes, and the P2P read/write path are complete and vector-tested. The app runs on signet. Mainnet is available and treated as needing more care than a picker flip.</p>
   <p><strong>v1 is therefore: a foreground iOS client, Taproot-only, fresh-wallet, one dependency, talking only to <code>NODE_COMPACT_FILTERS</code> peers unless the user opts into a named server — with the four jobs split across the papers that follow.</strong></p>
 </main>
 <footer>

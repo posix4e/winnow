@@ -271,15 +271,9 @@
   <td>A warned tap opens one exact address or transaction at the selected external explorer; no response enters wallet state</td>
   <td>Useful while P2P sync catches up, but the explorer learns the IP and exact item. It is a user action, not a fast read path.</td>
   </tr>
-  <tr>
-  <td>12</td>
-  <td>Experimental: silent-payment receive (BIP352)</td>
-  <td>User opts into a per-block <strong>tweak index</strong> in settings; candidate output scripts are computed on-device from the index’s 33-byte per-tx points (<code>input_hash·A</code>, BIP352 Appendix A) and matched against the <strong>same filter stream as row 2</strong></td>
-  <td>Existing BIP158 filters can test derived candidates, but ordinary peers do not yet provide the input-derived tweaks needed to create them. The operator learns an IP follows silent-payment blocks, never which outputs are yours; omission can still cause a missed payment.</td>
-  </tr>
   </tbody>
   </table></div>
-  <p>On the trust model of row 12: the index steers <em>which blocks get fetched</em>, nothing else. Every credit is resolved against the merkle-verified block, and a matched output is spendable by construction (<code>b_spend + t_k</code> controls it or it wouldn’t have matched) — so a lying index can cause <strong>missed payments, never fake ones</strong>. Because the scan is forward-only on the same frontier as row 2, an index outage fails the sync loudly rather than silently skipping heights, and payments received while the toggle is off are not detected — the settings warning says so. Labeled addresses (BIP352 labels) are out of v1 end-to-end; the wallet’s own change stays BIP86, so not even the change label is needed.</p>
+  <p>Silent-payment receive (BIP352) is <strong>not a read path in this build</strong>. It needed a per-block tweak index that ordinary compact-filter peers do not serve, and it lives on the <code>alpha</code> branch; see <a href="/write-side">the write side</a> §6. The generic mechanism it used — per-height additions to the watch list — remains in <code>FilterSync</code> and is still fail-closed.</p>
   <p>One use case is deliberately <strong>absent</strong> from the default path:</p>
   <ul>
   <li><strong>Always-on mempool awareness</strong> (instant notification of <em>unexpected</em> payments, background 0-conf, live fee markets) — all require either a persistent relay subscription (bandwidth/battery cost the product rejects) or a server (privacy cost the product rejects). Bounded windows (§2.8) cover the cases where the user is present and expecting something; everything else waits for confirmation.</li>
@@ -313,7 +307,7 @@
   <h2 id="appendix-a.-how-the-implementation-is-validated">Appendix A. How the implementation is validated</h2>
   <p>Nothing in this paper asks to be taken on faith — the code is checked against independent ground truth at every layer:</p>
   <ul>
-  <li><strong>Official BIP test vectors</strong> for every cryptographic surface: BIP39/32/86 (keys), BIP340 (Schnorr), BIP341 (Taproot trees, tweaks, control blocks, sighash — script-path vectors generated via Bitcoin Core’s own functional-test framework where the official file is silent), BIP350 (bech32m), BIP158 (GCS filters, byte-for-byte against real blocks), BIP327 (MuSig2), BIP352 (silent-payment sending and receiving), BIP380/387/389/390 (descriptors).</li>
+  <li><strong>Official BIP test vectors</strong> for every cryptographic surface: BIP39/32/86 (keys), BIP340 (Schnorr), BIP341 (Taproot trees, tweaks, control blocks, sighash — script-path vectors generated via Bitcoin Core’s own functional-test framework where the official file is silent), BIP350 (bech32m), BIP158 (GCS filters, byte-for-byte against real blocks), BIP327 (MuSig2), BIP380/387/389/390 (descriptors).</li>
   <li><strong>Differential testing against Bitcoin Core</strong> (env-gated, against a local node): descriptor addresses vs <code>deriveaddresses</code>, transaction serialization vs <code>decoderawtransaction</code>, filter construction vs <code>getblockfilter</code>, header checks vs <code>getblockheader</code>, PSBT semantics vs <code>decodepsbt</code>/<code>finalizepsbt</code>, and a full mine→discover→sign→relay→confirm loop on a live signet. This layer has already caught a consensus-facing sync bug that unit tests shared with a wrong mock could not.</li>
   <li><strong>Loopback fake-node tests</strong> for the P2P layer: handshakes, filter sync, lying-filter detection, relay state machine — deterministic, no network.</li>
   <li><strong>End-to-end UI tests</strong> on signet that drive the actual app and capture screenshots, with per-scenario timings.</li>

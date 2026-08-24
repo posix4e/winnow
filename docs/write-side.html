@@ -49,7 +49,7 @@
   <hr />
   <h2 id="one-spend-shape">2. One spend shape</h2>
   <p>Everyday spends are BIP86 P2TR key-path. The signed witness is one 64-byte Schnorr signature (<code>SIGHASH_DEFAULT</code>); fee math uses 66 witness bytes per input (compact-size count + length + 64). Script-path and MuSig2 shapes belong to <a href="/vaults">vaults</a> and plug into the same builder via <code>witnessBytesPerInput</code>.</p>
-  <p>The phone <em>receives</em> only P2TR. It <em>pays</em> any standard address (bech32 / bech32m, base58 P2PKH / P2SH) and BIP352 silent-payment codes. Destination diversity is a payment-layer concern; the wallet’s own outputs stay one type so coin selection, change, and watch-list code have a single script shape.</p>
+  <p>The phone <em>receives</em> only P2TR. It <em>pays</em> any standard address (bech32 / bech32m, base58 P2PKH / P2SH). BIP352 silent-payment codes are not destinations in this build; see §6. Destination diversity is a payment-layer concern; the wallet’s own outputs stay one type so coin selection, change, and watch-list code have a single script shape.</p>
   <p>Transactions are version 2, empty <code>scriptSig</code>s, and sequence <code>0xFFFFFFFD</code> (locktime-disabled, BIP125 opt-in RBF). A pending send with change can be fee-bumped in the transaction history; signaling replacement from the first broadcast avoids a policy surprise when it is needed.</p>
   <hr />
   <h2 id="coin-selection-and-change">3. Coin selection and change</h2>
@@ -81,13 +81,13 @@
   <li>Accessibility is <code>WhenUnlockedThisDeviceOnly</code>; <code>kSecAttrSynchronizable</code> is false. The JSON wallet file on disk holds the descriptor, UTXOs, and history — public material.</li>
   <li><code>Wallet.tweakedPrivateKey</code> loads the secret, derives <code>m/86'/coin'/account'/chain/index</code>, applies the BIP86 tweak (no merkle root), signs, and drops the key. The actor never holds the seed in <code>WalletState</code>.</li>
   </ul>
-  <p>All secret-key operations go through libsecp256k1 (P256K). The sighash is BIP341 <code>SIGHASH_DEFAULT</code> — also the BIP352-safe choice for taproot inputs, which matters in §6. Auxiliary nonce randomness is 32 fresh bytes per signature.</p>
+  <p>All secret-key operations go through libsecp256k1 (P256K). The sighash is BIP341 <code>SIGHASH_DEFAULT</code> — also the BIP352-safe choice for taproot inputs. Auxiliary nonce randomness is 32 fresh bytes per signature.</p>
   <p>Wallet amounts and UTXOs come from locally verified blocks, not Esplora. BIP341 signatures commit to input amounts; explorer pages are external manual checks and never feed the signer.</p>
   <hr />
-  <h2 id="silent-payments-experimental">6. Silent payments (experimental)</h2>
-  <p>BIP352 <code>sp1…</code> / <code>tsp1…</code> codes are first-class destinations. The P2TR output script is not known until the input set is fixed — the shared secret is <code>input_hash · a · B_scan</code> over the selected inputs’ tweaked keys — so coin selection runs against a same-size P2TR <em>placeholder</em>, then <code>SilentPaymentSending.outputScripts</code> replaces the placeholders at signing time.</p>
-  <p>Receiving first obtains per-transaction tweak data, derives candidate output scripts on-device, and tests those candidates against the ordinary BIP158 filter before downloading and verifying a matched block. Ordinary peers do not yet serve a standardized silent-tweak filter, so mobile receive currently needs a user-chosen tweak-data service. That dependency, forward-only scanning, and omission risk are why the entire feature is labeled experimental and receive stays off by default; see <a href="/read-side">the read side</a> §3.</p>
-  <p>Inputs to a silent-payment send are this wallet’s own P2TR key-path spends, which is exactly the BIP352 wallet case (the sender controls every eligible input key; shared-control inputs are excluded from derivation).</p>
+  <h2 id="silent-payments-alpha">6. Silent payments: on the alpha branch</h2>
+  <p>BIP352 <code>sp1…</code> / <code>tsp1…</code> codes are not destinations in this build. Sending was self-contained and worked. Receiving never was: finding payments to a silent code needs per-transaction tweak data that ordinary compact-filter peers do not serve, so mobile receive depended on a user-chosen tweak-data service, scanned forward only, and could be hidden by an omitted tweak. Both halves now live on the <code>alpha</code> branch rather than shipping here behind a warning.</p>
+  <p>What remains in this build is a refusal, and it is deliberate. A silent-payment coin carries a per-output tweak that is <em>required</em> to derive its signing key; that key exists nowhere else. A build with no BIP352 code that opened such a wallet would show a balance it cannot move, so it refuses to open the wallet at all and names the branch that can. Pasting an <code>sp1…</code> code into Send says the same thing rather than calling a well-formed address invalid.</p>
+  <p>One limit has no guard and is disclosed instead. Restoring from a recovery phrase cannot show silent-payment receipts: their output scripts are not derivable from the descriptor, so nothing puts them in the watch list and no refusal has anything to fire on. The restored wallet shows a balance without them. The import screen says so; the coins are unaffected on chain.</p>
   <hr />
   <h2 id="getting-it-out">7. Getting it out</h2>
   <p><code>TxBroadcaster</code> is P2P relay, not an API client:</p>
@@ -132,36 +132,31 @@
   </tr>
   <tr>
   <td>2</td>
-  <td>Pay a silent-payment code</td>
-  <td>Same, with output scripts derived after selection</td>
-  </tr>
-  <tr>
-  <td>3</td>
   <td>Pick a fee</td>
   <td>Override / observed median / preset, clamped by <code>feefilter</code></td>
   </tr>
   <tr>
-  <td>4</td>
+  <td>3</td>
   <td>“Is it out?”</td>
   <td>Peer <code>getdata</code> + txid echo while Send is open</td>
   </tr>
   <tr>
-  <td>5</td>
+  <td>4</td>
   <td>“Is it done?”</td>
   <td>Filter match on a confirmed block; height 0 change flips to that height</td>
   </tr>
   <tr>
-  <td>6</td>
+  <td>5</td>
   <td>App killed mid-relay</td>
   <td>Persisted pending set resumes backoff</td>
   </tr>
   <tr>
-  <td>7</td>
+  <td>6</td>
   <td>Peers will not take this feerate</td>
   <td><code>feeFloorExceeded</code>; user may bump (RBF already signaled)</td>
   </tr>
   <tr>
-  <td>8</td>
+  <td>7</td>
   <td>Vault spend</td>
   <td>Same builder and broadcaster; signing is the <a href="/vaults">vault</a> ceremony</td>
   </tr>

@@ -40,7 +40,6 @@
   <li><strong>Mempool windows.</strong> While the Receive screen is open, the app subscribes to ordinary transaction-relay traffic and matches it locally — the same data every full node sees. Nothing about you is queried or revealed.</li>
   <li><strong>Broadcasting.</strong> Signed transactions are relayed directly to P2P peers.</li>
   <li><strong>External explorer links.</strong> Settings lets you choose mempool.space or a custom Esplora-compatible website. Winnow never queries it automatically. If you tap an address or transaction link, a warning identifies that the selected service will learn your IP and the exact item before iOS opens it.</li>
-  <li><strong>Experimental silent-payment receiving.</strong> If explicitly enabled, Winnow requests block-wide tweak data from the service you choose. The service sees your IP following silent-payment blocks but is not given your address or balance. Matching stays on-device; an incomplete service can cause a missed payment.</li>
   <li><strong>Third-party code.</strong> One dependency: libsecp256k1 (via the P256K Swift package). It makes no network calls.</li>
   </ul>
   <h2 id="contact">Contact</h2>
