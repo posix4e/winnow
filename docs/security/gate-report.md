@@ -98,10 +98,12 @@ nothing:
 A mutation that kills no test means the test is weak, not that the code is
 safe. Both assertions were tightened; both now fail against their mutation.
 
-## Two decisions that are yours
+## Two decisions that were yours — both now made
 
 Neither is a defect. Both are judgement calls that were made explicit rather
-than left implicit, and either could reasonably be decided the other way.
+than left implicit, and either could reasonably have been decided the other
+way. Both were accepted by the owner on 2026-08-23, with the reasoning and the
+residual exposure recorded here rather than resolved by silence.
 
 **The single-peer eclipse — decided by the owner, 2026-08-23: accept.** With
 one peer there is nobody to compare against, so a self-consistent lying
@@ -119,12 +121,22 @@ the response to the risk rather than an alternative to it. Current behaviour
 stays pinned by test as *documented*, and is now also *endorsed, with a named
 mitigation*.
 
-**Clipboard reach.** Descriptors and PSBTs may still cross to another device via
-Universal Clipboard, because pasting a watch-only descriptor into Bitcoin Core
-is the workflow those buttons exist for. A descriptor carries xpubs, so whoever
-holds it can derive every address the vault will ever use. Interchange material
-now expires; forcing local-only is a one-line change to
-`ClipboardPolicy.interchange` if you would rather take the workflow cost.
+**Clipboard reach — decided by the owner, 2026-08-23: accept.** Descriptors and
+PSBTs may still cross to another device via Universal Clipboard. A descriptor
+carries xpubs, so whoever holds it can derive every address the vault will ever
+use.
+
+Interchange is kept because pasting a watch-only descriptor into Bitcoin Core is
+the workflow those buttons exist for, and the alternative costs the user a file
+transfer for the one operation that most wants to be easy. The mitigation
+already in place is expiry: interchange material does not sit on the clipboard
+indefinitely. Forcing local-only remains a one-line change to
+`ClipboardPolicy.interchange` if the workflow cost is ever judged worth paying.
+
+What the reader should weigh: this accepts that a descriptor can reach any
+device signed into the same Apple account, which is a real exposure and not a
+theoretical one. It is accepted because the material is watch-only — it reveals
+every address, and it spends nothing.
 
 ## What a GO would require
 
@@ -139,11 +151,13 @@ now expires; forcing local-only is a one-line change to
 4. **Outstanding.** The evidence that needs hardware and external systems:
    node-backed differential runs, mixed-wallet PSBT fixtures, device Keychain
    and screenshot checks, sustained signet.
-5. **Half done.** The single-peer eclipse is decided; the clipboard reach is
-   not.
+5. ~~The two judgement calls decided, or recorded as open.~~ **Done** — the
+   single-peer eclipse and the clipboard reach were both dispositioned by the
+   owner on 2026-08-23, and both are written up above with their reasoning.
 
-Four and five are what stand between this report and a different verdict. Both
-need a person, and neither can be closed by writing more code.
+**Four is now the only thing standing between this report and a different
+verdict.** It needs a person and hardware, and it cannot be closed by writing
+more code.
 
 ## Human decision required
 
