@@ -105,10 +105,24 @@ enum BitcoinCLI {
         let stderr = Pipe()
         process.standardOutput = stdout
         process.standardError = stderr
+        // Drain both pipes *before* waiting. A pipe holds about 64 KB; past
+        // that the child blocks writing while the parent blocks in
+        // `waitUntilExit`, and neither ever moves again. Reading after the
+        // wait worked only because every call here used to return a small
+        // answer — `decoderawtransaction` on a transaction with large scripts
+        // returns hundreds of kilobytes and deadlocks the suite outright,
+        // which silently capped what this harness could ever check.
         try process.run()
+        var outData = Data()
+        var errData = Data()
+        let group = DispatchGroup()
+        let queue = DispatchQueue(label: "org.winnow.diff.cli", attributes: .concurrent)
+        queue.async(group: group) { outData = stdout.fileHandleForReading.readDataToEndOfFile() }
+        queue.async(group: group) { errData = stderr.fileHandleForReading.readDataToEndOfFile() }
+        group.wait()
         process.waitUntilExit()
-        let out = String(decoding: stdout.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
-        let err = String(decoding: stderr.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+        let out = String(decoding: outData, as: UTF8.self)
+        let err = String(decoding: errData, as: UTF8.self)
         guard process.terminationStatus == 0 else {
             throw CLIError(arguments: arguments, status: process.terminationStatus,
                            output: (out + err).trimmingCharacters(in: .whitespacesAndNewlines))

@@ -86,6 +86,96 @@ struct TransactionDiffTests {
         try psbt.finalize()
         try expectAgreement(try psbt.extractedTransaction(), label: "signed")
     }
+
+    // MARK: - Corpus
+
+    /// Deterministic generator so a failure names a seed and an index that
+    /// reproduce it exactly, the way `CoinSelectionPropertyTests` does. A
+    /// differential failure you cannot re-run is a rumour.
+    private struct SeededRandom {
+        var state: UInt64
+        mutating func next() -> UInt64 {
+            state &+= 0x9E37_79B9_7F4A_7C15
+            var value = state
+            value = (value ^ (value >> 30)) &* 0xBF58_476D_1CE4_E5B9
+            value = (value ^ (value >> 27)) &* 0x94D0_49BB_1331_11EB
+            return value ^ (value >> 31)
+        }
+        mutating func below(_ bound: Int) -> Int { bound <= 0 ? 0 : Int(next() % UInt64(bound)) }
+        mutating func pick<T>(_ options: [T]) -> T { options[below(options.count)] }
+        mutating func bytes(_ count: Int) -> Data {
+            Data((0 ..< count).map { _ in UInt8(next() & 0xFF) })
+        }
+    }
+
+    /// Every output shape the wallet can pay, plus the ones only a third party
+    /// creates. The last two are the interesting ones: an OP_RETURN carrying
+    /// more than `MAX_SCRIPT_SIZE`, which is consensus-legal and which we
+    /// refused to parse until `SEC-024`, and a bare multisig, which nothing in
+    /// the wallet produces but any block may contain.
+    private static func outputScript(kind: Int, random: inout SeededRandom) -> Data {
+        switch kind {
+        case 0: return Data([0x76, 0xA9, 0x14]) + random.bytes(20) + Data([0x88, 0xAC])   // P2PKH
+        case 1: return Data([0xA9, 0x14]) + random.bytes(20) + Data([0x87])               // P2SH
+        case 2: return Data([0x00, 0x14]) + random.bytes(20)                              // P2WPKH
+        case 3: return Data([0x00, 0x20]) + random.bytes(32)                              // P2WSH
+        case 4: return Data([0x51, 0x20]) + random.bytes(32)                              // P2TR
+        case 5:                                                                            // bare multisig
+            return Data([0x51, 0x21]) + random.bytes(33) + Data([0x51, 0xAE])
+        default:                                                                           // OP_RETURN
+            let size = random.pick([1, 80, 10_001])
+            return Data([0x6A]) + random.bytes(size)
+        }
+    }
+
+    /// A larger corpus than three hand-written transactions.
+    ///
+    /// S9 asks to "cross-check a larger transaction corpus against Bitcoin
+    /// Core". The three cases above are a smoke test: they exercise the shapes
+    /// we happened to think of, which is the same blind spot that let `SEC-024`
+    /// sit in the parser until real chain data hit it. This sweeps the axes
+    /// Core can adjudicate — version, input and output counts, every standard
+    /// script type, dust and boundary amounts, sequences, locktimes, and
+    /// witness stacks including items past the old script bound — and holds
+    /// Core's decode as the oracle rather than our own builder.
+    @Test("a generated corpus decodes identically in Core", arguments: [0x5749_4E4E_4F57_3039 as UInt64])
+    func generatedCorpus(seed: UInt64) throws {
+        // Forty, not four hundred: each transaction costs a `bitcoin-cli`
+        // process, and breadth across the axes is what finds disagreements —
+        // more draws from the same axes mostly re-check the same code.
+        var random = SeededRandom(state: seed)
+        for index in 0 ..< 40 {
+            let inputCount = 1 + random.below(4)
+            var inputs: [Transaction.Input] = []
+            for _ in 0 ..< inputCount {
+                let witnessItems = random.below(4)
+                var witness: [Data] = []
+                for _ in 0 ..< witnessItems {
+                    // Includes stacks past MAX_SCRIPT_SIZE: witness items were
+                    // always allowed 4 MB here, and that asymmetry with the
+                    // script fields is what SEC-024 turned out to be.
+                    witness.append(random.bytes(random.pick([0, 1, 33, 64, 72, 520, 10_001])))
+                }
+                inputs.append(Transaction.Input(
+                    previousOutput: Transaction.Outpoint(txid: random.bytes(32),
+                                                         vout: UInt32(random.pick([0, 1, 7, 0xFFFF_FFFF]))),
+                    scriptSig: witness.isEmpty ? random.bytes(random.pick([0, 1, 25, 106])) : Data(),
+                    sequence: UInt32(random.pick([0, 1, 0xFFFF_FFFD, 0xFFFF_FFFE, 0xFFFF_FFFF])),
+                    witness: witness))
+            }
+            let outputCount = 1 + random.below(4)
+            var outputs: [Transaction.Output] = []
+            for _ in 0 ..< outputCount {
+                outputs.append(Transaction.Output(
+                    value: Int64(random.pick([0, 1, 294, 546, 1_000, 100_000, 2_100_000_000_000_000])),
+                    scriptPubKey: Self.outputScript(kind: random.below(7), random: &random)))
+            }
+            let tx = Transaction(version: Int32(random.pick([1, 2, 3])),
+                                 inputs: inputs, outputs: outputs,
+                                 locktime: UInt32(random.pick([0, 1, 500_000, 499_999_999, 1_700_000_000])))
+            try expectAgreement(tx, label: "corpus seed \(String(seed, radix: 16)) index \(index)")
+        }
+    }
 }
 
 /// PSBT interop with Core 31.1: `decodepsbt` field agreement, `combinepsbt`,
