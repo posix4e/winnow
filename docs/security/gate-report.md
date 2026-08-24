@@ -173,8 +173,11 @@ every address, and it spends nothing.
      platform behaviours a simulator has no data protection, no Secure Enclave
      and no snapshot to show. Those need the phone.
    - *Sustained signet:* two runs, the second 90 minutes with 88 at chain tip,
-     timeseries committed. It found `SEC-024` within the first hour. Ninety
-     minutes supports a claim about ninety minutes.
+     timeseries committed. It found `SEC-024` within the first hour. A third
+     run starting at tip holds resident size between 13 MB and 36 MB. That
+     is 110 minutes of at-tip observation, which supports a claim about
+     hours and not about days — and days will need the `node-e2e` runner,
+     because two multi-hour attempts were killed by the environment here.
 
    What is left is genuinely the hardware: on-device Keychain enforcement,
    screenshot and lifecycle behaviour, and runs long enough to speak about days.
