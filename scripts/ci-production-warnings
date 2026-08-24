@@ -2,6 +2,12 @@
 # Build only production SwiftPM products and reject warnings emitted by this
 # repository's Sources/. Dependency and test warnings remain visible in the
 # log, but do not make this focused gate noisy.
+#
+# Locally, pass a fresh scratch path or delete the default one before trusting
+# a pass. The build is incremental: a file that is not recompiled emits no
+# warning, so a second run after a failing first run reports clean without
+# anything having been fixed. CI is safe from this because RUNNER_TEMP starts
+# empty; a workstation is not.
 set -euo pipefail
 
 ROOT=$(git rev-parse --show-toplevel)
