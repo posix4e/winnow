@@ -16,10 +16,6 @@ public enum WalletError: Error, Equatable, LocalizedError {
     /// missing) rather than a BIP39 mnemonic. Refusing is safer than emitting
     /// a bundle that looks spendable and is not.
     case mnemonicUnavailable
-    /// A watch-only bundle cannot faithfully recover silent-payment UTXOs:
-    /// validating and spending them requires the BIP352 key derived from the
-    /// mnemonic, which the BIP86 descriptor does not contain.
-    case silentPaymentExportRequiresMnemonic
     /// A pending send has already removed the parent inputs from the UTXO
     /// set. Exporting now would ship only the unconfirmed change — if the
     /// send never confirms, a forward-only restore cannot see the original
@@ -58,8 +54,6 @@ public enum WalletError: Error, Equatable, LocalizedError {
             "The built transaction lost its change output."
         case .mnemonicUnavailable:
             "This wallet has no recovery phrase to export — it was imported from an extended key, not a BIP39 mnemonic."
-        case .silentPaymentExportRequiresMnemonic:
-            "This wallet contains silent-payment funds. Include the recovery phrase so the exported bundle can validate and spend them."
         case .exportWhilePending:
             "Wait for pending transactions to confirm before exporting. A mid-send backup would drop the coins being spent."
         case .invalidTransactionAmounts:

@@ -678,7 +678,6 @@ final class AppModel {
         do {
             var scripts = try await wallet.watchScripts()
             scripts.append(contentsOf: try await vaultStore.watchScripts(network: network))
-            // Silent payments ride the same filter stream. Deliberately
             let broadcaster = stack.broadcaster
             let network = network
             let vaultStore = vaultStore
@@ -1197,10 +1196,6 @@ final class AppModel {
         var change: Payment?
 
         /// The total leaving the wallet as payment, excluding change and fee.
-        ///
-        /// Silent payments are counted: the amount is known at review time even
-        /// though the output script is derived later, and it leaves the wallet
-        /// the same way.
         var amountSent: Int64 {
             payments.map(\.amount).reduce(0, +)
         }
@@ -1258,8 +1253,8 @@ final class AppModel {
         }
     }
 
-    /// Parses the destination (any standard address, or an sp1…/tsp1… silent
-    /// payment code) and previews coin selection at the resolved feerate.
+    /// Parses the destination (any standard address) and previews coin
+    /// selection at the resolved feerate.
     func previewSend(destination: String, amount: Int64, priority: FeePolicy.Priority,
                      override: Double?) async throws -> SendPreview {
         guard let wallet else { throw AppError.noWallet }

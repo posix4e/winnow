@@ -38,7 +38,7 @@ private final class EffectCollector: @unchecked Sendable {
 ///       "nextChangeIndex": 2,                 // optional; next unused BIP86 change index
 ///       "utxos": [{ "txid": "<display hex>", "vout": 0, "amount": 50000,
 ///                   "scriptPubKey": "5120…", "chain": 0, "index": 3, "height": 149000,
-///                   "silentPaymentTweak": "<32-byte scalar hex>" }],
+///                   "silentPaymentTweak": "<refused: see below>" }],
 ///       "transactions": [{ "txid": "<display hex>", "height": 149000,
 ///                          "received": 50000, "spent": 0, "fee": 250,
 ///                          "replacedBy": "<replacement display hex>" }]
@@ -51,9 +51,11 @@ private final class EffectCollector: @unchecked Sendable {
 /// and are not in this schema — a restored wallet falls back to presets
 /// until it observes new sends.
 ///
-/// `silentPaymentTweak` is absent for descriptor-derived UTXOs. When present,
-/// the bundle must also contain the mnemonic: a BIP86 descriptor has no BIP352
-/// spend key with which to validate or spend that output. Version 1 remains
+/// `silentPaymentTweak` is never written by this build and a bundle carrying
+/// one is **refused**, not imported: silent payments live on the `alpha`
+/// branch, and the tweak is required to sign for that coin. Importing without
+/// it would restore a coin that cannot be spent and does not say so. The field
+/// is still read for the sole purpose of noticing it. Version 1 remains
 /// readable for ordinary descriptor UTXOs; writers always emit version 2.
 /// `isCoinbase` is emitted only when true so maturity survives export/import;
 /// older bundles omit it and decode it as false.
@@ -73,16 +75,17 @@ public struct ImportBundle: Codable, Equatable, Sendable {
         public var chain: Int
         public var index: UInt32
         public var height: UInt32
-        /// BIP352 t_k (with any label tweak folded in), encoded as 32-byte
-        /// scalar hex. nil for descriptor-derived UTXOs and every v1 bundle.
-        public var silentPaymentTweak: String?
+        /// Present only in a bundle written by an `alpha` build. Decoded so
+        /// the import can refuse it — never set by this build, which is why
+        /// it is not an initializer parameter.
+        public private(set) var silentPaymentTweak: String?
         /// True only for an output created by a coinbase transaction. Optional
         /// so older bundles remain readable; absence means false.
         public var isCoinbase: Bool?
 
         public init(txid: String, vout: UInt32, amount: Int64, scriptPubKey: String,
                     chain: Int, index: UInt32, height: UInt32,
-                    silentPaymentTweak: String? = nil, isCoinbase: Bool? = nil) {
+                    isCoinbase: Bool? = nil) {
             self.txid = txid
             self.vout = vout
             self.amount = amount
@@ -90,7 +93,6 @@ public struct ImportBundle: Codable, Equatable, Sendable {
             self.chain = chain
             self.index = index
             self.height = height
-            self.silentPaymentTweak = silentPaymentTweak
             self.isCoinbase = isCoinbase
         }
     }
