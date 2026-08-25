@@ -583,6 +583,10 @@ final class AppModel {
         try Data(String(forkHeight).utf8).write(to: marker, options: .atomic)
         try await wallet?.rollBack(to: forkHeight)
         try await vaultStore.rollBack(to: forkHeight)
+        // Reactivates any own send whose confirming block fell (#157): the
+        // wallet just re-reserved its inputs, and this makes sure the network
+        // hears the transaction again instead of only our bookkeeping.
+        try await stack?.broadcaster.rollBack(to: forkHeight)
     }
 
     /// Clears the marker once a sync that included a rollback has completed.
@@ -691,13 +695,19 @@ final class AppModel {
                 try await vaultStore.apply(match: match, network: network)
                 let pending = await broadcaster.pendingTxids
                 for tx in match.block.transactions where pending.contains(tx.txid) {
-                    try await broadcaster.markConfirmed(tx.txid)
+                    // The height rides along so the entry becomes a held
+                    // tombstone a reorg can resurrect, rather than being
+                    // deleted with its raw transaction (#157).
+                    try await broadcaster.markConfirmed(tx.txid, atHeight: match.height)
                 }
             }
             // apply() does not move the wallet frontier — FilterSync is
             // authoritative here. Persist it so exportBundle() and the next
             // launch's startHeight match what the UI already shows.
             try await wallet.recordScanHeight(await filters.nextScanHeight)
+            // Held confirmation tombstones age out on the same 100-block
+            // horizon spent-coin tombstones do (#157).
+            try await broadcaster.pruneConfirmed(scannedTo: await filters.nextScanHeight)
             // Every store that a rollback touches has now been rewound and the
             // scan that followed it has finished, so the target is no longer
             // needed. Cleared only on the success path: a sync that threw may
