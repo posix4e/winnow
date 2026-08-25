@@ -31,4 +31,9 @@
 ## After the recording
 
 - Note wall-clock timings per beat (we'll put them next to timings.json on the site).
+- **#89 measurement, same session:** time first-launch-to-tip twice on the
+  measurement simulator — once with the shipped checkpoint (the default), once
+  with "Verify the chain from genesis" on — fresh wallet each time, the same
+  way the 8m28s baseline was taken. Post both numbers to #89; that closes its
+  last open phase.
 - Keep the raw recording; a 60–90s cut of beats 1–3 is the launch clip.
