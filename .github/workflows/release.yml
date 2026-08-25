@@ -32,6 +32,20 @@ jobs:
           printf 'TESTFLIGHT_MARKETING_VERSION=%s\n' "$VERSION" >> "$GITHUB_ENV"
           printf 'TESTFLIGHT_BUILD_NUMBER=%s\n' "$GITHUB_RUN_NUMBER" >> "$GITHUB_ENV"
 
+      - name: Regenerate bundled fallback peers
+        # 161: freshness tracks releases rather than someone remembering. The
+        # generator fails the release outright on a thin list, so a silent
+        # degradation cannot ship; the log is the audit trail for a list that
+        # is deliberately not reproducible.
+        run: scripts/generate-fallback-peers 2>&1 | tee fallback-peers-generation.log
+
+      - name: Keep the fallback-peer generation log
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: fallback-peers-generation-log
+          path: fallback-peers-generation.log
+          retention-days: 400
+
       - name: Full test suite (gate)
         run: swift test
 

@@ -1,0 +1,12 @@
+#!/bin/bash
+# Regenerate the bundled mainnet fallback peers (#161). Release-path step; see
+# FallbackPeersGenerated.swift for what generation claims and what it does not.
+# The log this prints is the release artifact that makes the (deliberately
+# non-reproducible) list auditable — keep it.
+set -euo pipefail
+cd "$(git rev-parse --show-toplevel)"
+WINNOW_GENERATE_FALLBACK_PEERS=1 swift test --filter FallbackPeerGeneratorTests
+# The generator fails its own run on a thin list; this catches the other
+# silent failure, where nothing was written at all.
+git diff --stat -- Sources/BitcoinP2P/Protocol/FallbackPeersGenerated.swift
+swift test --filter FallbackPeerListTests
