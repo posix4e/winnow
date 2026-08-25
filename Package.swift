@@ -9,7 +9,6 @@ let package = Package(
         .library(name: "BitcoinP2P", targets: ["BitcoinP2P"]),
         .library(name: "BlockchainBackend", targets: ["BlockchainBackend"]),
         .library(name: "WalletCore", targets: ["WalletCore"]),
-        .executable(name: "WinnowStory", targets: ["WinnowStory"]),
         .executable(name: "WinnowFuzz", targets: ["WinnowFuzz"]),
         .executable(name: "WinnowSoak", targets: ["WinnowSoak"]),
     ],
@@ -32,10 +31,6 @@ let package = Package(
         .target(
             name: "WalletCore",
             dependencies: ["BitcoinCore", "BitcoinP2P", "BlockchainBackend"]
-        ),
-        .executableTarget(
-            name: "WinnowStory",
-            dependencies: ["BitcoinCore", "BitcoinP2P", "BlockchainBackend", "WalletCore"]
         ),
         .executableTarget(
             name: "WinnowFuzz",
@@ -63,10 +58,6 @@ let package = Package(
         .testTarget(
             name: "DifferentialTests",
             dependencies: ["BitcoinCore", "BitcoinP2P", "WalletCore"]
-        ),
-        .testTarget(
-            name: "WinnowStoryTests",
-            dependencies: ["WinnowStory", "BitcoinCore", "BitcoinP2P", "BlockchainBackend", "WalletCore"]
         ),
     ]
 )
