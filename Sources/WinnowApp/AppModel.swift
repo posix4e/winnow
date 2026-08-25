@@ -121,6 +121,28 @@ final class AppModel {
         /// Peer discovery ran out of candidates with zero connections.
         case peerDiscoveryFailed
 
+        /// Whether a transaction built right now would stamp an `nLockTime`
+        /// from a header tip that may lag the network's (#151).
+        ///
+        /// Core stamps the current height on ~90% of transactions and never
+        /// reaches back more than 100 blocks, so a locktime far below the
+        /// confirming block is a fingerprint Core essentially never produces —
+        /// it discloses that the sender was mid-sync, and by how much. The
+        /// lag exists only while the *header* chain is behind: in `.filters`
+        /// the headers are already at the network tip and only the scan
+        /// trails, and in `.synced` a periodic sync keeps the tip within the
+        /// couple of blocks Core's own distribution covers. Everything
+        /// earlier — idle, connecting, mid-header-sync, discovery failure —
+        /// can be arbitrarily far behind, and honestly saying so at review
+        /// time was the behaviour #151 settled on: the send proceeds, and the
+        /// disclosure is informed rather than silent.
+        var headerTipMayLagNetwork: Bool {
+            switch self {
+            case .filters, .synced: false
+            case .idle, .connecting, .headers, .peerDiscoveryFailed: true
+            }
+        }
+
         /// Where the filter scan has actually reached, or `nil` when there is
         /// no honest number to give.
         ///
@@ -1192,6 +1214,11 @@ final class AppModel {
         /// simple UI but must remain identical when the wallet signs.
         var selectedOutpoints: [ReviewedOutpoint]
         var change: Payment?
+        /// Captured at preview time: the locktime this send will carry comes
+        /// from a header tip that may lag the network (#151). Rendered on the
+        /// review screen so the disclosure is informed; defaulted so direct
+        /// constructions in tests describe an ordinary synced send.
+        var locktimeLagsTip: Bool = false
 
         /// The total leaving the wallet as payment, excluding change and fee.
         var amountSent: Int64 {
@@ -1271,7 +1298,8 @@ final class AppModel {
                            changeAmount: selection.changeAmount, inputCount: selection.selected.count,
                            selectedOutpoints: selection.selected.map {
                                .init(txid: $0.txid, vout: $0.vout)
-                           }, change: change)
+                           }, change: change,
+                           locktimeLagsTip: syncPhase.headerTipMayLagNetwork)
     }
 
     /// Builds, signs and broadcasts the previewed send. Returns the txid

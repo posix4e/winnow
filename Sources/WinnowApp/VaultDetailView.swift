@@ -85,6 +85,9 @@ struct VaultSpendView: View {
     @State private var feeRateText = ""
     @State private var created: String?
     @State private var error: String?
+    /// Informational, not a failure: rendered orange, kept separate from
+    /// `error` so a successful creation never looks like a failed one (#151).
+    @State private var notice: String?
 
     private var record: VaultRecord? { model.vaults.first { $0.id == recordID } }
 
@@ -104,6 +107,13 @@ struct VaultSpendView: View {
                 }
                 if let error {
                     Section { Text(error).foregroundStyle(.red).font(.footnote) }
+                }
+                if let notice {
+                    Section {
+                        Label(notice, systemImage: "clock.arrow.circlepath")
+                            .foregroundStyle(.orange).font(.footnote)
+                            .accessibilityIdentifier("vaultLocktimeLagNotice")
+                    }
                 }
                 Section {
                     Button("Create spend PSBT") { create() }
@@ -135,6 +145,7 @@ struct VaultSpendView: View {
 
     private func create() {
         error = nil
+        notice = nil
         created = nil
         guard let record, let vault = try? Vault(record.descriptor, network: model.network) else { return }
         let trimmed = destination.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -155,6 +166,13 @@ struct VaultSpendView: View {
                                              feeRateSatPerVByte: feeRate,
                                              chainTip: model.status.tipHeight)
             created = psbt.base64
+            // #151, same as the ordinary send path: the PSBT's locktime came
+            // from `status.tipHeight`, which lags while headers catch up.
+            notice = model.syncPhase.headerTipMayLagNetwork
+                ? "Created while header sync is catching up: the spend carries a "
+                    + "locktime behind the network tip, which on-chain reveals it was "
+                    + "built mid-sync. Recreate it after sync to avoid that."
+                : nil
             model.journalPSBT(stage: "vault-spend-created", psbt: psbt)
         } catch {
             self.error = error.localizedDescription

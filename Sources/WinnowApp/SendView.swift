@@ -137,6 +137,19 @@ struct SendView: View {
                                 .foregroundStyle(.orange)
                                 .accessibilityIdentifier("feeProportionWarning")
                         }
+                        // #151: sending mid-sync stamps a locktime below the
+                        // real tip, a gap Core-built transactions essentially
+                        // never show. The send is allowed; the disclosure is
+                        // made here so it is at least informed.
+                        if preview.locktimeLagsTip {
+                            Label("Header sync is still catching up, so this transaction will "
+                                  + "carry a locktime behind the network tip — on-chain, that "
+                                  + "reveals it was signed mid-sync. Waiting for sync avoids it.",
+                                  systemImage: "clock.arrow.circlepath")
+                                .font(.footnote)
+                                .foregroundStyle(.orange)
+                                .accessibilityIdentifier("locktimeLagWarning")
+                        }
                         Button(sending ? "Signing & broadcasting…" : "Sign & broadcast") { send() }
                             .accessibilityIdentifier("sendButton")
                             .disabled(sending)
