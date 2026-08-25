@@ -1,0 +1,43 @@
+name: Runner probe (manual)
+
+# 11: inventory the self-hosted macOS VMs before putting Xcode on them, and
+# authorize the workstation key so the ~10GB Xcode upload can go over SSH
+# instead of through a workflow artifact. Dispatch-only; remove once 11 closes.
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  probe:
+    strategy:
+      matrix:
+        instance: [first, second]
+      max-parallel: 2
+    runs-on: [self-hosted, macos, x86_64]
+    timeout-minutes: 10
+    steps:
+      - name: Inventory
+        run: |
+          echo "== runner: $(hostname) (${{ matrix.instance }} dispatch slot) =="
+          sw_vers
+          echo "arch: $(uname -m)"
+          sysctl -n hw.model machdep.cpu.brand_string 2>/dev/null || true
+          df -h / | tail -1
+          echo "== Xcode =="
+          ls -d /Applications/Xcode*.app 2>/dev/null || echo "no Xcode.app"
+          xcode-select -p 2>&1 || true
+          echo "== CLT / simulators =="
+          xcrun simctl list runtimes 2>/dev/null | head -5 || echo "no simctl"
+          echo "== homebrew / bitcoind =="
+          which brew bitcoind 2>/dev/null || echo "no brew/bitcoind"
+          echo "== user / uptime =="
+          whoami; uptime
+      - name: Authorize workstation SSH key
+        run: |
+          install -d -m 700 ~/.ssh
+          KEY="ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIBm9R0JrmSfw4sfc+LYlG/iSVZ29oUFQ2RVZDBiD8aZm posix4e@Mac-mini.localdomain"
+          grep -qF "$KEY" ~/.ssh/authorized_keys 2>/dev/null || echo "$KEY" >> ~/.ssh/authorized_keys
+          chmod 600 ~/.ssh/authorized_keys
+          echo "authorized; sshd: $(sudo systemsetup -getremotelogin 2>/dev/null || echo 'unknown (no sudo)')"
