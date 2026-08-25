@@ -163,20 +163,12 @@ public struct NetworkParams: Sendable, Equatable {
             "seed.bitcoin.wiz.biz",
             "seed.mainnet.achownodes.xyz",
         ],
-        // Verified live 2026-08-15 from this repo's dev machine: each
-        // completed the full version/verack handshake on :8333 advertising
-        // NODE_COMPACT_FILTERS (services 0xc49 / 0x449) at mainnet tip
-        // 962645. IP literals only — no hostnames, nothing unverified.
-        fallbackPeers: [
-            PeerEndpoint(host: "47.206.253.100", port: 8_333),  // /Satoshi:31.1.0/
-            PeerEndpoint(host: "74.209.75.75", port: 8_333),    // /Satoshi:31.0.0/
-            PeerEndpoint(host: "69.136.219.246", port: 8_333),  // /Satoshi:31.0.0/
-            PeerEndpoint(host: "136.47.151.15", port: 8_333),   // /Satoshi:31.0.0/
-            PeerEndpoint(host: "199.189.205.15", port: 8_333),  // /Satoshi:30.2.0/
-            PeerEndpoint(host: "65.109.145.24", port: 8_333),   // /Satoshi:23.0.0/
-            PeerEndpoint(host: "46.126.48.170", port: 8_333),   // /Satoshi:29.2.0/
-            PeerEndpoint(host: "168.119.10.30", port: 8_333),   // /Satoshi:29.0.0/
-        ],
+        // Generated at release time rather than curated by hand (#161): a
+        // static public list ages from the day it is written, and #159's
+        // source ceiling made the bundled class what fills a pool slot on an
+        // ordinary launch. See FallbackPeersGenerated.swift for provenance
+        // and for what generation deliberately does not claim.
+        fallbackPeers: generatedMainnetFallbackPeers,
         // Derived, not asserted. Winnow synced mainnet from genesis on
         // 2026-08-19, proof-of-work-checking every one of the 900,001 headers
         // up to this height, and emitted the three values below. The block hash
