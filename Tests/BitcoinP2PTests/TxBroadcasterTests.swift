@@ -314,13 +314,15 @@ struct TxBroadcasterTests {
         // That is the claim, and it is deterministic.
         #expect(await broadcaster.pendingTxids.isEmpty)
         // The wire check is about what happens *after* that. Rebroadcasts
-        // already sent when the confirmation landed are still sitting in the
-        // node's inbox — the interval here is 150ms and the node buffers, so
-        // there can be several — and none of them is a counter-example. Drain
-        // whatever is queued, then require quiet for longer than the maximum
-        // rebroadcast interval, which is the window in which a *new* one would
-        // have to appear (#144).
+        // already sent when the confirmation landed are not counter-examples,
+        // and the old drain-then-stay-quiet shape could not tell them apart
+        // from real ones: a straggler landing inside the 700ms quiet window
+        // failed the test on a loaded runner (#164, twice on main). The
+        // barrier consumes everything already in flight, so the quiet window
+        // now only ever sees newly scheduled attempts — which the empty
+        // pending set above proves cannot exist.
         await drainQueuedInvs(from: node)
+        try await stragglersFlushed(node)
         #expect(await node.nextMessage(command: "inv", timeout: .milliseconds(700)) == nil)
         #expect(seen.events.contains { $0 == .confirmed(txid: txid1) })
 
@@ -329,8 +331,9 @@ struct TxBroadcasterTests {
         #expect(await node.nextMessage(command: "inv") != nil)
         try await broadcaster.cancel(txid2)
         #expect(await broadcaster.pendingTxids.isEmpty)
-        // Same as the confirmation branch above, for the same reason.
+        // Same shape as the confirmation branch, for the same reason.
         await drainQueuedInvs(from: node)
+        try await stragglersFlushed(node)
         #expect(await node.nextMessage(command: "inv", timeout: .milliseconds(700)) == nil)
         #expect(seen.events.contains { $0 == .cancelled(txid: txid2) })
 
@@ -607,4 +610,19 @@ private func drainQueuedInvs(from node: LoopbackNode, limit: Int = 20) async {
     for _ in 0 ..< limit {
         if await node.nextMessage(command: "inv", timeout: .milliseconds(250)) == nil { return }
     }
+}
+
+/// A TCP ordering barrier (#164). The connection is one ordered stream, so by
+/// the time the client's `pong` arrives, every message it dispatched before
+/// answering has arrived too. Draining after the barrier therefore consumes
+/// any rebroadcast that was already in flight when the confirmation landed —
+/// the stragglers that used to land inside the quiet window and fail the
+/// negative assertion on a loaded runner. An inv after barrier-plus-drain can
+/// only be a *newly scheduled* attempt, which is exactly what the assertion
+/// is supposed to catch.
+private func stragglersFlushed(_ node: LoopbackNode) async throws {
+    try await node.send(.ping(0xB412_B412_B412_B412))
+    let pong = await node.nextMessage(command: "pong", timeout: .seconds(10))
+    #expect(pong != nil, "the client stopped answering pings — the barrier proves nothing")
+    await drainQueuedInvs(from: node)
 }
