@@ -90,6 +90,22 @@ public struct Transaction: Equatable, Sendable {
     /// Parses from a byte reader positioned at the transaction start; consumes
     /// exactly the transaction's bytes. Handles legacy and segwit (BIP144)
     /// serializations.
+    /// The bound on a *serialized* script field.
+    ///
+    /// Not `MAX_SCRIPT_SIZE`. Consensus's 10,000-byte limit is enforced in
+    /// `EvalScript`, when a script is *run*; it does not constrain what a
+    /// transaction may carry. A transaction can create an output whose
+    /// scriptPubKey is larger than that — it is simply unspendable — and the
+    /// block containing it is valid. Core parses such a transaction without
+    /// complaint, and a client that refuses to is the one that is wrong.
+    ///
+    /// Applying 10,000 here stalled a live signet scan permanently at the
+    /// first block containing one: the block was rejected as a protocol
+    /// violation, the peer was evicted, the next peer served the same block,
+    /// and the frontier never advanced again. The only real bound is the
+    /// message the reader is already working inside.
+    static let maxSerializedScript = 4_000_000
+
     public static func decode(from reader: inout ByteReader) throws -> Transaction {
         let version = try reader.readInt32()
         var inputCount = try reader.readVarInt()
@@ -113,7 +129,7 @@ public struct Transaction: Equatable, Sendable {
         inputs.reserveCapacity(Int(inputCount))
         for _ in 0 ..< inputCount {
             let outpoint = Outpoint(txid: try reader.readBytes(32), vout: try reader.readUInt32())
-            let scriptSig = try reader.readVarData(maxLength: 10_000)
+            let scriptSig = try reader.readVarData(maxLength: Self.maxSerializedScript)
             let sequence = try reader.readUInt32()
             inputs.append(Input(previousOutput: outpoint, scriptSig: scriptSig, sequence: sequence))
         }
@@ -127,7 +143,7 @@ public struct Transaction: Equatable, Sendable {
         outputs.reserveCapacity(Int(outputCount))
         for _ in 0 ..< outputCount {
             let value = try reader.readInt64()
-            let scriptPubKey = try reader.readVarData(maxLength: 10_000)
+            let scriptPubKey = try reader.readVarData(maxLength: Self.maxSerializedScript)
             outputs.append(Output(value: value, scriptPubKey: scriptPubKey))
         }
         if segwit {

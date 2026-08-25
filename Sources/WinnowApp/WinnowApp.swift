@@ -135,11 +135,15 @@ final class PrivacyShield {
     }
 
     private func hide() {
+        // Hidden, but kept. The scene retains a window it owns regardless of
+        // what this type does, so discarding our reference does not free it —
+        // it only guarantees the next `show()` builds another one on top,
+        // because the cache `show()` reads is then empty. Cycling the scene
+        // phase twenty times used to leave twenty windows attached, and a
+        // phone flips phase on every call, notification shade and app switch.
         for window in windows.values {
             window.isHidden = true
-            window.rootViewController = nil
         }
-        windows.removeAll(keepingCapacity: true)
     }
 
     private func makeWindow(for scene: UIWindowScene) -> UIWindow {

@@ -20,7 +20,7 @@ enum BitcoinCLI {
     /// The node's BIP325 signet challenge (hex); its signing key lives in the
     /// "miner" wallet of the same datadir.
     static let challengeHex =
-        "512103c0fd3f9280629b86d7adcfe340bc6b2a01ad0696c4c3d624315d805ae73d7a9751ae"
+        "512102d4d3dfe322ab358061c7e08beebb48dc06a4c175342b975ecd0d55a79e6d6cdc51ae"
     static let challenge = Data(hex: challengeHex)!
 
     /// An environment override; empty values count as unset.
@@ -105,10 +105,24 @@ enum BitcoinCLI {
         let stderr = Pipe()
         process.standardOutput = stdout
         process.standardError = stderr
+        // Drain both pipes *before* waiting. A pipe holds about 64 KB; past
+        // that the child blocks writing while the parent blocks in
+        // `waitUntilExit`, and neither ever moves again. Reading after the
+        // wait worked only because every call here used to return a small
+        // answer — `decoderawtransaction` on a transaction with large scripts
+        // returns hundreds of kilobytes and deadlocks the suite outright,
+        // which silently capped what this harness could ever check.
         try process.run()
+        var outData = Data()
+        var errData = Data()
+        let group = DispatchGroup()
+        let queue = DispatchQueue(label: "org.winnow.diff.cli", attributes: .concurrent)
+        queue.async(group: group) { outData = stdout.fileHandleForReading.readDataToEndOfFile() }
+        queue.async(group: group) { errData = stderr.fileHandleForReading.readDataToEndOfFile() }
+        group.wait()
         process.waitUntilExit()
-        let out = String(decoding: stdout.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
-        let err = String(decoding: stderr.fileHandleForReading.readDataToEndOfFile(), as: UTF8.self)
+        let out = String(decoding: outData, as: UTF8.self)
+        let err = String(decoding: errData, as: UTF8.self)
         guard process.terminationStatus == 0 else {
             throw CLIError(arguments: arguments, status: process.terminationStatus,
                            output: (out + err).trimmingCharacters(in: .whitespacesAndNewlines))

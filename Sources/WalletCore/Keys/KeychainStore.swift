@@ -5,9 +5,12 @@ import Security
 /// `kSecAttrAccessibleWhenUnlockedThisDeviceOnly` (this device only — never
 /// migrated via backup), `kSecAttrSynchronizable = false` (no iCloud sync).
 ///
-/// Not covered by unit tests: SPM test runners have no keychain entitlements.
-/// The app exercises this; the implementation is deliberately straightforward
-/// and reviewed by reading.
+/// SPM test runners have no keychain entitlements, so the package suite cannot
+/// reach this. `AppTests/KeychainAttributeTests` can: it is hosted in the app,
+/// stores a secret through this type and reads the attributes back out of the
+/// Keychain, so the protection class is observed rather than reviewed. What
+/// that still cannot show is that iOS *honours* it when the device locks —
+/// the simulator has no data protection and no Secure Enclave.
 public struct KeychainStore: KeyStore {
     /// kSecAttrService namespace for all entries; the wallet ID is the account.
     public let service: String

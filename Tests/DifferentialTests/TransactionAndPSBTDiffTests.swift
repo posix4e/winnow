@@ -86,6 +86,96 @@ struct TransactionDiffTests {
         try psbt.finalize()
         try expectAgreement(try psbt.extractedTransaction(), label: "signed")
     }
+
+    // MARK: - Corpus
+
+    /// Deterministic generator so a failure names a seed and an index that
+    /// reproduce it exactly, the way `CoinSelectionPropertyTests` does. A
+    /// differential failure you cannot re-run is a rumour.
+    private struct SeededRandom {
+        var state: UInt64
+        mutating func next() -> UInt64 {
+            state &+= 0x9E37_79B9_7F4A_7C15
+            var value = state
+            value = (value ^ (value >> 30)) &* 0xBF58_476D_1CE4_E5B9
+            value = (value ^ (value >> 27)) &* 0x94D0_49BB_1331_11EB
+            return value ^ (value >> 31)
+        }
+        mutating func below(_ bound: Int) -> Int { bound <= 0 ? 0 : Int(next() % UInt64(bound)) }
+        mutating func pick<T>(_ options: [T]) -> T { options[below(options.count)] }
+        mutating func bytes(_ count: Int) -> Data {
+            Data((0 ..< count).map { _ in UInt8(next() & 0xFF) })
+        }
+    }
+
+    /// Every output shape the wallet can pay, plus the ones only a third party
+    /// creates. The last two are the interesting ones: an OP_RETURN carrying
+    /// more than `MAX_SCRIPT_SIZE`, which is consensus-legal and which we
+    /// refused to parse until `SEC-024`, and a bare multisig, which nothing in
+    /// the wallet produces but any block may contain.
+    private static func outputScript(kind: Int, random: inout SeededRandom) -> Data {
+        switch kind {
+        case 0: return Data([0x76, 0xA9, 0x14]) + random.bytes(20) + Data([0x88, 0xAC])   // P2PKH
+        case 1: return Data([0xA9, 0x14]) + random.bytes(20) + Data([0x87])               // P2SH
+        case 2: return Data([0x00, 0x14]) + random.bytes(20)                              // P2WPKH
+        case 3: return Data([0x00, 0x20]) + random.bytes(32)                              // P2WSH
+        case 4: return Data([0x51, 0x20]) + random.bytes(32)                              // P2TR
+        case 5:                                                                            // bare multisig
+            return Data([0x51, 0x21]) + random.bytes(33) + Data([0x51, 0xAE])
+        default:                                                                           // OP_RETURN
+            let size = random.pick([1, 80, 10_001])
+            return Data([0x6A]) + random.bytes(size)
+        }
+    }
+
+    /// A larger corpus than three hand-written transactions.
+    ///
+    /// S9 asks to "cross-check a larger transaction corpus against Bitcoin
+    /// Core". The three cases above are a smoke test: they exercise the shapes
+    /// we happened to think of, which is the same blind spot that let `SEC-024`
+    /// sit in the parser until real chain data hit it. This sweeps the axes
+    /// Core can adjudicate — version, input and output counts, every standard
+    /// script type, dust and boundary amounts, sequences, locktimes, and
+    /// witness stacks including items past the old script bound — and holds
+    /// Core's decode as the oracle rather than our own builder.
+    @Test("a generated corpus decodes identically in Core", arguments: [0x5749_4E4E_4F57_3039 as UInt64])
+    func generatedCorpus(seed: UInt64) throws {
+        // Forty, not four hundred: each transaction costs a `bitcoin-cli`
+        // process, and breadth across the axes is what finds disagreements —
+        // more draws from the same axes mostly re-check the same code.
+        var random = SeededRandom(state: seed)
+        for index in 0 ..< 40 {
+            let inputCount = 1 + random.below(4)
+            var inputs: [Transaction.Input] = []
+            for _ in 0 ..< inputCount {
+                let witnessItems = random.below(4)
+                var witness: [Data] = []
+                for _ in 0 ..< witnessItems {
+                    // Includes stacks past MAX_SCRIPT_SIZE: witness items were
+                    // always allowed 4 MB here, and that asymmetry with the
+                    // script fields is what SEC-024 turned out to be.
+                    witness.append(random.bytes(random.pick([0, 1, 33, 64, 72, 520, 10_001])))
+                }
+                inputs.append(Transaction.Input(
+                    previousOutput: Transaction.Outpoint(txid: random.bytes(32),
+                                                         vout: UInt32(random.pick([0, 1, 7, 0xFFFF_FFFF]))),
+                    scriptSig: witness.isEmpty ? random.bytes(random.pick([0, 1, 25, 106])) : Data(),
+                    sequence: UInt32(random.pick([0, 1, 0xFFFF_FFFD, 0xFFFF_FFFE, 0xFFFF_FFFF])),
+                    witness: witness))
+            }
+            let outputCount = 1 + random.below(4)
+            var outputs: [Transaction.Output] = []
+            for _ in 0 ..< outputCount {
+                outputs.append(Transaction.Output(
+                    value: Int64(random.pick([0, 1, 294, 546, 1_000, 100_000, 2_100_000_000_000_000])),
+                    scriptPubKey: Self.outputScript(kind: random.below(7), random: &random)))
+            }
+            let tx = Transaction(version: Int32(random.pick([1, 2, 3])),
+                                 inputs: inputs, outputs: outputs,
+                                 locktime: UInt32(random.pick([0, 1, 500_000, 499_999_999, 1_700_000_000])))
+            try expectAgreement(tx, label: "corpus seed \(String(seed, radix: 16)) index \(index)")
+        }
+    }
 }
 
 /// PSBT interop with Core 31.1: `decodepsbt` field agreement, `combinepsbt`,
@@ -104,28 +194,6 @@ struct PSBTDiffTests {
     /// unsigned transaction; per-input/output maps keep every pair except the
     /// BIP370-only ones (previous txid / output index / sequence on inputs,
     /// amount / script on outputs).
-    private func v0Envelope(_ psbt: PSBT) throws -> String {
-        var data = Data([0x70, 0x73, 0x62, 0x74, 0xFF])
-        func serializeMap(_ pairs: [PSBT.KeyValue], into data: inout Data) {
-            for pair in pairs.sorted(by: { $0.key.lexicographicallyPrecedes($1.key) }) {
-                data.appendVarInt(UInt64(pair.key.count))
-                data.append(pair.key)
-                data.appendVarInt(UInt64(pair.value.count))
-                data.append(pair.value)
-            }
-            data.append(0)
-        }
-        let unsigned = try psbt.unsignedTransaction().serialized(includeWitness: false)
-        serializeMap([PSBT.KeyValue(type: 0x00, value: unsigned)], into: &data)
-        for input in psbt.inputs {
-            serializeMap(input.pairs.filter { ![0x0E, 0x0F, 0x10].contains($0.type) }, into: &data)
-        }
-        for output in psbt.outputs {
-            serializeMap(output.pairs.filter { ![0x03, 0x04].contains($0.type) }, into: &data)
-        }
-        return data.base64EncodedString()
-    }
-
     private func fixture() throws -> (secret: Data, internalKey: Data, script: Data, tx: Transaction) {
         let key = try testMaster().derived(path: "m/86'/1'/0'/0/0")
         let internalKey = BIP86.xonlyPublicKey(of: key)
@@ -232,5 +300,121 @@ struct PSBTDiffTests {
         let extracted = try ours.extractedTransaction()
         #expect(coreHex == extracted.serialized(includeWitness: true).hex,
                 "Core-finalized tx differs from ours")
+    }
+}
+
+/// Whether the envelope conversion Core forces on us loses anything (#58, S8).
+///
+/// #58 requires that "unsupported fields and policy mismatches fail without
+/// lossy conversion". That clause had no teeth until the interop work made it
+/// concrete: Core 31.1 cannot read PSBTv2 and our parser will not read the v0
+/// it returns, so *every* exchange with Core is converted in both directions.
+/// A conversion nobody has audited is exactly where a field goes quietly
+/// missing.
+///
+/// The conversion drops five key types — `PSBT_IN_PREVIOUS_TXID` (0x0E),
+/// `PSBT_IN_OUTPUT_INDEX` (0x0F), `PSBT_IN_SEQUENCE` (0x10),
+/// `PSBT_OUT_AMOUNT` (0x03) and `PSBT_OUT_SCRIPT` (0x04). The claim under test
+/// is that this is relocation rather than loss: each of those is carried by
+/// the unsigned transaction that BIP174 puts in the global map, so the v0
+/// envelope holds the same information in a different place.
+@Suite("PSBT envelope conversion is lossless", .enabled(if: diffEnabled))
+struct PSBTConversionDiffTests {
+    private func fixturePSBT() throws -> PSBT {
+        let key = try testMaster().derived(path: "m/86'/1'/0'/0/0")
+        let internalKey = BIP86.xonlyPublicKey(of: key)
+        let script = try BIP86.scriptPubKey(internalKey: internalKey)
+        let other = try BIP86.scriptPubKey(
+            internalKey: BIP86.xonlyPublicKey(of: testMaster().derived(path: "m/86'/1'/0'/0/1")))
+        let tx = try TransactionBuilder.build(
+            inputs: [Transaction.Outpoint(txid: Data(hex: String(repeating: "3a", count: 32))!, vout: 3),
+                     Transaction.Outpoint(txid: Data(hex: String(repeating: "5c", count: 32))!, vout: 0)],
+            payments: [Payment(amount: 30_000, scriptPubKey: other)],
+            change: Payment(amount: 19_000, scriptPubKey: script),
+            changePosition: 1)
+        return try PSBT(unsignedTx: tx, inputs: [
+            PSBT.InputInfo(spentOutput: SighashBIP341.SpentOutput(amount: 25_000, scriptPubKey: script),
+                           key: PSBT.TaprootKey(internalKey: internalKey, masterFingerprint: 0,
+                                                path: [0x8000_0056])),
+            PSBT.InputInfo(spentOutput: SighashBIP341.SpentOutput(amount: 25_000, scriptPubKey: script),
+                           key: PSBT.TaprootKey(internalKey: internalKey, masterFingerprint: 0,
+                                                path: [0x8000_0056])),
+        ], outputs: [PSBT.OutputInfo(key: nil), PSBT.OutputInfo(key: nil)])
+    }
+
+    /// Everything the conversion drops must be recoverable from the unsigned
+    /// transaction it writes into the global map. If any of these disagree the
+    /// conversion is lossy and #58's clause is violated.
+    @Test("the dropped v2 fields are all carried by the unsigned transaction")
+    func droppedFieldsSurviveInTheTransaction() throws {
+        let psbt = try fixturePSBT()
+        let unsigned = try psbt.unsignedTransaction()
+        for (index, input) in psbt.inputs.enumerated() {
+            let previousTxid = try #require(input.pairs.first { $0.type == 0x0E }?.value)
+            let outputIndex = try #require(input.pairs.first { $0.type == 0x0F }?.value)
+            #expect(previousTxid == unsigned.inputs[index].previousOutput.txid,
+                    "input \(index): PSBT_IN_PREVIOUS_TXID is not what the transaction says")
+            #expect(outputIndex.withUnsafeBytes { $0.loadUnaligned(as: UInt32.self) }
+                == unsigned.inputs[index].previousOutput.vout,
+                "input \(index): PSBT_IN_OUTPUT_INDEX is not what the transaction says")
+            if let sequence = input.pairs.first(where: { $0.type == 0x10 })?.value {
+                #expect(sequence.withUnsafeBytes { $0.loadUnaligned(as: UInt32.self) }
+                    == unsigned.inputs[index].sequence,
+                    "input \(index): PSBT_IN_SEQUENCE is not what the transaction says")
+            }
+        }
+        for (index, output) in psbt.outputs.enumerated() {
+            if let amount = output.pairs.first(where: { $0.type == 0x03 })?.value {
+                #expect(amount.withUnsafeBytes { $0.loadUnaligned(as: Int64.self) }
+                    == unsigned.outputs[index].value,
+                    "output \(index): PSBT_OUT_AMOUNT is not what the transaction says")
+            }
+            if let script = output.pairs.first(where: { $0.type == 0x04 })?.value {
+                #expect(script == unsigned.outputs[index].scriptPubKey,
+                        "output \(index): PSBT_OUT_SCRIPT is not what the transaction says")
+            }
+        }
+    }
+
+    /// The other direction: nothing *except* those five types is dropped, so a
+    /// field we do not recognise cannot vanish silently on the way to Core.
+    @Test("no unrecognised field is dropped by the conversion")
+    func onlyTheRelocatedTypesAreDropped() throws {
+        var psbt = try fixturePSBT()
+        // A key type neither we nor Core assign meaning to. If the conversion
+        // filters by anything other than the five relocated types, this goes
+        // missing without a word — which is precisely the failure #58 names.
+        let sentinel = PSBT.KeyValue(type: 0x7E, value: Data([0xDE, 0xAD, 0xBE, 0xEF]))
+        psbt.inputs[0].pairs.append(sentinel)
+        let envelope = try v0Envelope(psbt)
+        let maps = try v0InputMaps(base64: envelope, inputCount: psbt.inputs.count)
+        #expect(maps[0].contains { $0.key == sentinel.key && $0.value == sentinel.value },
+                "an unrecognised input field was silently dropped converting to v0")
+
+        let dropped: Set<UInt8> = [0x0E, 0x0F, 0x10]
+        let expected = psbt.inputs[0].pairs.filter { !dropped.contains($0.type) }
+        #expect(maps[0].count == expected.count,
+                "the conversion dropped \(expected.count - maps[0].count) field(s) beyond the relocated three")
+    }
+
+    /// Core must accept what the conversion produces. A lossless envelope that
+    /// Core rejects would be no use, and this is the assertion that would fail
+    /// if a future field made the envelope malformed.
+    @Test("Core parses the converted envelope and agrees about the inputs")
+    func coreAcceptsTheEnvelope() throws {
+        let psbt = try fixturePSBT()
+        let decoded = try BitcoinCLI.runObject(["decodepsbt", try v0Envelope(psbt)])
+        let inputs = try BitcoinCLI.array(decoded, "inputs")
+        #expect(inputs.count == psbt.inputs.count, "Core sees a different number of inputs")
+        let tx = try #require(decoded["tx"] as? [String: Any], "no unsigned transaction in the envelope")
+        let vin = try BitcoinCLI.array(tx, "vin")
+        let unsigned = try psbt.unsignedTransaction()
+        for (index, input) in unsigned.inputs.enumerated() {
+            let coreIn = try #require(vin[index] as? [String: Any])
+            #expect(coreIn["txid"] as? String == input.previousOutput.txid.displayHex,
+                    "input \(index): Core read a different previous txid")
+            #expect(coreIn["vout"] as? Int == Int(input.previousOutput.vout),
+                    "input \(index): Core read a different output index")
+        }
     }
 }

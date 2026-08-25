@@ -193,9 +193,20 @@ struct E2EMode {
     /// carries txids and raw transactions, so a blanket rule would either fire
     /// constantly or be switched off.
     static func looksSecret(_ value: String) -> Bool {
-        let wordCount = value.split(whereSeparator: \.isWhitespace).count
-        if [12, 15, 18, 21, 24].contains(wordCount), (try? BIP39.validate(mnemonic: value)) != nil {
-            return true
+        // A mnemonic is checked over every window of consecutive words, not
+        // just the whole string. The prefix scan below already catches an
+        // extended private key inside prose; the word check used to require
+        // the value to be *exactly* a mnemonic, so "note: abandon amount …"
+        // passed. That asymmetry favoured the less dangerous of the two — an
+        // xprv derives one account, a recovery phrase is the whole backup.
+        let words = value.split(whereSeparator: \.isWhitespace)
+        if words.count <= 512 {
+            for length in [24, 21, 18, 15, 12] where words.count >= length {
+                for start in 0 ... (words.count - length) {
+                    let candidate = words[start ..< start + length].joined(separator: " ")
+                    if (try? BIP39.validate(mnemonic: candidate)) != nil { return true }
+                }
+            }
         }
         // Extended private keys are unambiguous by prefix, whatever the field
         // is called.

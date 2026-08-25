@@ -148,9 +148,44 @@ every address, and it spends nothing.
    written acceptance of the risk.~~ **Done** — [#156](https://github.com/posix4e/winnow/pull/156).
 3. ~~SEC-005 and SEC-017 closed, or dispositioned with an owner and a date.~~
    **Done** — both fixed.
-4. **Outstanding.** The evidence that needs hardware and external systems:
-   node-backed differential runs, mixed-wallet PSBT fixtures, device Keychain
-   and screenshot checks, sustained signet.
+4. **Substantially reduced, still outstanding.** Most of what this condition
+   named now exists, and producing it found five defects that no amount of
+   reading would have surfaced — `SEC-024` through `SEC-028`.
+
+   - *Node-backed differential runs:* the fixture had been **unrunnable**, its
+     BIP325 challenge key lost with a workstation. It is rebuildable from the
+     repository now (`scripts/signet-fixture`), and rebuilding it from genesis
+     exposed three defects invisible on an established chain. The corpus is a
+     seeded sweep cross-checked field-by-field against Core rather than three
+     hand-written transactions.
+   - *Mixed-wallet PSBT fixtures:* **done for script-path.** Bitcoin Core holds
+     one key of three in a `tr(NUMS, sortedmulti_a(2,…))` vault and co-signs a
+     spend that confirms — #58's acceptance bar. The envelope conversion every
+     Core exchange forces is proven lossless. **MuSig2/BIP390 reaches round 1 and stops:** Core
+     contributes a BIP373 nonce, but keys it by the tweaked output key
+     where we key by the root aggregate, so neither side can consume the
+     other's. Named, pinned by test, and not inferred from the
+     script-path result.
+   - *Device Keychain and screenshot checks:* the simulator half is done and
+     the claims are observations now rather than readings. **The hardware half
+     is not, and cannot be:** that iOS enforces the protection class when the
+     device locks, and that its app-switcher snapshot contains the cover, are
+     platform behaviours a simulator has no data protection, no Secure Enclave
+     and no snapshot to show. Those need the phone.
+   - *Sustained signet:* two runs, the second 90 minutes with 88 at chain tip,
+     timeseries committed. It found `SEC-024` within the first hour. A third
+     run starting at tip holds resident size between 13 MB and 36 MB. That
+     is 110 minutes of at-tip observation, which supports a claim about
+     hours and not about days — and days will need the `node-e2e` runner,
+     because two multi-hour attempts were killed by the environment here.
+
+   What is left is genuinely the hardware: on-device Keychain enforcement,
+   screenshot and lifecycle behaviour, and runs long enough to speak about days.
+   Crash-during-write is deliberately **not** among them — every store writes
+   atomically or through the fsync-ordered append path, and the consequences of
+   a damaged file are already evidenced by the storage-corruption, append,
+   quarantine and rollback-marker suites. A racy process-kill test would add
+   noise, not evidence.
 5. ~~The two judgement calls decided, or recorded as open.~~ **Done** — the
    single-peer eclipse and the clipboard reach were both dispositioned by the
    owner on 2026-08-23, and both are written up above with their reasoning.

@@ -42,8 +42,15 @@ public enum WalletError: Error, Equatable, LocalizedError {
 
     public var errorDescription: String? {
         switch self {
-        case let .invalidDescriptor(text):
-            "Invalid descriptor: \(text)"
+        // The payload is bound and discarded on purpose; see below.
+        case .invalidDescriptor:
+            // Deliberately not echoed. This is reached with a descriptor taken
+            // straight from an imported bundle, and a descriptor may carry an
+            // extended *private* key — repeating it here would put key material
+            // on screen, into a screenshot, and into whatever the user pastes
+            // into a bug report.
+            "That wallet descriptor could not be parsed. It is not repeated here, "
+                + "because a descriptor can carry key material."
         case .descriptorMismatch:
             "Bundle descriptor does not match the mnemonic."
         case let .invalidBundle(reason):

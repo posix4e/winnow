@@ -52,7 +52,26 @@ enum SignetMiner {
     }
 
     /// BIP34 height as a minimally-encoded script number push.
+    /// BIP34's height, encoded the way Core *checks* it.
+    ///
+    /// Core builds its expectation as `CScript() << nHeight`, and that operator
+    /// does not always emit a data push: for 1...16 it emits the single small
+    /// integer opcode OP_1...OP_16, and for 0 it emits OP_0. Only outside that
+    /// range does it serialize a CScriptNum and push it. A miner that always
+    /// pushes gets `bad-cb-height` for exactly the first sixteen blocks of a
+    /// chain and is correct from 17 onwards — so this is invisible on an
+    /// established fixture and fatal when rebuilding one from genesis.
     private static func heightPush(_ height: Int) -> Data {
+        // Two consensus rules meet here. BIP34 checks only that the scriptSig
+        // *begins with* the expected encoding, so trailing bytes are legal;
+        // and a coinbase scriptSig must be 2...100 bytes. For 1...16 the
+        // opcode is a single byte, so it needs one byte of padding or the
+        // block is rejected `bad-cb-length` instead. Real miners never notice:
+        // their extranonce already pads it.
+        if height == 0 { return Data([0x00, 0x00]) }           // OP_0, padded
+        if height >= 1, height <= 16 {
+            return Data([UInt8(0x50 + height), 0x00])          // OP_1...OP_16, padded
+        }
         var bytes: [UInt8] = []
         var value = height
         while value > 0 { bytes.append(UInt8(value & 0xFF)); value >>= 8 }

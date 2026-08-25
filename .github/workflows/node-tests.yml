@@ -128,7 +128,11 @@ jobs:
         env:
           DEVELOPER_DIR: ${{ steps.devtools.outputs.devdir }}
           WINNOW_DIFF: "1"
-        run: swift test --filter DifferentialTests
+        # --no-parallel is required, not tidiness. Two suites mine onto the
+        # same tip (FullLoopDiffTests and VaultInteropDiffTests); run
+        # concurrently they race for every block, each re-mines on the winner,
+        # and the run stalls indefinitely rather than failing.
+        run: swift test --filter DifferentialTests --no-parallel
 
       - name: Generate Xcode project
         run: xcodegen

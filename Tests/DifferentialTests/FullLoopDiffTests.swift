@@ -172,7 +172,12 @@ struct FullLoopDiffTests {
         #expect(history.first { $0.txid == originalTxid }?.replacedBy == replacementTxid)
         let sendEntry = try #require(
             history.first { $0.txid == replacementTxid }, "replacement missing from history")
-        #expect(sendEntry.height > startTip + 101, "spend confirmed after maturity")
+        // Maturity lands at startTip + 100 (the funding block is confirmation
+        // one), so the first block that can carry the spend is startTip + 101.
+        // This read `> startTip + 101`, which is unsatisfiable on a chain
+        // nobody else is mining; it passed only because the original fixture
+        // ran a background miner that kept adding blocks underneath the test.
+        #expect(sendEntry.height > startTip + 100, "spend confirmed after maturity")
         #expect(sendEntry.fee == replacement.built.fee, "wallet replacement fee accounting")
         let remaining = await wallet.utxos
         #expect(remaining.count == 1, "only the change output remains")
