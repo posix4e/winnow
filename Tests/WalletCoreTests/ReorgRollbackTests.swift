@@ -61,11 +61,17 @@ struct ReorgRollbackTests {
         #expect(await wallet.history.contains { $0.height > 200 } == false)
     }
 
-    /// The case a rescan alone cannot fix, and the reason coins are tombstoned:
-    /// the coin was created below the fork, so nothing above the fork can
-    /// recreate it. Only the retained row can give it back.
-    @Test("a coin spent above the fork comes back")
-    func spendAboveForkIsUndone() async throws {
+    /// A disconnected spend of our coin is not undone — it is re-pended
+    /// (#157). The reorg removed it from the chain, but every node that saw
+    /// it put it back in its mempool, so the transaction is *in flight*:
+    /// restoring the coin as selectable built conflicting sends the network
+    /// rejected, which is the exact symptom #127 exists to eliminate. The coin
+    /// row survives (the reason coins are tombstoned at all — nothing above
+    /// the fork can recreate a coin created below it), reserved by a now
+    /// heightless marker; the payment survives as pending instead of
+    /// vanishing mid-flight.
+    @Test("a coin spent above the fork stays reserved for the still-live spend")
+    func spendAboveForkStaysReserved() async throws {
         let wallet = try await wallet()
         let fundingTxid = try await fund(wallet, amount: 150_000, height: 100)
 
@@ -81,9 +87,63 @@ struct ReorgRollbackTests {
 
         try await wallet.rollBack(to: 200)
 
-        #expect(await wallet.balance == 150_000, "the spend was never mined on this branch")
-        #expect(await wallet.utxos.first?.txid == fundingTxid)
-        #expect(await wallet.allUtxos.first?.spent == nil, "the tombstone is cleared")
+        let coin = try #require(await wallet.allUtxos.first)
+        let marker = try #require(coin.spent, "the reservation must survive the rollback")
+        #expect(marker.height == nil, "in flight again, not confirmed")
+        #expect(marker.spentBy == spend.txid)
+        #expect(await wallet.utxos.isEmpty, "a reserved coin is not selectable")
+        let entry = try #require(await wallet.history.first { $0.txid == spend.txid },
+                                 "the payment must stay visible")
+        #expect(entry.height == 0, "pending again, exactly like a fresh own send")
+    }
+
+    /// The acceptance case #157 names: after the reorg, a send cannot be built
+    /// from the coin the still-live transaction is spending.
+    @Test("a send built after the reorg cannot conflict with the live spend")
+    func noConflictingSendAfterReorg() async throws {
+        let wallet = try await wallet()
+        let fundingTxid = try await fund(wallet, amount: 150_000, height: 100)
+        let spend = Transaction(
+            version: 2,
+            inputs: [Transaction.Input(previousOutput: .init(txid: fundingTxid, vout: 0),
+                                       scriptSig: Data(), sequence: 0xFFFF_FFFD)],
+            outputs: [Transaction.Output(value: 100_000, scriptPubKey: destination)],
+            locktime: 0)
+        try await wallet.apply(match: fakeMatch(height: 220, transactions: [spend]))
+        try await wallet.recordScanHeight(221)
+        try await wallet.rollBack(to: 200)
+
+        await #expect(throws: (any Error).self,
+                      "the only coin is reserved by a live transaction; selecting it builds a conflict") {
+            _ = try await wallet.buildSend(
+                payments: [Payment(amount: 50_000, scriptPubKey: self.destination)],
+                feeRateSatPerVByte: 2, chainTip: 200, randomness: { 0.5 })
+        }
+    }
+
+    /// The healing path: when the re-pended spend confirms again on the new
+    /// branch, the existing tombstone upgrade re-heights the marker and the
+    /// history entry — the same machinery a fresh pending send uses.
+    @Test("the re-pended spend heals when it confirms on the new branch")
+    func rependedSpendReconfirms() async throws {
+        let wallet = try await wallet()
+        let fundingTxid = try await fund(wallet, amount: 150_000, height: 100)
+        let spend = Transaction(
+            version: 2,
+            inputs: [Transaction.Input(previousOutput: .init(txid: fundingTxid, vout: 0),
+                                       scriptSig: Data(), sequence: 0xFFFF_FFFD)],
+            outputs: [Transaction.Output(value: 100_000, scriptPubKey: destination)],
+            locktime: 0)
+        try await wallet.apply(match: fakeMatch(height: 220, transactions: [spend]))
+        try await wallet.recordScanHeight(221)
+        try await wallet.rollBack(to: 200)
+
+        try await wallet.apply(match: fakeMatch(height: 205, transactions: [spend]))
+
+        let coin = try #require(await wallet.allUtxos.first)
+        #expect(coin.spent?.height == 205, "the marker re-heights at the new confirmation")
+        let entry = try #require(await wallet.history.first { $0.txid == spend.txid })
+        #expect(entry.height == 205, "the payment is confirmed again, at its new height")
     }
 
     /// The exemption that stops the rollback double-spending the wallet against

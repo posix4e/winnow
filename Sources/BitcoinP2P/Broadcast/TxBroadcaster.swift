@@ -106,6 +106,12 @@ public actor TxBroadcaster {
         var attempt: Int
         var nextAttemptAt: Date
         var feeFloorExceededEmitted = false
+        /// Confirmation tombstone (#157), mirroring `WalletUTXO.SpentMarker`:
+        /// a confirmed entry is kept, silent, rather than deleted. Deleting it
+        /// destroyed the raw transaction — the only thing that makes
+        /// re-announcement possible when a reorg disconnects the confirming
+        /// block and the transaction is suddenly in flight again.
+        var confirmedAtHeight: UInt32?
     }
 
     /// JSON persistence shape: txid hex → relay record.
@@ -115,8 +121,13 @@ public actor TxBroadcaster {
             var rawTx: String
             var feeRateSatPerVByte: Double?
             var attempt: Int
-            /// Next backoff attempt, seconds since 1970.
+            /// Next backoff attempt, seconds since 1970. Confirmed-held
+            /// entries store 0 — their in-memory schedule is `.distantFuture`,
+            /// which the future-schedule bound below would rightly refuse.
             var nextAttemptAt: TimeInterval
+            /// The confirmation tombstone; absent in stores written before
+            /// #157, which load with every entry unconfirmed as they were.
+            var confirmedAtHeight: UInt32?
         }
         var transactions: [String: StoredTx]
     }
@@ -184,7 +195,11 @@ public actor TxBroadcaster {
     }
 
     /// txids (internal byte order) awaiting confirmation.
-    public var pendingTxids: [Data] { Array(pending.keys) }
+    /// Transactions still being relayed. Confirmed-held entries (#157) are
+    /// excluded: they are retained only so a reorg can resurrect them, and
+    /// every caller of this — the relay UI, the confirmation sweep — means
+    /// "still in flight".
+    public var pendingTxids: [Data] { pending.filter { $0.value.confirmedAtHeight == nil }.map(\.key) }
 
     /// The signed bytes of a transaction still awaiting confirmation.
     ///
@@ -195,7 +210,13 @@ public actor TxBroadcaster {
     /// real escape hatch rather than a debugging convenience.
     ///
     /// nil once the transaction confirms and leaves the pending set.
-    public func rawTransaction(_ txid: Data) -> Data? { pending[txid]?.rawTx }
+    public func rawTransaction(_ txid: Data) -> Data? {
+        // The #155 decision survives the #157 tombstone: once confirmed the
+        // tx is public and offering its bytes only invites rebroadcasting
+        // something already mined, so a held entry hands out nothing.
+        guard let entry = pending[txid], entry.confirmedAtHeight == nil else { return nil }
+        return entry.rawTx
+    }
 
     public func events() -> AsyncStream<Event> {
         let id = UUID()
@@ -245,16 +266,59 @@ public actor TxBroadcaster {
     }
 
     /// Called when the tx is seen in a matched block (or otherwise confirmed).
-    public func markConfirmed(_ txid: Data) throws {
+    public func markConfirmed(_ txid: Data, atHeight height: UInt32) throws {
         guard !stopped else { throw TxBroadcasterError.stopped }
-        guard pending[txid] != nil else { return }
+        guard let entry = pending[txid], entry.confirmedAtHeight == nil else { return }
         var candidate = pending
-        candidate.removeValue(forKey: txid)
+        candidate[txid]?.confirmedAtHeight = height
+        // Held entries never come due; `.distantFuture` keeps them out of the
+        // backoff loop without a second code path deciding what "due" means.
+        candidate[txid]?.nextAttemptAt = .distantFuture
         try persist(candidate)
         pending = candidate
         persistenceBlocked = false
         emit(.confirmed(txid: txid))
         scheduleRebroadcast()
+    }
+
+    /// Reactivates entries whose confirming block was disconnected (#157).
+    /// The transaction is back in mempools whether or not we speak, so the
+    /// wallet re-reserves its inputs and this re-announces — the two halves of
+    /// not building a conflicting send.
+    public func rollBack(to forkHeight: UInt32) throws {
+        guard !stopped else { throw TxBroadcasterError.stopped }
+        var candidate = pending
+        var reactivated = false
+        for (txid, entry) in candidate {
+            guard let height = entry.confirmedAtHeight, height > forkHeight else { continue }
+            candidate[txid]?.confirmedAtHeight = nil
+            candidate[txid]?.nextAttemptAt = now()
+            // Every peer gets the inv again: relay state from before the
+            // confirmation describes a conversation about a different chain.
+            candidate[txid]?.peers = [:]
+            reactivated = true
+        }
+        guard reactivated else { return }
+        try persist(candidate)
+        pending = candidate
+        persistenceBlocked = false
+        scheduleRebroadcast()
+    }
+
+    /// Drops held entries once their confirmation is deeper than any reorg
+    /// this wallet reorganises over — the same 100-block horizon
+    /// `Wallet.spentCoinHorizon` uses for spent-coin tombstones, for the same
+    /// reason.
+    public func pruneConfirmed(scannedTo tip: UInt32) throws {
+        guard !stopped else { return }
+        var candidate = pending
+        candidate = candidate.filter { _, entry in
+            guard let height = entry.confirmedAtHeight else { return true }
+            return height + 100 > tip
+        }
+        guard candidate.count != pending.count else { return }
+        try persist(candidate)
+        pending = candidate
     }
 
     /// Stops relaying a pending tx without a confirmation (e.g. the user
@@ -429,7 +493,14 @@ public actor TxBroadcaster {
             result[txid] = Pending(rawTx: rawTx, transaction: transaction,
                                    feeRateSatPerVByte: record.feeRateSatPerVByte,
                                    attempt: record.attempt,
-                                   nextAttemptAt: Date(timeIntervalSince1970: record.nextAttemptAt))
+                                   // A held entry's stored schedule is a
+                                   // placeholder 0; in memory it must never
+                                   // come due, so the sentinel is restored
+                                   // rather than trusted from disk.
+                                   nextAttemptAt: record.confirmedAtHeight == nil
+                                       ? Date(timeIntervalSince1970: record.nextAttemptAt)
+                                       : .distantFuture,
+                                   confirmedAtHeight: record.confirmedAtHeight)
         }
         return result
     }
@@ -534,7 +605,7 @@ public actor TxBroadcaster {
     private func markPeerFailed(_ peer: PeerConnection, reason: String) {
         let key = peer.endpoint.description
         for (txid, entry) in pending {
-            guard let relay = entry.peers[key],
+            guard entry.confirmedAtHeight == nil, let relay = entry.peers[key],
                   relay.state != .failed, relay.state != .deprioritized else { continue }
             pending[txid]?.peers[key]?.state = .failed
             emit(.failed(txid: txid, peer: peer.endpoint, reason: reason))
@@ -552,7 +623,7 @@ public actor TxBroadcaster {
         }
         guard let minimum = floors.min() else { return }
         for (txid, entry) in pending {
-            guard let rate = entry.feeRateSatPerVByte else { continue }
+            guard entry.confirmedAtHeight == nil, let rate = entry.feeRateSatPerVByte else { continue }
             let exceeded = Double(minimum) > rate * 1_000
             if exceeded, !entry.feeFloorExceededEmitted {
                 pending[txid]?.feeFloorExceededEmitted = true
@@ -568,7 +639,8 @@ public actor TxBroadcaster {
     /// pending set or its schedule changes; stops when nothing is pending.
     private func scheduleRebroadcast() {
         rebroadcastTask?.cancel()
-        guard !stopped, !pending.isEmpty, !persistenceBlocked else {
+        guard !stopped, !persistenceBlocked,
+              pending.contains(where: { $0.value.confirmedAtHeight == nil }) else {
             rebroadcastTask = nil
             return
         }
@@ -698,7 +770,10 @@ public actor TxBroadcaster {
                 (txid.hex, StoredPending.StoredTx(rawTx: entry.rawTx.hex,
                                                   feeRateSatPerVByte: entry.feeRateSatPerVByte,
                                                   attempt: entry.attempt,
-                                                  nextAttemptAt: entry.nextAttemptAt.timeIntervalSince1970))
+                                                  nextAttemptAt: entry.confirmedAtHeight == nil
+                                                      ? entry.nextAttemptAt.timeIntervalSince1970
+                                                      : 0,
+                                                  confirmedAtHeight: entry.confirmedAtHeight))
             }))
         do {
             let data = try JSONEncoder().encode(stored)

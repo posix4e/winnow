@@ -79,7 +79,7 @@ struct TxBroadcasterTests {
         let reloaded = try TxBroadcaster(pool: pool, storageURL: store)
         #expect(await reloaded.pendingTxids == [txid])
 
-        try await broadcaster.markConfirmed(txid)
+        try await broadcaster.markConfirmed(txid, atHeight: 1)
         #expect(await broadcaster.pendingTxids.isEmpty)
 
         await pool.stop()
@@ -309,7 +309,7 @@ struct TxBroadcasterTests {
         // Confirmed tx: no further invs.
         let txid1 = try await broadcaster.broadcast(makeFakeSegwitTx().serialized(includeWitness: true))
         #expect(await node.nextMessage(command: "inv") != nil)
-        try await broadcaster.markConfirmed(txid1)
+        try await broadcaster.markConfirmed(txid1, atHeight: 1)
         // The pending entry is gone, so no further attempt can be scheduled.
         // That is the claim, and it is deterministic.
         #expect(await broadcaster.pendingTxids.isEmpty)
@@ -441,7 +441,7 @@ struct TxBroadcasterTests {
         try FileManager.default.removeItem(at: store.deletingLastPathComponent())
 
         await #expect(throws: TxBroadcasterStorageError.writeFailed) {
-            try await broadcaster.markConfirmed(txid)
+            try await broadcaster.markConfirmed(txid, atHeight: 1)
         }
         await #expect(throws: TxBroadcasterStorageError.writeFailed) {
             try await broadcaster.cancel(txid)

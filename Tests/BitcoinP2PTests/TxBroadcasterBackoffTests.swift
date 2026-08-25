@@ -145,7 +145,7 @@ struct TxBroadcasterBackoffTests {
         #expect(await broadcaster.rawTransaction(Data(repeating: 0xFF, count: 32)) == nil)
 
         // Once it confirms it is on the chain, and the txid is the handle.
-        try await broadcaster.markConfirmed(txid)
+        try await broadcaster.markConfirmed(txid, atHeight: 1)
         #expect(await broadcaster.rawTransaction(txid) == nil)
         await broadcaster.shutdown()
     }

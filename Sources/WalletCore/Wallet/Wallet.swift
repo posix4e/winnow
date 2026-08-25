@@ -1539,11 +1539,40 @@ public actor Wallet {
     public func rollBack(to forkHeight: UInt32) throws {
         var candidate = state
         candidate.allUtxos.removeAll { $0.height > forkHeight }
+        // A disconnected transaction that spent our coins is re-pended, not
+        // erased (#157). The reorg removed it from the chain, but nodes put it
+        // straight back in their mempools, so it is *in flight* — exactly the
+        // state a pending send is in. Erasing it restored its inputs as
+        // selectable, and a send built from them was a conflict the network
+        // would reject: the symptom #127 exists to eliminate, reopened by its
+        // own fix. Receives (nothing of ours spent) still drop with their
+        // coins; the rescan from the fork re-finds whichever survive.
+        //
+        // Deliberately any spender, not just our own sends: a third-party
+        // transaction spending our coin is equally live in mempools, and its
+        // inputs are equally unsafe to select. Its entry re-pends the same
+        // way; only the re-announcement half is ours-only, because only our
+        // own transactions are in the broadcaster.
+        var rependedSpenders: Set<Data> = []
+        for index in candidate.history.indices
+            where candidate.history[index].height > forkHeight && candidate.history[index].spent > 0
+        {
+            rependedSpenders.insert(candidate.history[index].txid)
+            candidate.history[index].height = 0
+        }
         for index in candidate.allUtxos.indices {
-            guard let height = candidate.allUtxos[index].spent?.height,
-                  height > forkHeight
+            guard let marker = candidate.allUtxos[index].spent,
+                  let height = marker.height, height > forkHeight
             else { continue }
-            candidate.allUtxos[index].spent = nil
+            // Spent by a transaction that is still live: back to in-flight,
+            // which keeps the coin unselectable and lets the existing
+            // pending-tombstone upgrade re-height it when any confirmation
+            // lands. Spent by something that fell with the fork entirely
+            // (its entry was a pure receive from our side, or predates what
+            // we track): restored, as before.
+            candidate.allUtxos[index].spent = rependedSpenders.contains(marker.spentBy)
+                ? WalletUTXO.SpentMarker(spentBy: marker.spentBy, height: nil)
+                : nil
         }
         candidate.history.removeAll { $0.height > forkHeight }
         // Never forward: a fork at or above the frontier leaves nothing that

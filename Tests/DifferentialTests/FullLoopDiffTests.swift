@@ -166,7 +166,7 @@ struct FullLoopDiffTests {
             }
         }
         #expect(confirmed, "replacement never confirmed")
-        try await broadcaster.markConfirmed(replacementTxid)
+        try await broadcaster.markConfirmed(replacementTxid, atHeight: UInt32(try BitcoinCLI.blockCount()))
 
         let history = await wallet.history
         #expect(history.first { $0.txid == originalTxid }?.replacedBy == replacementTxid)
