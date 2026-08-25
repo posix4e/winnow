@@ -468,6 +468,14 @@ public actor PeerPool {
     }
 
     /// What is connected right now, with each peer's origin.
+    /// The provenance class this pool reached `endpoint` through, when it
+    /// knows one. Consumers use it to make comparisons span acquisition
+    /// channels (#3): two peers from one class agreeing is one channel
+    /// agreeing with itself.
+    public func source(of endpoint: PeerEndpoint) -> PeerSource? {
+        knownSource[endpoint]
+    }
+
     private func seatedCandidates() -> [PeerCandidate] {
         peers.map {
             PeerCandidate(endpoint: $0.endpoint, source: seatedSources[$0.endpoint] ?? .persisted)

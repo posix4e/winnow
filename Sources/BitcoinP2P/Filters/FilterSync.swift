@@ -405,6 +405,20 @@ public actor FilterSync {
 
     /// Fetches cfheaders for [batchStart, batchStop] and pins the filter
     /// header chain to our block-header chain.
+    /// Picks the cross-check pair: two peers from *different* source classes
+    /// when the pool holds them, any two otherwise, one when that is all
+    /// there is. Pure so the policy is testable without a network.
+    static func crossSourcePair(_ peers: [(peer: PeerConnection, source: PeerSource?)])
+        -> [PeerConnection]
+    {
+        guard let first = peers.first else { return [] }
+        guard peers.count > 1 else { return [first.peer] }
+        if let other = peers.dropFirst().first(where: { $0.source != first.source }) {
+            return [first.peer, other.peer]
+        }
+        return [first.peer, peers[1].peer]
+    }
+
     private func pinFilterHeaders(batchStart: UInt32, batchStop: UInt32, stopHash: Data,
                                   peers: [PeerConnection],
                                   startingFrom storedHeaders: [String: String]) async throws
@@ -413,7 +427,18 @@ public actor FilterSync {
         // Always cross-check cfheaders between two peers when the pool has
         // them (paper §2.7: "fetch cfheaders from ≥2 independent peers and
         // disconnect peers that disagree"). A single-peer pool degrades to one.
-        let queryPeers = Array(peers.prefix(min(2, peers.count)))
+        //
+        // The pair spans source classes when it can (#3). `prefix(2)` took
+        // whichever two connected first, and the diversity ceiling permits two
+        // seats from one class — so the cross-check could be a DNS seed's
+        // answer compared against the same DNS seed's other answer: one
+        // acquisition channel agreeing with itself. Same-class pairs remain
+        // the degraded mode, exactly as a single-peer pool is.
+        var sourced: [(peer: PeerConnection, source: PeerSource?)] = []
+        for peer in peers {
+            sourced.append((peer, await pool.source(of: peer.endpoint)))
+        }
+        let queryPeers = Self.crossSourcePair(sourced)
 
         var decoded: CFHeadersMessage?
         for peer in queryPeers {
