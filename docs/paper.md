@@ -388,7 +388,7 @@ spend.
 
 ## 10. Reproducible evidence
 
-The checked-in `winnow-story` command creates an isolated simulator run,
+The `winnow-story` command (its own repository, github.com/posix4e/winnow-story) creates an isolated simulator run,
 records scenario and tool versions, launches named roles, preserves protected
 state for resume, monitors public signet, and emits a safe event journal. It
 does not require Bitcoin Core, RPC credentials, or an owner-machine daemon.

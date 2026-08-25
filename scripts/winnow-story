@@ -1,6 +1,0 @@
-#!/bin/sh
-set -eu
-
-REPOSITORY=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
-cd "$REPOSITORY"
-exec swift run --quiet WinnowStory "$@"
