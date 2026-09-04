@@ -81,11 +81,14 @@ public actor PeerPool {
     /// failure up to the cap.
     static let transportCooldownBase: Duration = .seconds(30)
     static let transportCooldownCap: Duration = .seconds(600)
-    /// How far behind the best-connected peer's reported tip a peer may be
-    /// before it is unseated. A hundred blocks is about sixteen hours, the
-    /// wallet's own reorg horizon, and far inside what a node still in
+    /// How far behind our own validated header tip a peer's reported height
+    /// may be before it is unseated. A hundred blocks is about sixteen hours,
+    /// the wallet's own reorg horizon, and far inside what a node still in
     /// initial download or stuck on a dead fork reports.
-    public static let staleTipTolerance: Int32 = 100
+    public static let staleTipTolerance: Int64 = 100
+    /// The height of the header chain this pool last synced — proof-of-work
+    /// validated, so no peer can inflate it. nil until the first header sync.
+    private var validatedTip: UInt32?
 
     /// UI-facing snapshot of the pool's connection progress.
     public struct ConnectionStatus: Sendable, Equatable {
@@ -211,7 +214,7 @@ public actor PeerPool {
     }
 
     /// Unseats every peer whose handshake height is more than
-    /// `staleTipTolerance` below the best height any connected peer reported.
+    /// `staleTipTolerance` below our own validated header tip.
     ///
     /// A peer that far behind cannot serve filters or blocks near the tip,
     /// and asking it about a tip it has never seen makes Bitcoin Core drop the
@@ -221,19 +224,31 @@ public actor PeerPool {
     /// thousand blocks behind with a fee filter no transaction could clear;
     /// the rule judges what the peer reports, never what software it runs.
     ///
+    /// The reference is deliberately not the best height any peer claims. A
+    /// `version.startHeight` is an unvalidated claim, and judging peers
+    /// against the maximum would let one peer claiming `Int32.max` evict
+    /// every honest peer and their replacements until it held the pool
+    /// alone. Our own header chain is proof-of-work checked, so a liar can
+    /// only make itself look ahead of it, which the header sync then
+    /// punishes as a data fault. Before the first header sync there is no
+    /// reference and nothing is judged.
+    ///
     /// Not `misbehaving`: being behind is a state, not a lie. The endpoint
     /// leaves the persisted good list, since a node that far back is not a
     /// good peer to dial first next launch, and cools off for the full cap so
     /// this session stops re-seating it.
     @discardableResult
     func evictStaleTips() async -> [PeerEndpoint] {
-        var heights: [(peer: PeerConnection, height: Int32)] = []
+        guard let validatedTip else { return [] }
+        let reference = Int64(validatedTip)
+        var heights: [(peer: PeerConnection, height: Int64)] = []
         for peer in peers {
-            heights.append((peer, await peer.peerStartHeight))
+            // Widened before any arithmetic: the wire accepts the full signed
+            // field, and `Int32.min` from a hostile peer must not trap here.
+            heights.append((peer, Int64(await peer.peerStartHeight)))
         }
-        guard let best = heights.map(\.height).max() else { return [] }
         var evicted: [PeerEndpoint] = []
-        for (peer, height) in heights where best - height > Self.staleTipTolerance {
+        for (peer, height) in heights where reference - height > Self.staleTipTolerance {
             // A peer the user typed in is their explicit choice, and the
             // diversity policy already declines to overrule that. Someone
             // pointing at their own node mid-sync gets to keep it.
@@ -243,7 +258,7 @@ public actor PeerPool {
             knownGood.remove(peer.endpoint)
             cooldownUntil[peer.endpoint] = now().advanced(by: Self.transportCooldownCap)
             lastRejection[peer.endpoint] =
-                "stale tip: reports height \(height), \(best - height) blocks behind the best connected peer"
+                "stale tip: reports height \(height), \(reference - height) blocks behind our validated tip \(validatedTip)"
             evicted.append(peer.endpoint)
         }
         if !evicted.isEmpty { persistKnownGood() }
@@ -342,8 +357,24 @@ public actor PeerPool {
             // changing (#82).
             var burnedAPeer = true
             do {
-                let outcome = try await chain.sync(using: peer, timeout: timeoutPerPeer)
+                var outcome = try await chain.sync(using: peer, timeout: timeoutPerPeer)
                 transportSucceeded(peer.endpoint)
+                // The first peer answered, but it may be the one that is
+                // behind: a stale peer seated first would otherwise freeze the
+                // tip here every pass while honest peers sat idle. Any other
+                // peer claiming a tip well above ours gets asked too; the
+                // claim costs one round trip to check and is settled by
+                // proof of work, so a liar gains nothing by it.
+                outcome = await catchUp(chain, after: outcome, except: peer.endpoint,
+                                        timeoutPerPeer: timeoutPerPeer)
+                // The one place the pool learns a height it can trust. Judged
+                // here as well as after each dial round, so a peer seated
+                // before the first sync is caught once there is a tip to
+                // compare against.
+                validatedTip = await chain.height
+                if !(await evictStaleTips()).isEmpty, started {
+                    Task { await self.pruneAndReplenish() }
+                }
                 return outcome
             } catch let error as HeaderChainError {
                 switch error {
@@ -390,6 +421,42 @@ public actor PeerPool {
         throw PeerPoolHeaderSyncError.exhausted(
             attempts: attempts,
             lastError: lastError?.localizedDescription ?? "no additional peers were available")
+    }
+
+    /// Syncs headers from every other connected peer whose reported height
+    /// is more than `staleTipTolerance` above the chain's, folding what they
+    /// deliver into `outcome`. Peers that fail are cooled off or condemned
+    /// exactly as the primary sync would treat them.
+    private func catchUp(_ chain: HeaderChain, after outcome: HeaderChain.SyncOutcome,
+                         except primary: PeerEndpoint,
+                         timeoutPerPeer: Duration) async -> HeaderChain.SyncOutcome {
+        var merged = outcome
+        let others = peers.filter { $0.endpoint != primary }
+        for other in others {
+            let claimed = Int64(await other.peerStartHeight)
+            guard claimed - Int64(await chain.height) > Self.staleTipTolerance else { continue }
+            do {
+                let more = try await chain.sync(using: other, timeout: timeoutPerPeer)
+                transportSucceeded(other.endpoint)
+                merged.connected += more.connected
+                merged.disconnectedHeaders += more.disconnectedHeaders
+                if let fork = more.minForkHeight {
+                    merged.minForkHeight = min(merged.minForkHeight ?? fork, fork)
+                }
+            } catch let error as HeaderChainError {
+                switch error {
+                case .storageCorrupt, .storageUnavailable: return merged
+                default: await misbehaving(other, reason: error.localizedDescription)
+                }
+            } catch is CancellationError {
+                return merged
+            } catch let error as PeerError where error.isTransport {
+                await transportFailure(other, reason: error.localizedDescription)
+            } catch {
+                await misbehaving(other, reason: error.localizedDescription)
+            }
+        }
+        return merged
     }
 
     // MARK: - Internals
@@ -485,9 +552,8 @@ public actor PeerPool {
                 }
             }
         }
-        // Judged after the round rather than per arrival: the round's best
-        // height is only known once its dials have answered, and a stale
-        // peer that arrived first is exactly the one this must catch.
+        // Judged after the round against the last validated tip, so a stale
+        // peer that raced in ahead of honest ones does not keep its seat.
         let evicted = await evictStaleTips()
         exhausted = peers.count < peerCount
         if !evicted.isEmpty, started {
