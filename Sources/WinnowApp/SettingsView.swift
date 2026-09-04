@@ -69,6 +69,20 @@ struct SettingsView: View {
                 }
 
                 Section {
+                    Toggle("Advanced mode", isOn: Binding(
+                        get: { model.advancedMode },
+                        set: { model.setAdvancedMode($0) }
+                    ))
+                    .accessibilityIdentifier("advancedModeToggle")
+                    if model.advancedMode {
+                        NavigationLink("Submissions") { SubmissionsListView() }
+                            .accessibilityIdentifier("submissionsLink")
+                    }
+                } footer: {
+                    Text("Shows how a transaction leaves the phone and the receipt for each one. Beginner mode always sends through Bitcoin peers and never mentions routes.")
+                }
+
+                Section {
                     ForEach(model.manualPeers, id: \.self) { peer in
                         Text(peer).font(.system(.footnote, design: .monospaced))
                     }

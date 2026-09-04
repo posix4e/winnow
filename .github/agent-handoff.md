@@ -839,3 +839,34 @@ a chain starting at 900,000 cannot ask about earlier blocks. Found by measuring:
 a birthday-0 wallet hit `FilterSyncError` outright. Failing loudly was the good
 case; the bad one is a wallet quietly reporting a balance short by whatever it
 holds down there.
+
+---
+
+## 2026-09-04 · Claude — submission routes and receipts (#51), advanced mode
+
+Branch `feat/submission-routes`, WIP PR. The route/receipt layer #51 described
+was never landed (the issue was closed with no PR), so this builds it:
+`SubmissionRoute`, `SubmissionReceipt`, `SubmissionCoordinator` in
+`Sources/WalletCore/Submission/`, the `DirectMinerClient` protocol in
+`Sources/BlockchainBackend/Submission/`, and a sourced `ProviderDirectory`
+with both providers marked **Planned**. No HTTP client is added; the
+`ExternalDisclosureTests` premise ("no HTTP client of its own") still holds.
+
+**Design papers, edited directly with the owner's agreement:**
+
+- `docs/paper.md` §6.1 retitled "Submission routes and receipts"; the route
+  table gains a Status column (peers and export **Implemented**, miner routes
+  **Planned**); §11 limitation reworded; roadmap item 9 marked landed.
+- `README.md` gains one bullet on routes and Advanced mode.
+
+**Status words, for the site:** routes and receipts are *Implemented* (package
+tests, including a loopback-node test that observes miner-only silence on the
+wire). Nothing is *Verified on signet* until the story repo runs the export →
+relay-later scenario. Slipstream stays *Planned*; do not recaption it.
+
+**Advanced mode** (`Settings → Advanced mode`, off by default, global) gates
+the route picker and receipts. Beginner mode never shows route language; a
+pending non-peers receipt on a history row says how to reach it. The Network
+picker stays visible in beginner mode — the app defaults to signet, and hiding
+Network would strand a beginner there. Reversible if signet-only beginners are
+the intent for the beta.

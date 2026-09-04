@@ -5,6 +5,7 @@ A private, opinionated, modern Bitcoin wallet for iOS — 100% Swift, one depend
 **[Public beta on TestFlight](https://testflight.apple.com/join/83djpNE7)** — signet by default.
 
 - **Pure P2P by default.** The read side is BIP157/158 compact block filters served by full-node peers — no server ever learns your addresses. Bounded **mempool windows** (short full-relay subscriptions while the Receive or Send screen is open) give 0-conf payment detection and propagation tracking without any server. Design papers, framed around the phone: [design-paper index](.github/internal/design-papers.md).
+- **Routes and receipts.** Signing and submission are separate decisions: every signed transaction gets a durable receipt with its route, lifecycle and every explicit route change. P2P relay is the default and the only route beginner mode uses; export is the other shipped route; direct-miner routes are planned (#59). Advanced mode in Settings shows them.
 - **Taproot only.** P2TR receiving (BIP86); no legacy address types, no ECDSA signing paths.
 - **Two modern multisig flavors.** MuSig2 (BIP327) n-of-n vaults and script-path k-of-n (`multi_a`, BIP387/388), coordinated over PSBTv2 (BIP370/371/373).
 - **Silent payments** (BIP352) live on the [`alpha`](../../tree/alpha) branch, not here. Receiving needs a per-block tweak-data server that does not exist as public infrastructure, which is the unsolved part; see `ALPHA.md` on that branch.
