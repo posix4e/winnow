@@ -2,7 +2,7 @@
 
 A private, opinionated, modern Bitcoin wallet for iOS — 100% Swift, one dependency.
 
-**[Public beta on TestFlight](https://testflight.apple.com/join/83djpNE7)** — signet by default.
+**[Public beta on TestFlight](https://testflight.apple.com/join/83djpNE7)** — mainnet by default; signet is one Advanced-mode toggle away.
 
 - **Pure P2P by default.** The read side is BIP157/158 compact block filters served by full-node peers — no server ever learns your addresses. Bounded **mempool windows** (short full-relay subscriptions while the Receive or Send screen is open) give 0-conf payment detection and propagation tracking without any server. Design papers, framed around the phone: [design-paper index](.github/internal/design-papers.md).
 - **Routes and receipts.** Signing and submission are separate decisions: every signed transaction gets a durable receipt with its route, lifecycle and every explicit route change. P2P relay is the default and the only route beginner mode uses; export is the other shipped route; direct-miner routes are planned (#59). Advanced mode in Settings shows them.
@@ -33,7 +33,8 @@ DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer swift test   # unit, pr
 /opt/homebrew/bin/xcodegen && open WinnowApp.xcodeproj                # iOS app
 ```
 
-Default network for development is signet. Point the app at your own
+Mainnet is the default network. Turn on Advanced mode in Settings to switch
+to signet for development. Point the app at your own
 filter-serving node (Settings → Manual peers); the node needs
 `blockfilterindex=1` and `peerblockfilters=1`.
 

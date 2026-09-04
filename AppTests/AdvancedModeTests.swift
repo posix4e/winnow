@@ -13,14 +13,42 @@ final class AdvancedModeTests: XCTestCase {
         func authenticate(reason: String) async throws {}
     }
 
+    private var savedNetwork: String?
+
     override func setUp() {
         super.setUp()
+        savedNetwork = UserDefaults.standard.string(forKey: AppModel.DefaultsKey.network)
         UserDefaults.standard.removeObject(forKey: AppModel.DefaultsKey.advancedMode)
+        UserDefaults.standard.removeObject(forKey: AppModel.DefaultsKey.network)
     }
 
     override func tearDown() {
         UserDefaults.standard.removeObject(forKey: AppModel.DefaultsKey.advancedMode)
+        if let savedNetwork {
+            UserDefaults.standard.set(savedNetwork, forKey: AppModel.DefaultsKey.network)
+        } else {
+            UserDefaults.standard.removeObject(forKey: AppModel.DefaultsKey.network)
+        }
         super.tearDown()
+    }
+
+    func testAFreshInstallIsOnMainnetAndHidesTheNetworkPicker() {
+        let model = AppModel(deviceAuthenticator: SilentAuthenticator())
+        XCTAssertEqual(model.network, .mainnet, "#9: mainnet is the default")
+        XCTAssertEqual(AppModel.defaultNetwork, .mainnet)
+        XCTAssertFalse(model.showsNetworkPicker, "signet is an Advanced-mode concern")
+        model.setAdvancedMode(true)
+        XCTAssertTrue(model.showsNetworkPicker)
+    }
+
+    func testASignetWalletAlwaysKeepsTheNetworkPicker() {
+        // Advanced mode off, but the stored network is signet: the row must
+        // stay, or turning the flag off would strand the wallet there.
+        UserDefaults.standard.set(BitcoinNetwork.signet.rawValue, forKey: AppModel.DefaultsKey.network)
+        let model = AppModel(deviceAuthenticator: SilentAuthenticator())
+        XCTAssertEqual(model.network, .signet)
+        XCTAssertFalse(model.advancedMode)
+        XCTAssertTrue(model.showsNetworkPicker)
     }
 
     func testOffByDefaultAndPersistedWhenTurnedOn() {

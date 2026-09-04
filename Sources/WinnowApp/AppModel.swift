@@ -290,9 +290,11 @@ final class AppModel {
         keyStore = e2e.map { KeychainStore(service: $0.keychainService) } ?? KeychainStore()
         let defaults = e2e?.defaults ?? .standard
         self.defaults = defaults
+        // Mainnet is the default (#9). The E2E harness is a custom-signet
+        // fixture, so a test launch that names no network still gets signet.
         let selectedNetwork = e2e?.forcedNetwork
             ?? BitcoinNetwork(rawValue: defaults.string(forKey: DefaultsKey.network) ?? "")
-            ?? .signet
+            ?? (e2e != nil ? .signet : Self.defaultNetwork)
         network = selectedNetwork
         if e2e?.forcedNetwork != nil {
             defaults.set(selectedNetwork.rawValue, forKey: DefaultsKey.network)
@@ -1587,6 +1589,17 @@ final class AppModel {
         guard let stack else { throw AppError.noStack }
         try await stack.submissions.abandon(txid)
         await refresh()
+    }
+
+    /// What a fresh install runs on.
+    static let defaultNetwork: BitcoinNetwork = .mainnet
+
+    /// Whether the network picker is shown. Signet is an Advanced-mode
+    /// concern, but a wallet that is already on signet must always be able
+    /// to get back: hiding the picker behind a flag the user just turned off
+    /// would strand it there.
+    var showsNetworkPicker: Bool {
+        advancedMode || network != Self.defaultNetwork || e2e?.forcedNetwork != nil
     }
 
     func setAdvancedMode(_ enabled: Bool) {

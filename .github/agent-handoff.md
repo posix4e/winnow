@@ -876,3 +876,15 @@ still describe P2P as the only path, and `docs/security/invariant-matrix.md`
 S11 plus `audit-manifest.md`'s egress inventory still assert no HTTP client is
 instantiated. All of that stays true until an adapter lands, and rewriting it
 now would describe code that does not exist; it moves with the adapter.
+
+**Mainnet is now the default network, and the picker sits behind Advanced mode**
+(owner decision 2026-09-04, reversing the "keep Network visible" line above).
+Issue #9 asked for exactly this and is closed as completed, but the code still
+defaulted to signet and #9's stated precondition — the manual mainnet test and
+launch recording in #8 — is **still open**. The flip is therefore ahead of its
+own evidence; #8 remains the gate for calling it verified. A wallet already on
+signet always keeps the picker (`AppModel.showsNetworkPicker`), so turning
+Advanced mode off cannot strand it. Onboarding gained the same picker under the
+same rule. `README.md` copy updated; `docs/testflight-what-to-test.txt` and the
+onboarding screenshots (`.github/internal/app-store-screenshots.md`) still
+describe signet-first and need a recapture.

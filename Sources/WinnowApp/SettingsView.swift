@@ -35,20 +35,24 @@ struct SettingsView: View {
     var body: some View {
         NavigationStack {
             Form {
-                Section {
-                    Picker("Network", selection: Binding(
-                        get: { model.network },
-                        set: { newValue in Task { await model.switchNetwork(to: newValue) } }
-                    )) {
-                        Text("Signet").tag(BitcoinNetwork.signet)
-                        Text("Mainnet").tag(BitcoinNetwork.mainnet)
-                    }
-                    .disabled(model.e2e?.forcedNetwork != nil)
-                } footer: {
-                    if model.e2e?.forcedNetwork != nil {
-                        Text("This reproducible story run is locked to public signet.")
-                    } else {
-                        Text("Each network has its own wallet on this device. Switching opens that network's wallet, or onboarding when it has none.")
+                // Signet is an Advanced-mode concern; see showsNetworkPicker
+                // for why a signet wallet always keeps the row.
+                if model.showsNetworkPicker {
+                    Section {
+                        Picker("Network", selection: Binding(
+                            get: { model.network },
+                            set: { newValue in Task { await model.switchNetwork(to: newValue) } }
+                        )) {
+                            Text("Mainnet").tag(BitcoinNetwork.mainnet)
+                            Text("Signet").tag(BitcoinNetwork.signet)
+                        }
+                        .disabled(model.e2e?.forcedNetwork != nil)
+                    } footer: {
+                        if model.e2e?.forcedNetwork != nil {
+                            Text("This reproducible story run is locked to public signet.")
+                        } else {
+                            Text("Each network has its own wallet on this device. Switching opens that network's wallet, or onboarding when it has none. Signet coins have no value; use it to rehearse.")
+                        }
                     }
                 }
 

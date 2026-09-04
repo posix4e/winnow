@@ -65,20 +65,22 @@ struct OnboardingView: View {
                 // be. Without this, switching to a network with no wallet
                 // lands on this screen with no way back to the one that has
                 // one — the footer used to say "change in Settings".
-                Section {
-                    Picker("Network", selection: Binding(
-                        get: { model.network },
-                        set: { newValue in Task { await model.switchNetwork(to: newValue) } }
-                    )) {
-                        Text("Signet").tag(BitcoinNetwork.signet)
-                        Text("Mainnet").tag(BitcoinNetwork.mainnet)
+                if model.showsNetworkPicker {
+                    Section {
+                        Picker("Network", selection: Binding(
+                            get: { model.network },
+                            set: { newValue in Task { await model.switchNetwork(to: newValue) } }
+                        )) {
+                            Text("Mainnet").tag(BitcoinNetwork.mainnet)
+                            Text("Signet").tag(BitcoinNetwork.signet)
+                        }
+                        .disabled(model.e2e?.forcedNetwork != nil || busy != nil)
+                        .accessibilityIdentifier("onboardingNetworkPicker")
+                    } footer: {
+                        Text(model.e2e?.forcedNetwork != nil
+                             ? "This reproducible story run is locked to public signet."
+                             : "Each network has its own wallet on this device. Switching opens that network's wallet, or this screen when it has none.")
                     }
-                    .disabled(model.e2e?.forcedNetwork != nil || busy != nil)
-                    .accessibilityIdentifier("onboardingNetworkPicker")
-                } footer: {
-                    Text(model.e2e?.forcedNetwork != nil
-                         ? "This reproducible story run is locked to public signet."
-                         : "Each network has its own wallet on this device. Switching opens that network's wallet, or this screen when it has none.")
                 }
                 if let busy {
                     Section { ProgressView(model.syncStatusText ?? busy) }
