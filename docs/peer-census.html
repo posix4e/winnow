@@ -27,7 +27,7 @@
 <body>
 <main class="census">
   <h1>Peer census</h1>
-  <p class="sub">Every reachable Bitcoin node, dialled daily with the same handshake Winnow uses. A peer that fails it is one the wallet could never seat, so these numbers describe the wallet's world, not the abstract network.</p>
+  <p class="sub">Every reachable Bitcoin endpoint, dialled daily with the same handshake Winnow uses. A peer that fails it is one the wallet could never seat, so these numbers describe the wallet's world, not the abstract network.</p>
 
   <div class="tiles" id="tiles"></div>
 
@@ -42,6 +42,7 @@
 
   <h2>How to read it</h2>
   <p><strong>Usable</strong> means the handshake completed and the node advertises <code>NODE_COMPACT_FILTERS</code>; Winnow refuses anything else at the door. <strong>At the tip</strong> means within a hundred blocks of the median reported height, the same tolerance the wallet's pool applies before unseating a peer. <strong>Stuck at the split</strong> means reporting a height within twenty blocks of 961,632, where the BIP-110 minority chain left the main chain on 2026-08-08 and stopped. <strong>Claiming a taller chain</strong> means reporting a height more than ten blocks above the tip: a node on some other chain, or lying.</p>
+  <p><strong>Endpoints, not nodes.</strong> One node can listen on clearnet, Tor and I2P at once, and Bitcoin Core deliberately makes linking a node's addresses across networks hard, so the census cannot tell how many endpoints are doors into the same node. Distinct usable nodes lie somewhere between the clearnet count and the total.</p>
   <p>The census judges what a node reports, never which software it runs. The family column is there because the answer turned out to depend on it. Tor and I2P nodes are dialled through a local SOCKS5 proxy when the run has one; a day without a network row did not dial that network. Per-node detail is kept as a two-week workflow artifact; this page carries aggregates only. Source: <code>WinnowCensus</code> in the repository, run by the <code>Peer census</code> workflow.</p>
 </main>
 <script>
@@ -56,9 +57,9 @@
 
   const tiles = [
     [fmt(latest.dialled), 'addresses dialled on ' + last.date],
-    [fmt(latest.usable), 'usable peers (' + pct(latest.usable, latest.dialled) + ')'],
-    [fmt(latest.stuckAtSplit), 'usable peers stuck at the split (' + pct(latest.stuckAtSplit, latest.usable) + ')'],
-    [fmt(latest.aheadOfTip || 0), 'usable peers claiming a taller chain'],
+    [fmt(latest.usable), 'usable endpoints (' + pct(latest.usable, latest.dialled) + ')'],
+    [fmt(latest.stuckAtSplit), 'usable endpoints stuck at the split (' + pct(latest.stuckAtSplit, latest.usable) + ')'],
+    [fmt(latest.aheadOfTip || 0), 'usable endpoints claiming a taller chain'],
     [fmt(latest.observedTip), 'tip used to judge heights'],
   ];
   document.getElementById('tiles').innerHTML = tiles.map(([n, l]) => '<div class="tile"><div class="n">' + n + '</div><div class="l">' + l + '</div></div>').join('');
