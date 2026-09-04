@@ -234,6 +234,10 @@ public actor PeerPool {
         guard let best = heights.map(\.height).max() else { return [] }
         var evicted: [PeerEndpoint] = []
         for (peer, height) in heights where best - height > Self.staleTipTolerance {
+            // A peer the user typed in is their explicit choice, and the
+            // diversity policy already declines to overrule that. Someone
+            // pointing at their own node mid-sync gets to keep it.
+            if seatedSources[peer.endpoint] == .manual { continue }
             await peer.disconnect()
             peers.removeAll { $0.endpoint == peer.endpoint }
             knownGood.remove(peer.endpoint)

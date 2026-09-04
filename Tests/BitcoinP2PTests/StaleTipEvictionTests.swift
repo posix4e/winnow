@@ -23,6 +23,14 @@ struct StaleTipEvictionTests {
         return seen
     }
 
+    /// The remembered-peers file the pool reads at start, version 2.
+    private static func persistedPeersFile(_ endpoints: [PeerEndpoint]) -> Data {
+        let entries = endpoints.map {
+            "{\"source\":\"persisted\",\"port\":\($0.port),\"host\":\"\($0.host)\"}"
+        }.joined(separator: ",")
+        return Data("{\"version\":2,\"peers\":[\(entries)]}".utf8)
+    }
+
     @Test("a peer far behind the best connected tip is unseated and cooled off, even when it was seated first")
     func staleIsUnseated() async throws {
         let synthetic = makeSyntheticChain(length: 120, watchHeight: 3)
@@ -37,8 +45,15 @@ struct StaleTipEvictionTests {
         let currentEndpoint = await current.endpoint
         let staleEndpoint = await stale.endpoint
 
+        // The stale node arrives as a remembered peer, the way the mainnet
+        // stall's dead node did; a manual peer is exempt (see below), so it
+        // cannot carry this test. The tip node is manual so the diversity
+        // ceiling, which refuses one source class the whole pool, lets both
+        // seat.
+        let store = tempFileURL("peers.json")
+        try Self.persistedPeersFile([staleEndpoint]).write(to: store)
         let pool = PeerPool(params: synthetic.params, peerCount: 2,
-                            manualPeers: [staleEndpoint, currentEndpoint])
+                            manualPeers: [currentEndpoint], peersFileURL: store)
         await pool.start()
         let seated = await Self.settle(pool) { $0 == [currentEndpoint] }
         #expect(seated == [currentEndpoint], "only the peer near the tip keeps its seat")
@@ -66,6 +81,28 @@ struct StaleTipEvictionTests {
             #expect(await pool.rejectionReason(endpoint) == nil)
         }
         #expect(await pool.coolingEndpoints.isEmpty)
+        await pool.stop()
+    }
+
+    @Test("a peer the user typed in keeps its seat however far behind it is")
+    func manualPeerIsKept() async throws {
+        let synthetic = makeSyntheticChain(length: 120, watchHeight: 3)
+        let current = LoopbackNode(params: synthetic.params, chain: synthetic.blocks)
+        let ownNode = LoopbackNode(params: synthetic.params) // the user's own node, still syncing
+        try await current.start()
+        try await ownNode.start()
+        defer { Task { await current.stop() }; Task { await ownNode.stop() } }
+        let ownEndpoint = await ownNode.endpoint
+        let store = tempFileURL("peers.json")
+        // The current node arrives as a remembered peer, not a manual one.
+        try Self.persistedPeersFile([await current.endpoint]).write(to: store)
+
+        let pool = PeerPool(params: synthetic.params, peerCount: 2, manualPeers: [ownEndpoint],
+                            peersFileURL: store)
+        await pool.start()
+        let seated = await Self.settle(pool) { $0.count == 2 }
+        #expect(seated.contains(ownEndpoint), "the user's explicit choice is not overruled")
+        #expect(await pool.rejectionReason(ownEndpoint) == nil)
         await pool.stop()
     }
 
