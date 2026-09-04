@@ -1,0 +1,109 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Peer census · Winnow</title>
+<meta name="description" content="Every reachable Bitcoin node, dialled daily with Winnow's own handshake: how many serve compact filters, how many are at the tip, how many are stuck.">
+<link rel="stylesheet" href="site.css">
+<style>
+  .census { max-width: 60rem; margin: 0 auto; padding: 2rem 1rem 4rem; }
+  .census h1 { font-size: 2rem; margin: 0 0 .25rem; }
+  .census .sub { color: var(--ink-2, #555); margin: 0 0 2rem; }
+  .census .tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(11rem, 1fr)); gap: .75rem; margin: 0 0 2rem; }
+  .census .tile { border: 1px solid var(--rule, #ddd); border-radius: .5rem; padding: .9rem 1rem; }
+  .census .tile .n { font-size: 1.8rem; font-weight: 700; font-variant-numeric: tabular-nums; }
+  .census .tile .l { color: var(--ink-2, #555); font-size: .85rem; }
+  .census table { border-collapse: collapse; width: 100%; margin: 0 0 2rem; font-variant-numeric: tabular-nums; }
+  .census th, .census td { text-align: left; padding: .4rem .6rem; border-bottom: 1px solid var(--rule, #ddd); }
+  .census th { font-weight: 600; color: var(--ink-2, #555); font-size: .85rem; }
+  .census td.num, .census th.num { text-align: right; }
+  .census .wrap { overflow-x: auto; }
+  .census svg { width: 100%; height: auto; display: block; margin: 0 0 2rem; }
+  .census .note { color: var(--ink-2, #555); font-size: .9rem; }
+  .census code { font-family: var(--mono, ui-monospace, monospace); font-size: .9em; }
+</style>
+</head>
+<body>
+<main class="census">
+  <h1>Peer census</h1>
+  <p class="sub">Every reachable Bitcoin node, dialled daily with the same handshake Winnow uses. A peer that fails it is one the wallet could never seat, so these numbers describe the wallet's world, not the abstract network.</p>
+
+  <div class="tiles" id="tiles"></div>
+
+  <h2>Trend</h2>
+  <svg id="trend" viewBox="0 0 720 220" role="img" aria-label="Usable peers and stuck peers over time"></svg>
+  <p class="note" id="trend-note"></p>
+
+  <h2>Latest breakdown</h2>
+  <div class="wrap"><table id="outcomes"><thead><tr><th>Outcome</th><th class="num">Nodes</th><th class="num">Share</th></tr></thead><tbody></tbody></table></div>
+  <div class="wrap"><table id="families"><thead><tr><th>Software family</th><th class="num">Usable peers</th><th class="num">At the tip</th><th class="num">Stuck at the split</th><th class="num">Median fee filter</th></tr></thead><tbody></tbody></table></div>
+
+  <h2>How to read it</h2>
+  <p><strong>Usable</strong> means the handshake completed and the node advertises <code>NODE_COMPACT_FILTERS</code>; Winnow refuses anything else at the door. <strong>At the tip</strong> means within a hundred blocks of the 95th-percentile reported height, the same tolerance the wallet's pool applies before unseating a peer. <strong>Stuck at the split</strong> means reporting a height within twenty blocks of 961,632, where the BIP-110 minority chain left the main chain on 2026-08-08 and stopped.</p>
+  <p>The census judges what a node reports, never which software it runs. The family column is there because the answer turned out to depend on it. Onion and I2P addresses are not dialled. Per-node detail is kept as a two-week workflow artifact; this page carries aggregates only. Source: <code>WinnowCensus</code> in the repository, run by the <code>Peer census</code> workflow.</p>
+</main>
+<script>
+(async function () {
+  const fmt = n => n.toLocaleString('en-US');
+  const pct = (n, d) => d ? (100 * n / d).toFixed(1) + '%' : '–';
+  const index = await (await fetch('census/index.json', { cache: 'no-store' })).json();
+  const days = index.days;
+  if (!days.length) return;
+  const last = days[days.length - 1];
+  const latest = await (await fetch('census/' + last.date + '.json', { cache: 'no-store' })).json();
+
+  const tiles = [
+    [fmt(latest.dialled), 'addresses dialled on ' + last.date],
+    [fmt(latest.usable), 'usable peers (' + pct(latest.usable, latest.dialled) + ')'],
+    [fmt(latest.stuckAtSplit), 'usable peers stuck at the split (' + pct(latest.stuckAtSplit, latest.usable) + ')'],
+    [fmt(latest.observedTip), 'observed tip'],
+  ];
+  document.getElementById('tiles').innerHTML = tiles.map(([n, l]) => '<div class="tile"><div class="n">' + n + '</div><div class="l">' + l + '</div></div>').join('');
+
+  const outcomeNames = { ok: 'Usable: handshake ok, compact filters advertised', noCompactFilters: 'Answered, no compact filters', timeout: 'Timed out', unreachable: 'Unreachable', handshakeFailed: 'Handshake failed', protocolViolation: 'Protocol violation' };
+  const ob = document.querySelector('#outcomes tbody');
+  for (const key of Object.keys(outcomeNames)) {
+    const n = latest.outcomes[key] || 0;
+    if (!n) continue;
+    ob.insertAdjacentHTML('beforeend', '<tr><td>' + outcomeNames[key] + '</td><td class="num">' + fmt(n) + '</td><td class="num">' + pct(n, latest.dialled) + '</td></tr>');
+  }
+  const fb = document.querySelector('#families tbody');
+  const fams = Object.entries(latest.families).sort((a, b) => b[1].usable - a[1].usable);
+  for (const [name, f] of fams) {
+    const ff = f.medianFeeFilterSatPerKvB == null ? '–' : (f.medianFeeFilterSatPerKvB / 1000).toFixed(1) + ' sat/vB';
+    fb.insertAdjacentHTML('beforeend', '<tr><td>' + name + '</td><td class="num">' + fmt(f.usable) + '</td><td class="num">' + pct(f.atTip, f.usable) + '</td><td class="num">' + pct(f.stuckAtSplit, f.usable) + '</td><td class="num">' + ff + '</td></tr>');
+  }
+
+  // Trend: usable share of dialled, and stuck share of usable, per day.
+  const svg = document.getElementById('trend');
+  const W = 720, H = 220, L = 48, R = 12, T = 14, B = 34;
+  const xs = days.map((_, i) => L + (days.length === 1 ? (W - L - R) / 2 : i * (W - L - R) / (days.length - 1)));
+  const series = [
+    { key: 'usable', label: 'usable peers, % of dialled', value: d => 100 * d.usable / d.dialled, color: '#3b6ea5' },
+    { key: 'stuck', label: 'stuck at the split, % of usable', value: d => d.usable ? 100 * d.stuckAtSplit / d.usable : 0, color: '#c0392b' },
+  ];
+  const maxY = Math.max(20, ...series.flatMap(s => days.map(s.value))) * 1.1;
+  const y = v => T + (H - T - B) * (1 - v / maxY);
+  let out = '';
+  for (let g = 0; g <= 4; g++) {
+    const v = maxY * g / 4;
+    out += '<line x1="' + L + '" x2="' + (W - R) + '" y1="' + y(v) + '" y2="' + y(v) + '" stroke="#ccc" stroke-width="1"/>';
+    out += '<text x="' + (L - 6) + '" y="' + (y(v) + 4) + '" font-size="11" text-anchor="end" fill="#666">' + v.toFixed(0) + '%</text>';
+  }
+  for (const s of series) {
+    const pts = days.map((d, i) => xs[i] + ',' + y(s.value(d))).join(' ');
+    out += '<polyline points="' + pts + '" fill="none" stroke="' + s.color + '" stroke-width="2"/>';
+    days.forEach((d, i) => { out += '<circle cx="' + xs[i] + '" cy="' + y(s.value(d)) + '" r="3" fill="' + s.color + '"/>'; });
+  }
+  const step = Math.max(1, Math.ceil(days.length / 8));
+  days.forEach((d, i) => { if (i % step === 0 || i === days.length - 1) out += '<text x="' + xs[i] + '" y="' + (H - 12) + '" font-size="11" text-anchor="middle" fill="#666">' + d.date.slice(5) + '</text>'; });
+  series.forEach((s, i) => { out += '<rect x="' + (L + 8 + i * 230) + '" y="' + (T - 10) + '" width="10" height="10" fill="' + s.color + '"/><text x="' + (L + 22 + i * 230) + '" y="' + (T - 1) + '" font-size="11" fill="#444">' + s.label + '</text>'; });
+  svg.innerHTML = out;
+  document.getElementById('trend-note').textContent = days.length === 1
+    ? 'One data point so far; the line starts once the daily run has a second day.'
+    : days.length + ' daily runs, ' + days[0].date + ' to ' + last.date + '.';
+})();
+</script>
+</body>
+</html>

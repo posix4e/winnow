@@ -1,0 +1,47 @@
+{
+  "behind": 88,
+  "dialled": 9612,
+  "families": {
+    "Core": {
+      "atTip": 1025,
+      "behind": 3,
+      "medianFeeFilterSatPerKvB": 100,
+      "stuckAtSplit": 0,
+      "usable": 1028
+    },
+    "Knots": {
+      "atTip": 153,
+      "behind": 82,
+      "medianFeeFilterSatPerKvB": 1000,
+      "stuckAtSplit": 82,
+      "usable": 235
+    },
+    "btcd": {
+      "atTip": 13,
+      "behind": 3,
+      "medianFeeFilterSatPerKvB": null,
+      "stuckAtSplit": 0,
+      "usable": 16
+    },
+    "other": {
+      "atTip": 4,
+      "behind": 0,
+      "medianFeeFilterSatPerKvB": 1000,
+      "stuckAtSplit": 0,
+      "usable": 4
+    }
+  },
+  "generatedAt": "2026-09-04T21:05:00Z",
+  "handshakeLatencyMsMedian": 525,
+  "medianFeeFilterSatPerKvB": 100,
+  "observedTip": 965522,
+  "outcomes": {
+    "noCompactFilters": 6885,
+    "ok": 1283,
+    "timeout": 1401,
+    "unreachable": 43
+  },
+  "splitHeight": 961632,
+  "stuckAtSplit": 82,
+  "usable": 1283
+}

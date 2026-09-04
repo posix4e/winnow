@@ -1,0 +1,45 @@
+#!/usr/bin/env python3
+"""Files a WinnowCensus summary under docs/census/<date>.json and rebuilds
+docs/census/index.json, the list the site's /peer-census page reads.
+
+    scripts/census-publish summary.json [--date YYYY-MM-DD]
+
+Idempotent for a date: re-running replaces that day's file. The index keeps
+one line per day with the handful of numbers the trend chart needs, so the
+page never has to fetch every day's file to draw it.
+"""
+import argparse, json, os, sys
+
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+CENSUS = os.path.join(ROOT, "docs", "census")
+
+parser = argparse.ArgumentParser()
+parser.add_argument("summary")
+parser.add_argument("--date", help="YYYY-MM-DD; default is the summary's generatedAt")
+args = parser.parse_args()
+
+summary = json.load(open(args.summary))
+date = args.date or summary["generatedAt"][:10]
+os.makedirs(CENSUS, exist_ok=True)
+json.dump(summary, open(os.path.join(CENSUS, f"{date}.json"), "w"), indent=2, sort_keys=True)
+
+index = []
+for name in sorted(os.listdir(CENSUS)):
+    if not name.endswith(".json") or name == "index.json":
+        continue
+    day = json.load(open(os.path.join(CENSUS, name)))
+    families = day.get("families", {})
+    index.append({
+        "date": name[:-5],
+        "dialled": day["dialled"],
+        "usable": day["usable"],
+        "observedTip": day["observedTip"],
+        "stuckAtSplit": day["stuckAtSplit"],
+        "behind": day["behind"],
+        "knotsUsable": families.get("Knots", {}).get("usable", 0),
+        "knotsStuck": families.get("Knots", {}).get("stuckAtSplit", 0),
+        "coreUsable": families.get("Core", {}).get("usable", 0),
+    })
+json.dump({"days": index}, open(os.path.join(CENSUS, "index.json"), "w"), indent=2)
+print(f"filed {date}: {summary['usable']} usable of {summary['dialled']} dialled, "
+      f"{summary['stuckAtSplit']} stuck at the split; index has {len(index)} day(s)")

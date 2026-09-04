@@ -1,0 +1,15 @@
+{
+  "days": [
+    {
+      "date": "2026-09-04",
+      "dialled": 9612,
+      "usable": 1283,
+      "observedTip": 965522,
+      "stuckAtSplit": 82,
+      "behind": 88,
+      "knotsUsable": 235,
+      "knotsStuck": 82,
+      "coreUsable": 1028
+    }
+  ]
+}

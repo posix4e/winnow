@@ -22,6 +22,8 @@ import Foundation
 struct Options: Sendable {
     var input: URL?
     var out: URL?
+    /// Machine-readable summary for the scheduled census (docs/census/).
+    var summary: URL?
     var sample = 0 // 0 = all
     var parallel = 64
     var timeout: Duration = .seconds(8)
@@ -50,6 +52,7 @@ private func parseOptions() -> Options {
         switch arg {
         case "--input": options.input = args.next().map { URL(fileURLWithPath: $0) }
         case "--out": options.out = args.next().map { URL(fileURLWithPath: $0) }
+        case "--summary-json": options.summary = args.next().map { URL(fileURLWithPath: $0) }
         case "--sample": options.sample = Int(args.next() ?? "") ?? 0
         case "--parallel": options.parallel = Int(args.next() ?? "") ?? 64
         case "--timeout": options.timeout = .seconds(Double(args.next() ?? "") ?? 8)
@@ -63,7 +66,7 @@ private func parseOptions() -> Options {
             }
         case "--help", "-h":
             print("""
-            usage: WinnowCensus --input nodes.json|nodes.txt [--out results.jsonl]
+            usage: WinnowCensus --input nodes.json|nodes.txt [--out results.jsonl] [--summary-json summary.json]
                                 [--sample N] [--parallel 64] [--timeout 8] [--feefilter-wait-ms 1500]
             """)
             exit(0)
@@ -161,6 +164,71 @@ struct SeededGenerator: RandomNumberGenerator {
     }
 }
 
+/// The daily data point the site renders. Aggregates only: the per-node
+/// detail is in the JSONL, and btcnodes already publishes the per-IP view.
+struct Summary: Codable {
+    struct Family: Codable {
+        var usable: Int
+        var atTip: Int
+        var stuckAtSplit: Int
+        var behind: Int
+        var medianFeeFilterSatPerKvB: Int64?
+    }
+    var generatedAt: String
+    var dialled: Int
+    var outcomes: [String: Int]
+    var usable: Int
+    var observedTip: Int32
+    var splitHeight: Int32
+    var stuckAtSplit: Int
+    var behind: Int
+    var medianFeeFilterSatPerKvB: Int64?
+    var handshakeLatencyMsMedian: Int?
+    var families: [String: Family]
+}
+
+func family(of userAgent: String) -> String {
+    if userAgent.contains("Knots") { return "Knots" }
+    if userAgent.hasPrefix("/Satoshi:") { return "Core" }
+    if userAgent.contains("btcd") { return "btcd" }
+    if userAgent.contains("bcoin") { return "bcoin" }
+    return "other"
+}
+
+func makeSummary(_ records: [Record], splitHeight: Int32 = 961_632) -> Summary {
+    let ok = records.filter { $0.outcome == "ok" }
+    let heights = ok.compactMap(\.startHeight).sorted()
+    let tip = heights.isEmpty ? 0 : heights[heights.count * 95 / 100]
+    func median(_ values: [Int64]) -> Int64? {
+        let sorted = values.sorted()
+        return sorted.isEmpty ? nil : sorted[sorted.count / 2]
+    }
+    let isStuck: (Record) -> Bool = { ($0.startHeight ?? 0) >= splitHeight && ($0.startHeight ?? 0) <= splitHeight + 20 }
+    let isBehind: (Record) -> Bool = { tip - ($0.startHeight ?? 0) > 100 }
+    var families: [String: Summary.Family] = [:]
+    for (name, members) in Dictionary(grouping: ok, by: { family(of: $0.userAgent ?? "") }) {
+        families[name] = Summary.Family(
+            usable: members.count,
+            atTip: members.filter { !isBehind($0) }.count,
+            stuckAtSplit: members.filter(isStuck).count,
+            behind: members.filter(isBehind).count,
+            medianFeeFilterSatPerKvB: median(members.compactMap(\.feeFilterSatPerKvB)))
+    }
+    let latencies = ok.map(\.latencyMs).sorted()
+    return Summary(
+        generatedAt: ISO8601DateFormatter().string(from: Date()),
+        dialled: records.count,
+        outcomes: Dictionary(grouping: records, by: \.outcome).mapValues(\.count),
+        usable: ok.count,
+        observedTip: tip,
+        splitHeight: splitHeight,
+        stuckAtSplit: ok.filter(isStuck).count,
+        behind: ok.filter(isBehind).count,
+        medianFeeFilterSatPerKvB: median(ok.compactMap(\.feeFilterSatPerKvB)),
+        handshakeLatencyMsMedian: latencies.isEmpty ? nil : latencies[latencies.count / 2],
+        families: families)
+}
+
 private func summarize(_ records: [Record], splitHeight: Int32 = 961_632) {
     let ok = records.filter { $0.outcome == "ok" }
     let heights = ok.compactMap(\.startHeight).sorted()
@@ -251,4 +319,9 @@ if let out = options.out {
 }
 let records = await crawl(endpoints, options: options, output: output)
 try? output?.close()
+if let summaryURL = options.summary {
+    let encoder = JSONEncoder()
+    encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
+    try encoder.encode(makeSummary(records)).write(to: summaryURL)
+}
 summarize(records)
