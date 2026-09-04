@@ -1,12 +1,16 @@
 #!/usr/bin/env python3
-"""Tables for the peer-census post, from WinnowCensus JSONL."""
+"""Tables for the peer-census post, from WinnowCensus JSONL.
+
+    scripts/census-tables census.jsonl [TIP]
+
+TIP defaults to the median reported height of usable peers."""
 import collections, json, re, statistics, sys
 
 SPLIT = 961632
 rows = [json.loads(l) for l in open(sys.argv[1]) if l.strip()]
 ok = [r for r in rows if r["outcome"] == "ok"]
 heights = sorted(r["startHeight"] for r in ok if r.get("startHeight"))
-tip = heights[int(len(heights) * 0.95)] if heights else 0
+tip = int(sys.argv[2]) if len(sys.argv) > 2 else (heights[len(heights) // 2] if heights else 0)
 
 def pct(n, d): return "-" if not d else f"{100*n/d:.1f}%"
 def family(ua):
@@ -67,4 +71,16 @@ lat = sorted(r["latencyMs"] for r in ok)
 if lat:
     print(f"handshake latency: median {lat[len(lat)//2]} ms, p90 {lat[int(len(lat)*0.9)]} ms")
 stuck_all = [r for r in ok if SPLIT <= r["startHeight"] <= SPLIT + 20]
+ahead = [r for r in ok if r["startHeight"] - tip > 10]
+print(f"claiming a chain taller than the tip: {len(ahead)}")
+for r in ahead[:6]: print(f"  {r['host'][:30]} {r['startHeight']} {r['userAgent']}")
+nets = collections.defaultdict(list)
+for r in rows: nets[r.get("network", "clearnet")].append(r)
+print("\n| Network | Dialled | Usable | No compact filters | Stuck at split (of usable) |")
+print("|---|---|---|---|---|")
+for name, members in sorted(nets.items()):
+    u = [r for r in members if r["outcome"] == "ok"]
+    ncf = sum(1 for r in members if r["outcome"] == "noCompactFilters")
+    st = sum(1 for r in u if SPLIT <= r["startHeight"] <= SPLIT + 20)
+    print(f"| {name} | {len(members)} | {len(u)} ({pct(len(u), len(members))}) | {pct(ncf, len(members))} | {st} ({pct(st, len(u))}) |")
 print(f"\nusable peers a Winnow client could seat that are stuck on the dead chain: {len(stuck_all)} of {len(ok)} ({pct(len(stuck_all), len(ok))})")

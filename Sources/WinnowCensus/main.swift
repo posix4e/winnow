@@ -30,6 +30,17 @@ struct Options: Sendable {
     var feeFilterWait: Duration = .milliseconds(1_500)
     var network: NetworkParams = .mainnet
     var seed: UInt64 = 42
+    /// SOCKS5 proxies for the hidden networks. Without one, that network's
+    /// addresses are skipped rather than dialled and counted unreachable.
+    var torSocks: PeerEndpoint?
+    var i2pSocks: PeerEndpoint?
+    /// Hidden services answer slowly; a separate budget keeps the clearnet
+    /// timeout honest.
+    var hiddenTimeout: Duration = .seconds(25)
+    /// The chain tip to judge heights against. Default: the median of what
+    /// usable peers report, which one liar in either direction cannot move.
+    /// The snapshot's own latest_height is a good value to pass.
+    var tip: Int32?
 }
 
 struct Record: Codable, Sendable {
@@ -43,6 +54,8 @@ struct Record: Codable, Sendable {
     var feeFilterSatPerKvB: Int64?
     var latencyMs: Int
     var error: String?
+    /// clearnet | tor | i2p
+    var network: String
 }
 
 private func parseOptions() -> Options {
@@ -58,6 +71,10 @@ private func parseOptions() -> Options {
         case "--timeout": options.timeout = .seconds(Double(args.next() ?? "") ?? 8)
         case "--feefilter-wait-ms": options.feeFilterWait = .milliseconds(Int(args.next() ?? "") ?? 1_500)
         case "--seed": options.seed = UInt64(args.next() ?? "") ?? 42
+        case "--tor-socks": options.torSocks = args.next().flatMap(parseHostPort)
+        case "--i2p-socks": options.i2pSocks = args.next().flatMap(parseHostPort)
+        case "--hidden-timeout": options.hiddenTimeout = .seconds(Double(args.next() ?? "") ?? 25)
+        case "--tip": options.tip = Int32(args.next() ?? "")
         case "--network":
             switch args.next() {
             case "mainnet": options.network = .mainnet
@@ -68,6 +85,8 @@ private func parseOptions() -> Options {
             print("""
             usage: WinnowCensus --input nodes.json|nodes.txt [--out results.jsonl] [--summary-json summary.json]
                                 [--sample N] [--parallel 64] [--timeout 8] [--feefilter-wait-ms 1500]
+                                [--tor-socks 127.0.0.1:9050] [--i2p-socks 127.0.0.1:4447] [--hidden-timeout 25]
+                                [--tip HEIGHT]
             """)
             exit(0)
         default:
@@ -78,8 +97,24 @@ private func parseOptions() -> Options {
     return options
 }
 
-/// Accepts a snapshot dictionary or a plain host:port list.
-private func loadEndpoints(from url: URL) throws -> [PeerEndpoint] {
+func parseHostPort(_ text: String) -> PeerEndpoint? {
+    guard let colon = text.lastIndex(of: ":"), let port = UInt16(text[text.index(after: colon)...]) else { return nil }
+    return PeerEndpoint(host: String(text[..<colon]), port: port)
+}
+
+enum OverlayNetwork: String {
+    case clearnet, tor, i2p
+
+    init(host: String) {
+        if host.hasSuffix(".onion") { self = .tor }
+        else if host.hasSuffix(".i2p") { self = .i2p }
+        else { self = .clearnet }
+    }
+}
+
+/// Accepts a snapshot dictionary or a plain host:port list. Hidden-network
+/// addresses are kept only when a proxy for that network is configured.
+private func loadEndpoints(from url: URL, options: Options) throws -> [PeerEndpoint] {
     let data = try Data(contentsOf: url)
     var keys: [String] = []
     if let object = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
@@ -92,8 +127,9 @@ private func loadEndpoints(from url: URL) throws -> [PeerEndpoint] {
     var endpoints: [PeerEndpoint] = []
     for key in keys {
         let trimmed = key.trimmingCharacters(in: .whitespaces)
-        guard !trimmed.isEmpty, !trimmed.hasSuffix(".onion"), !trimmed.contains(".onion:"),
-              !trimmed.contains(".i2p") else { continue }
+        guard !trimmed.isEmpty else { continue }
+        if trimmed.contains(".onion"), options.torSocks == nil { continue }
+        if trimmed.contains(".i2p"), options.i2pSocks == nil { continue }
         // "[v6]:port" or "v4:port"
         if trimmed.hasPrefix("[") {
             guard let close = trimmed.firstIndex(of: "]"),
@@ -108,47 +144,49 @@ private func loadEndpoints(from url: URL) throws -> [PeerEndpoint] {
 
 private func probe(_ endpoint: PeerEndpoint, options: Options) async -> Record {
     let started = ContinuousClock.now
+    let overlay = OverlayNetwork(host: endpoint.host)
+    let proxy: PeerEndpoint? = switch overlay {
+    case .clearnet: nil
+    case .tor: options.torSocks
+    case .i2p: options.i2pSocks
+    }
+    let timeout = overlay == .clearnet ? options.timeout : options.hiddenTimeout
     let peer = PeerConnection(endpoint: endpoint, params: options.network,
-                              localServices: 0, localStartHeight: 0, relayPreference: false)
+                              localServices: 0, localStartHeight: 0, relayPreference: false,
+                              socksProxy: proxy)
     func elapsed() -> Int { Int((ContinuousClock.now - started) / .milliseconds(1)) }
+    func record(_ outcome: String, userAgent: String? = nil, startHeight: Int32? = nil,
+                services: UInt64? = nil, feeFilter: Int64? = nil, error: String? = nil) -> Record {
+        Record(host: endpoint.host, port: endpoint.port, outcome: outcome, userAgent: userAgent,
+               startHeight: startHeight, services: services, feeFilterSatPerKvB: feeFilter,
+               latencyMs: elapsed(), error: error, network: overlay.rawValue)
+    }
     do {
-        try await peer.connect(timeout: options.timeout)
+        try await peer.connect(timeout: timeout)
         // Core pushes feefilter right after verack; give it a moment.
         let deadline = ContinuousClock.now + options.feeFilterWait
         while await peer.feeFilter == nil, ContinuousClock.now < deadline {
             try? await Task.sleep(for: .milliseconds(100))
         }
-        let record = Record(host: endpoint.host, port: endpoint.port, outcome: "ok",
-                            userAgent: await peer.peerUserAgent,
+        let result = record("ok", userAgent: await peer.peerUserAgent,
                             startHeight: await peer.peerStartHeight,
                             services: await peer.peerServices,
-                            feeFilterSatPerKvB: await peer.feeFilter,
-                            latencyMs: elapsed(), error: nil)
+                            feeFilter: await peer.feeFilter)
         await peer.disconnect()
-        return record
+        return result
     } catch let error as PeerError {
         switch error {
         case let .missingCompactFilters(services):
-            return Record(host: endpoint.host, port: endpoint.port, outcome: "noCompactFilters",
-                          userAgent: nil, startHeight: nil, services: services,
-                          feeFilterSatPerKvB: nil, latencyMs: elapsed(), error: nil)
+            return record("noCompactFilters", services: services)
         case .timeout:
-            return Record(host: endpoint.host, port: endpoint.port, outcome: "timeout",
-                          userAgent: nil, startHeight: nil, services: nil,
-                          feeFilterSatPerKvB: nil, latencyMs: elapsed(), error: nil)
+            return record("timeout")
         case .protocolViolation:
-            return Record(host: endpoint.host, port: endpoint.port, outcome: "protocolViolation",
-                          userAgent: nil, startHeight: nil, services: nil,
-                          feeFilterSatPerKvB: nil, latencyMs: elapsed(), error: error.localizedDescription)
+            return record("protocolViolation", error: error.localizedDescription)
         default:
-            return Record(host: endpoint.host, port: endpoint.port, outcome: "unreachable",
-                          userAgent: nil, startHeight: nil, services: nil,
-                          feeFilterSatPerKvB: nil, latencyMs: elapsed(), error: error.localizedDescription)
+            return record("unreachable", error: error.localizedDescription)
         }
     } catch {
-        return Record(host: endpoint.host, port: endpoint.port, outcome: "handshakeFailed",
-                      userAgent: nil, startHeight: nil, services: nil,
-                      feeFilterSatPerKvB: nil, latencyMs: elapsed(), error: error.localizedDescription)
+        return record("handshakeFailed", error: error.localizedDescription)
     }
 }
 
@@ -182,9 +220,24 @@ struct Summary: Codable {
     var splitHeight: Int32
     var stuckAtSplit: Int
     var behind: Int
+    /// Reporting a height more than 10 above the tip: a lying node, or one
+    /// on a chain that is not this one.
+    var aheadOfTip: Int
     var medianFeeFilterSatPerKvB: Int64?
     var handshakeLatencyMsMedian: Int?
     var families: [String: Family]
+    /// The same breakdown per overlay network: clearnet, tor, i2p. Absent
+    /// networks were not dialled (no proxy configured).
+    var networks: [String: Network]
+
+    struct Network: Codable {
+        var dialled: Int
+        var usable: Int
+        var noCompactFilters: Int
+        var atTip: Int
+        var stuckAtSplit: Int
+        var behind: Int
+    }
 }
 
 func family(of userAgent: String) -> String {
@@ -195,16 +248,24 @@ func family(of userAgent: String) -> String {
     return "other"
 }
 
-func makeSummary(_ records: [Record], splitHeight: Int32 = 961_632) -> Summary {
+/// The tip to judge heights against: the caller's, or the median of what
+/// usable peers report. A percentile near the top let one node claiming a
+/// taller chain drag the estimate up and mark every honest peer "behind".
+func observedTip(_ records: [Record], override: Int32?) -> Int32 {
+    if let override { return override }
+    let heights = records.filter { $0.outcome == "ok" }.compactMap(\.startHeight).sorted()
+    return heights.isEmpty ? 0 : heights[heights.count / 2]
+}
+
+func makeSummary(_ records: [Record], tip: Int32, splitHeight: Int32 = 961_632) -> Summary {
     let ok = records.filter { $0.outcome == "ok" }
-    let heights = ok.compactMap(\.startHeight).sorted()
-    let tip = heights.isEmpty ? 0 : heights[heights.count * 95 / 100]
     func median(_ values: [Int64]) -> Int64? {
         let sorted = values.sorted()
         return sorted.isEmpty ? nil : sorted[sorted.count / 2]
     }
     let isStuck: (Record) -> Bool = { ($0.startHeight ?? 0) >= splitHeight && ($0.startHeight ?? 0) <= splitHeight + 20 }
     let isBehind: (Record) -> Bool = { tip - ($0.startHeight ?? 0) > 100 }
+    let isAhead: (Record) -> Bool = { ($0.startHeight ?? 0) - tip > 10 }
     var families: [String: Summary.Family] = [:]
     for (name, members) in Dictionary(grouping: ok, by: { family(of: $0.userAgent ?? "") }) {
         families[name] = Summary.Family(
@@ -213,6 +274,16 @@ func makeSummary(_ records: [Record], splitHeight: Int32 = 961_632) -> Summary {
             stuckAtSplit: members.filter(isStuck).count,
             behind: members.filter(isBehind).count,
             medianFeeFilterSatPerKvB: median(members.compactMap(\.feeFilterSatPerKvB)))
+    }
+    var networks: [String: Summary.Network] = [:]
+    for (name, members) in Dictionary(grouping: records, by: \.network) {
+        let usable = members.filter { $0.outcome == "ok" }
+        networks[name] = Summary.Network(
+            dialled: members.count, usable: usable.count,
+            noCompactFilters: members.filter { $0.outcome == "noCompactFilters" }.count,
+            atTip: usable.filter { !isBehind($0) }.count,
+            stuckAtSplit: usable.filter(isStuck).count,
+            behind: usable.filter(isBehind).count)
     }
     let latencies = ok.map(\.latencyMs).sorted()
     return Summary(
@@ -224,15 +295,14 @@ func makeSummary(_ records: [Record], splitHeight: Int32 = 961_632) -> Summary {
         splitHeight: splitHeight,
         stuckAtSplit: ok.filter(isStuck).count,
         behind: ok.filter(isBehind).count,
+        aheadOfTip: ok.filter(isAhead).count,
         medianFeeFilterSatPerKvB: median(ok.compactMap(\.feeFilterSatPerKvB)),
         handshakeLatencyMsMedian: latencies.isEmpty ? nil : latencies[latencies.count / 2],
-        families: families)
+        families: families, networks: networks)
 }
 
-private func summarize(_ records: [Record], splitHeight: Int32 = 961_632) {
+private func summarize(_ records: [Record], tip: Int32, splitHeight: Int32 = 961_632) {
     let ok = records.filter { $0.outcome == "ok" }
-    let heights = ok.compactMap(\.startHeight).sorted()
-    let tip = heights.isEmpty ? 0 : heights[heights.count * 95 / 100] // robust against liars
     func pct(_ n: Int, _ d: Int) -> String { d == 0 ? "-" : String(format: "%.1f%%", 100 * Double(n) / Double(d)) }
     print("")
     print("dialled \(records.count)")
@@ -242,15 +312,26 @@ private func summarize(_ records: [Record], splitHeight: Int32 = 961_632) {
     }
     print("")
     print("of the \(ok.count) Winnow-usable peers (handshake ok, compact filters advertised):")
-    print("  observed tip (95th percentile of reported heights): \(tip)")
+    print("  tip used to judge heights: \(tip)")
     let stuck = ok.filter { ($0.startHeight ?? 0) >= splitHeight && ($0.startHeight ?? 0) <= splitHeight + 20 }
     let behind = ok.filter { tip - ($0.startHeight ?? 0) > 100 }
+    let ahead = ok.filter { ($0.startHeight ?? 0) - tip > 10 }
     print("  at the BIP-110 split height (\(splitHeight)…\(splitHeight + 20)): \(stuck.count)  \(pct(stuck.count, ok.count))")
     print("  more than 100 blocks behind the tip:                \(behind.count)  \(pct(behind.count, ok.count))")
+    print("  claiming a chain taller than the tip:               \(ahead.count)  \(pct(ahead.count, ok.count))")
     let filters = ok.compactMap(\.feeFilterSatPerKvB).sorted()
     if !filters.isEmpty {
         print("  fee filter median \(filters[filters.count / 2]) sat/kvB, "
               + "over 100 sat/vB: \(filters.filter { $0 > 100_000 }.count)")
+    }
+    print("")
+    print("by overlay network:")
+    print("  network   dialled  usable   no filters  stuck@split (of usable)")
+    for (name, members) in Dictionary(grouping: records, by: \.network).sorted(by: { $0.key < $1.key }) {
+        let usable = members.filter { $0.outcome == "ok" }
+        let noFilters = members.filter { $0.outcome == "noCompactFilters" }.count
+        let stuckHere = usable.filter { ($0.startHeight ?? 0) >= splitHeight && ($0.startHeight ?? 0) <= splitHeight + 20 }.count
+        print("  \(name.padding(toLength: 9, withPad: " ", startingAt: 0)) \(String(members.count).padding(toLength: 8, withPad: " ", startingAt: 0)) \(pct(usable.count, members.count).padding(toLength: 8, withPad: " ", startingAt: 0)) \(pct(noFilters, members.count).padding(toLength: 11, withPad: " ", startingAt: 0)) \(pct(stuckHere, usable.count))")
     }
     print("")
     print("by software family (usable peers):")
@@ -307,7 +388,7 @@ func crawl(_ endpoints: [PeerEndpoint], options: Options, output: FileHandle?) a
 }
 
 let options = parseOptions()
-var endpoints = try loadEndpoints(from: options.input!)
+var endpoints = try loadEndpoints(from: options.input!, options: options)
 var generator = SeededGenerator(state: options.seed)
 endpoints.shuffle(using: &generator)
 if options.sample > 0 { endpoints = Array(endpoints.prefix(options.sample)) }
@@ -319,9 +400,10 @@ if let out = options.out {
 }
 let records = await crawl(endpoints, options: options, output: output)
 try? output?.close()
+let tip = observedTip(records, override: options.tip)
 if let summaryURL = options.summary {
     let encoder = JSONEncoder()
     encoder.outputFormatting = [.prettyPrinted, .sortedKeys]
-    try encoder.encode(makeSummary(records)).write(to: summaryURL)
+    try encoder.encode(makeSummary(records, tip: tip)).write(to: summaryURL)
 }
-summarize(records)
+summarize(records, tip: tip)
