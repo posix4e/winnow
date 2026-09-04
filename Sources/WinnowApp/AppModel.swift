@@ -234,6 +234,10 @@ final class AppModel {
     /// On means re-derive every block's work from block 0, which is what the
     /// app did before the checkpoint existed.
     private(set) var verifyFromGenesis: Bool
+    /// Off by default. Gates the network picker and every other control a
+    /// beginner should never have to read. Global, not per network: it is a
+    /// statement about the user, not the chain.
+    private(set) var advancedMode: Bool
 
     private var syncTask: Task<Void, Never>?
     private var phaseTask: Task<Void, Never>?
@@ -259,6 +263,8 @@ final class AppModel {
         static let legacyEsploraURL = "esploraURL"
         /// Deliberately global: a preference, not a chain-specific endpoint.
         static let verifyFromGenesis = "verifyFromGenesis"
+        /// Deliberately global, like verifyFromGenesis.
+        static let advancedMode = "advancedMode"
         /// Set at wallet creation, cleared only by the backup sheet's
         /// confirmed Done — a relaunch in between resumes the backup.
         static func backupPending(_ walletID: String) -> String { "backupPending.\(walletID)" }
@@ -272,9 +278,11 @@ final class AppModel {
         keyStore = e2e.map { KeychainStore(service: $0.keychainService) } ?? KeychainStore()
         let defaults = e2e?.defaults ?? .standard
         self.defaults = defaults
+        // Mainnet is the default (#9). The E2E harness is a custom-signet
+        // fixture, so a test launch that names no network still gets signet.
         let selectedNetwork = e2e?.forcedNetwork
             ?? BitcoinNetwork(rawValue: defaults.string(forKey: DefaultsKey.network) ?? "")
-            ?? .signet
+            ?? (e2e != nil ? .signet : Self.defaultNetwork)
         network = selectedNetwork
         if e2e?.forcedNetwork != nil {
             defaults.set(selectedNetwork.rawValue, forKey: DefaultsKey.network)
@@ -284,6 +292,7 @@ final class AppModel {
         manualPeers = scoped.manualPeers
         esploraURLString = scoped.esploraURL
         verifyFromGenesis = defaults.bool(forKey: DefaultsKey.verifyFromGenesis)
+        advancedMode = defaults.bool(forKey: DefaultsKey.advancedMode) || e2e?.advancedMode == true
         // Test mode preconfigures the local node as the (only) manual peer;
         // custom signets have no DNS seeds.
         if let peer = e2e?.peer, !manualPeers.contains(peer) {
@@ -1419,6 +1428,24 @@ final class AppModel {
         let txid = try await broadcaster.broadcast(raw, feeRateSatPerVByte: feeRateSatPerVByte)
         e2e?.journal("transaction.broadcast", fields: ["txid": txid.displayHex, "raw": raw.hex])
         return txid
+    }
+
+    /// What a fresh install runs on.
+    static let defaultNetwork: BitcoinNetwork = .mainnet
+
+    /// Whether the network picker is shown. Signet is an Advanced-mode
+    /// concern, but a wallet that is already on signet must always be able
+    /// to get back: hiding the picker behind a flag the user just turned off
+    /// would strand it there.
+    var showsNetworkPicker: Bool {
+        advancedMode || network != Self.defaultNetwork || e2e?.forcedNetwork != nil
+    }
+
+    func setAdvancedMode(_ enabled: Bool) {
+        guard enabled != advancedMode else { return }
+        advancedMode = enabled
+        defaults.set(enabled, forKey: DefaultsKey.advancedMode)
+        e2e?.journal("setting.advancedMode", fields: ["enabled": String(enabled)])
     }
 
     // MARK: - Vaults

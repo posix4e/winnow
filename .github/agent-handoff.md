@@ -839,3 +839,19 @@ a chain starting at 900,000 cannot ask about earlier blocks. Found by measuring:
 a birthday-0 wallet hit `FilterSyncError` outright. Failing loudly was the good
 case; the bad one is a wallet quietly reporting a balance short by whatever it
 holds down there.
+
+---
+
+## 2026-09-05 · Claude — Advanced mode and mainnet by default (#9, #8)
+
+Branch `feat/mainnet-default`, extracted from the `feat/submission-routes`
+draft so the App Store build can carry the flag without the routes work.
+
+- `AppModel.advancedMode` (global `DefaultsKey.advancedMode`, off by
+  default, `WINNOW_E2E_ADVANCED=1` for UI tests) and the Settings toggle.
+- `AppModel.defaultNetwork = .mainnet`; the Network picker in Settings and
+  onboarding shows only in Advanced mode, except that a wallet already on
+  signet always keeps it (`showsNetworkPicker`), so turning the flag off can
+  never strand one there.
+- #8, the owner's mainnet acceptance run, is still the gate for calling the
+  flip verified; v0.5.1 removed the stale-peer stall that blocked it.

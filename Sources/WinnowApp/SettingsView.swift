@@ -35,20 +35,24 @@ struct SettingsView: View {
     var body: some View {
         NavigationStack {
             Form {
-                Section {
-                    Picker("Network", selection: Binding(
-                        get: { model.network },
-                        set: { newValue in Task { await model.switchNetwork(to: newValue) } }
-                    )) {
-                        Text("Signet").tag(BitcoinNetwork.signet)
-                        Text("Mainnet").tag(BitcoinNetwork.mainnet)
-                    }
-                    .disabled(model.e2e?.forcedNetwork != nil)
-                } footer: {
-                    if model.e2e?.forcedNetwork != nil {
-                        Text("This reproducible story run is locked to public signet.")
-                    } else {
-                        Text("Each network has its own wallet on this device. Switching opens that network's wallet, or onboarding when it has none.")
+                // Signet is an Advanced-mode concern; see showsNetworkPicker
+                // for why a signet wallet always keeps the row.
+                if model.showsNetworkPicker {
+                    Section {
+                        Picker("Network", selection: Binding(
+                            get: { model.network },
+                            set: { newValue in Task { await model.switchNetwork(to: newValue) } }
+                        )) {
+                            Text("Mainnet").tag(BitcoinNetwork.mainnet)
+                            Text("Signet").tag(BitcoinNetwork.signet)
+                        }
+                        .disabled(model.e2e?.forcedNetwork != nil)
+                    } footer: {
+                        if model.e2e?.forcedNetwork != nil {
+                            Text("This reproducible story run is locked to public signet.")
+                        } else {
+                            Text("Each network has its own wallet on this device. Switching opens that network's wallet, or onboarding when it has none. Signet coins have no value; use it to rehearse.")
+                        }
                     }
                 }
 
@@ -66,6 +70,16 @@ struct SettingsView: View {
                     Text("Backup")
                 } footer: {
                     Text("The bundle is the history. A new phone cannot recover this wallet from the 12 words alone — export this file and keep it with the words. Showing the phrase asks for device authentication first.")
+                }
+
+                Section {
+                    Toggle("Advanced mode", isOn: Binding(
+                        get: { model.advancedMode },
+                        set: { model.setAdvancedMode($0) }
+                    ))
+                    .accessibilityIdentifier("advancedModeToggle")
+                } footer: {
+                    Text("Shows the controls most people never need: the test network, peers, chain verification and the block explorer. Off, the wallet just sends and receives.")
                 }
 
                 Section {
