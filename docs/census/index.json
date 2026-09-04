@@ -2,14 +2,14 @@
   "days": [
     {
       "date": "2026-09-04",
-      "dialled": 9612,
-      "usable": 1283,
+      "dialled": 26746,
+      "usable": 7761,
       "observedTip": 965522,
-      "stuckAtSplit": 82,
-      "behind": 88,
-      "knotsUsable": 235,
-      "knotsStuck": 82,
-      "coreUsable": 1028
+      "stuckAtSplit": 619,
+      "behind": 632,
+      "knotsUsable": 1661,
+      "knotsStuck": 618,
+      "coreUsable": 6077
     }
   ]
 }
