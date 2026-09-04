@@ -377,3 +377,35 @@ actor LoopbackNode {
         }
     }
 }
+
+/// Resumes a continuation at most once: the first resume wins, later ones
+/// are dropped. Wraps every checked continuation handed to a Network.framework
+/// state handler — NWConnection/NWListener can still deliver a state update
+/// that was already in flight when `stateUpdateHandler` was cleared, so
+/// nil-ing the handler inside itself does not by itself prevent a second
+/// resume (a fatal "continuation misuse" trap; seen on CI as ECONNRESET
+/// delivered after .ready).
+final class ResumeOnce: @unchecked Sendable {
+    private var continuation: CheckedContinuation<Void, Error>?
+    private let lock = NSLock()
+
+    init(_ continuation: CheckedContinuation<Void, Error>) {
+        self.continuation = continuation
+    }
+
+    func resume() {
+        take()?.resume()
+    }
+
+    func resume(throwing error: Error) {
+        take()?.resume(throwing: error)
+    }
+
+    private func take() -> CheckedContinuation<Void, Error>? {
+        lock.lock()
+        defer { lock.unlock() }
+        let continuation = continuation
+        self.continuation = nil
+        return continuation
+    }
+}
