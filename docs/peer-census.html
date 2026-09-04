@@ -37,11 +37,12 @@
 
   <h2>Latest breakdown</h2>
   <div class="wrap"><table id="outcomes"><thead><tr><th>Outcome</th><th class="num">Nodes</th><th class="num">Share</th></tr></thead><tbody></tbody></table></div>
+  <div class="wrap"><table id="networks"><thead><tr><th>Network</th><th class="num">Dialled</th><th class="num">Usable</th><th class="num">No compact filters</th><th class="num">Stuck at the split, of usable</th></tr></thead><tbody></tbody></table></div>
   <div class="wrap"><table id="families"><thead><tr><th>Software family</th><th class="num">Usable peers</th><th class="num">At the tip</th><th class="num">Stuck at the split</th><th class="num">Median fee filter</th></tr></thead><tbody></tbody></table></div>
 
   <h2>How to read it</h2>
-  <p><strong>Usable</strong> means the handshake completed and the node advertises <code>NODE_COMPACT_FILTERS</code>; Winnow refuses anything else at the door. <strong>At the tip</strong> means within a hundred blocks of the 95th-percentile reported height, the same tolerance the wallet's pool applies before unseating a peer. <strong>Stuck at the split</strong> means reporting a height within twenty blocks of 961,632, where the BIP-110 minority chain left the main chain on 2026-08-08 and stopped.</p>
-  <p>The census judges what a node reports, never which software it runs. The family column is there because the answer turned out to depend on it. Onion and I2P addresses are not dialled. Per-node detail is kept as a two-week workflow artifact; this page carries aggregates only. Source: <code>WinnowCensus</code> in the repository, run by the <code>Peer census</code> workflow.</p>
+  <p><strong>Usable</strong> means the handshake completed and the node advertises <code>NODE_COMPACT_FILTERS</code>; Winnow refuses anything else at the door. <strong>At the tip</strong> means within a hundred blocks of the median reported height, the same tolerance the wallet's pool applies before unseating a peer. <strong>Stuck at the split</strong> means reporting a height within twenty blocks of 961,632, where the BIP-110 minority chain left the main chain on 2026-08-08 and stopped. <strong>Claiming a taller chain</strong> means reporting a height more than ten blocks above the tip: a node on some other chain, or lying.</p>
+  <p>The census judges what a node reports, never which software it runs. The family column is there because the answer turned out to depend on it. Tor and I2P nodes are dialled through a local SOCKS5 proxy when the run has one; a day without a network row did not dial that network. Per-node detail is kept as a two-week workflow artifact; this page carries aggregates only. Source: <code>WinnowCensus</code> in the repository, run by the <code>Peer census</code> workflow.</p>
 </main>
 <script>
 (async function () {
@@ -57,7 +58,8 @@
     [fmt(latest.dialled), 'addresses dialled on ' + last.date],
     [fmt(latest.usable), 'usable peers (' + pct(latest.usable, latest.dialled) + ')'],
     [fmt(latest.stuckAtSplit), 'usable peers stuck at the split (' + pct(latest.stuckAtSplit, latest.usable) + ')'],
-    [fmt(latest.observedTip), 'observed tip'],
+    [fmt(latest.aheadOfTip || 0), 'usable peers claiming a taller chain'],
+    [fmt(latest.observedTip), 'tip used to judge heights'],
   ];
   document.getElementById('tiles').innerHTML = tiles.map(([n, l]) => '<div class="tile"><div class="n">' + n + '</div><div class="l">' + l + '</div></div>').join('');
 
@@ -68,6 +70,11 @@
     if (!n) continue;
     ob.insertAdjacentHTML('beforeend', '<tr><td>' + outcomeNames[key] + '</td><td class="num">' + fmt(n) + '</td><td class="num">' + pct(n, latest.dialled) + '</td></tr>');
   }
+  const nb = document.querySelector('#networks tbody');
+  for (const [name, n] of Object.entries(latest.networks || {}).sort((a, b) => b[1].dialled - a[1].dialled)) {
+    nb.insertAdjacentHTML('beforeend', '<tr><td>' + name + '</td><td class="num">' + fmt(n.dialled) + '</td><td class="num">' + fmt(n.usable) + ' (' + pct(n.usable, n.dialled) + ')</td><td class="num">' + pct(n.noCompactFilters, n.dialled) + '</td><td class="num">' + pct(n.stuckAtSplit, n.usable) + '</td></tr>');
+  }
+  if (!nb.children.length) document.getElementById('networks').hidden = true;
   const fb = document.querySelector('#families tbody');
   const fams = Object.entries(latest.families).sort((a, b) => b[1].usable - a[1].usable);
   for (const [name, f] of fams) {

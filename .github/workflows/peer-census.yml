@@ -9,6 +9,11 @@ name: Peer census
 # Network.framework. The per-node JSON lines are kept as a 14-day artifact
 # rather than committed: btcnodes already publishes the per-IP view, and the
 # repository only needs the aggregates to draw a trend.
+#
+# Tor and I2P nodes — most of the snapshot — are dialled only when the runner
+# has a Tor SOCKS port on 9050 and an i2pd SOCKS port on 4447. The step below
+# passes them when they answer, so a runner without the routers still
+# produces the clearnet census rather than nothing.
 
 on:
   schedule:
@@ -42,8 +47,13 @@ jobs:
 
       - name: Dial every reachable node
         run: |
-          .build/release/WinnowCensus --input snapshot.json --parallel 128 --timeout 8 \
-            --out census.jsonl --summary-json summary.json | tee census-summary.txt
+          PROXIES=""
+          nc -z 127.0.0.1 9050 2>/dev/null && PROXIES="$PROXIES --tor-socks 127.0.0.1:9050"
+          nc -z 127.0.0.1 4447 2>/dev/null && PROXIES="$PROXIES --i2p-socks 127.0.0.1:4447"
+          TIP=$(python3 -c 'import json; print(json.load(open("snapshot.json")).get("latest_height", 0))')
+          echo "proxies:${PROXIES:- none}; tip $TIP"
+          .build/release/WinnowCensus --input snapshot.json --parallel 128 --timeout 8 --hidden-timeout 30 \
+            --tip "$TIP" $PROXIES --out census.jsonl --summary-json summary.json | tee census-summary.txt
 
       - name: Publish the aggregate
         run: |
