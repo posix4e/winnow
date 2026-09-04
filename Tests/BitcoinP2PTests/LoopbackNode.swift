@@ -28,6 +28,10 @@ actor LoopbackNode {
     /// headers rather than about the chain itself. This is the shape the
     /// cfcheckpt majority rule exists to defend against.
     let lieAboutFilterCommitments: Bool
+    /// Hangs up when asked about a block it does not have, which is what
+    /// Bitcoin Core does with a `getcfcheckpt` for an unknown stop hash. The
+    /// shape of a peer that is behind the tip we are asking about.
+    let disconnectOnUnknownStopHash: Bool
     /// Answers every getcfcheckpt with this stop hash instead of the one the
     /// client asked about — a peer replying about a different chain (#129).
     let cfcheckptStopHashOverride: Data?
@@ -67,8 +71,10 @@ actor LoopbackNode {
          corruptFilterAtHeight: Int? = nil,
          lieAboutFilterCommitments: Bool = false, lieSalt: UInt8 = 0xFF,
          cfcheckptStopHashOverride: Data? = nil,
+         disconnectOnUnknownStopHash: Bool = false,
          autoRequestDelay: Duration? = nil, transactions: [Transaction] = [],
          startSilent: Bool = false, versionDelay: Duration = .zero) {
+        self.disconnectOnUnknownStopHash = disconnectOnUnknownStopHash
         self.params = params
         self.services = services
         self.chain = chain
@@ -320,7 +326,10 @@ actor LoopbackNode {
             try await send(.headers(batch))
 
         case let .getcfcheckpt(request):
-            guard let stop = height(ofHash: request.stopHash) else { return }
+            guard let stop = height(ofHash: request.stopHash) else {
+                if disconnectOnUnknownStopHash { connection?.cancel() }
+                return
+            }
             // Core's ProcessGetCFCheckPt: headers at heights 1000, 2000, …
             // ascending, capped at the stop height — the stop block itself is
             // included only when it is a checkpoint multiple.

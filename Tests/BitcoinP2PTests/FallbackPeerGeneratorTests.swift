@@ -113,6 +113,18 @@ struct FallbackPeerGeneratorTests {
         // which no single lying peer can move.
         let heights = verified.map(\.startHeight).sorted()
         let tip = heights[heights.count / 2]
+        // A candidate far behind that tip is in initial download or on a
+        // dead fork, and the pool would only unseat it at first contact
+        // (`PeerPool.staleTipTolerance`). Shipping it wastes the user's first
+        // dials on a peer known to be useless when the list was made.
+        let stale = verified.filter { tip - $0.startHeight > PeerPool.staleTipTolerance }
+        for peer in stale {
+            print("generator: dropping \(peer.endpoint) at height \(peer.startHeight), "
+                  + "\(tip - peer.startHeight) behind the median \(peer.userAgent)")
+        }
+        verified.removeAll { tip - $0.startHeight > PeerPool.staleTipTolerance }
+        try #require(verified.count >= Self.floor,
+                     "only \(verified.count) peers near the tip — refusing to ship a thin list")
         let date = ISO8601DateFormatter().string(from: Date())
         let entries = verified
             .sorted { $0.endpoint.host < $1.endpoint.host }

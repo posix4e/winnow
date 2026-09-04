@@ -546,12 +546,15 @@ struct TxBroadcasterTests {
         }
         #expect(emitted)
 
-        // Relay attempts continue meanwhile (another inv reaches node A).
-        #expect(await nodeA.nextMessage(command: "inv") != nil)
+        // Nothing is announced to a peer that has said it will drop the
+        // bytes (BIP133): retries keep running, but node A hears none of them
+        // while its floor refuses the transaction.
+        #expect(await nodeA.nextMessage(command: "inv", timeout: .milliseconds(600)) == nil)
 
-        // Floor dropping back below the feerate rearms the event…
+        // Floor dropping back below the feerate rearms the event, and the
+        // next attempt announces to node A again…
         try await nodeA.send(.feefilter(500))
-        try? await Task.sleep(for: .milliseconds(100))
+        #expect(await nodeA.nextMessage(command: "inv", timeout: .seconds(10)) != nil)
         // …so a later rise emits it again.
         try await nodeA.send(.feefilter(2_000))
         let reemitted = await pollUntil {

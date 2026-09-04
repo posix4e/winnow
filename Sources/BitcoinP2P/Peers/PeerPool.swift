@@ -81,6 +81,11 @@ public actor PeerPool {
     /// failure up to the cap.
     static let transportCooldownBase: Duration = .seconds(30)
     static let transportCooldownCap: Duration = .seconds(600)
+    /// How far behind the best-connected peer's reported tip a peer may be
+    /// before it is unseated. A hundred blocks is about sixteen hours, the
+    /// wallet's own reorg horizon, and far inside what a node still in
+    /// initial download or stuck on a dead fork reports.
+    public static let staleTipTolerance: Int32 = 100
 
     /// UI-facing snapshot of the pool's connection progress.
     public struct ConnectionStatus: Sendable, Equatable {
@@ -203,6 +208,42 @@ public actor PeerPool {
         cooldownUntil[peer.endpoint] = now().advanced(by: Self.cooldown(afterFailures: failures))
         lastRejection[peer.endpoint] = reason
         await replenish()
+    }
+
+    /// Unseats every peer whose handshake height is more than
+    /// `staleTipTolerance` below the best height any connected peer reported.
+    ///
+    /// A peer that far behind cannot serve filters or blocks near the tip,
+    /// and asking it about a tip it has never seen makes Bitcoin Core drop the
+    /// connection — which is how one such peer stalled a mainnet filter sync
+    /// five hundred blocks short for good. The case that found this was a
+    /// node stuck on the dead BIP-110 minority chain of August 2026, four
+    /// thousand blocks behind with a fee filter no transaction could clear;
+    /// the rule judges what the peer reports, never what software it runs.
+    ///
+    /// Not `misbehaving`: being behind is a state, not a lie. The endpoint
+    /// leaves the persisted good list, since a node that far back is not a
+    /// good peer to dial first next launch, and cools off for the full cap so
+    /// this session stops re-seating it.
+    @discardableResult
+    func evictStaleTips() async -> [PeerEndpoint] {
+        var heights: [(peer: PeerConnection, height: Int32)] = []
+        for peer in peers {
+            heights.append((peer, await peer.peerStartHeight))
+        }
+        guard let best = heights.map(\.height).max() else { return [] }
+        var evicted: [PeerEndpoint] = []
+        for (peer, height) in heights where best - height > Self.staleTipTolerance {
+            await peer.disconnect()
+            peers.removeAll { $0.endpoint == peer.endpoint }
+            knownGood.remove(peer.endpoint)
+            cooldownUntil[peer.endpoint] = now().advanced(by: Self.transportCooldownCap)
+            lastRejection[peer.endpoint] =
+                "stale tip: reports height \(height), \(best - height) blocks behind the best connected peer"
+            evicted.append(peer.endpoint)
+        }
+        if !evicted.isEmpty { persistKnownGood() }
+        return evicted
     }
 
     /// A completed exchange clears the endpoint's cooldown escalation. Without
@@ -440,7 +481,16 @@ public actor PeerPool {
                 }
             }
         }
+        // Judged after the round rather than per arrival: the round's best
+        // height is only known once its dials have answered, and a stale
+        // peer that arrived first is exactly the one this must catch.
+        let evicted = await evictStaleTips()
         exhausted = peers.count < peerCount
+        if !evicted.isEmpty, started {
+            // Refill the slots just freed. `replenishing` is still set here,
+            // so the follow-up runs after this round has fully returned.
+            Task { await self.pruneAndReplenish() }
+        }
     }
 
     /// The diversity rules this pool enforces, sized to its slot count.
