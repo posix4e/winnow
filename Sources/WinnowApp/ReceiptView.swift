@@ -78,7 +78,10 @@ struct ReceiptView: View {
                             Button("Relay to Bitcoin peers") { showRelayConfirm = true }
                                 .accessibilityIdentifier("receiptRelayToPeersButton")
                         }
-                        if receipt.confirmedAtHeight == nil {
+                        // Withdrawn once the transaction is confirmed, replaced
+                        // or abandoned (#155): offering the bytes then only
+                        // invites a conflicting rebroadcast.
+                        if !receipt.state.isTerminal {
                             CopyableIdentifier(value: receipt.rawTransaction.hex, abbreviated: true,
                                                label: "Copy raw",
                                                accessibilityID: "copyReceiptRawTransactionButton")

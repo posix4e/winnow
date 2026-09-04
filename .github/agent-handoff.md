@@ -870,3 +870,9 @@ pending non-peers receipt on a history row says how to reach it. The Network
 picker stays visible in beginner mode — the app defaults to signet, and hiding
 Network would strand a beginner there. Reversible if signet-only beginners are
 the intent for the beta.
+
+**Deferred to the Slipstream PR**, on purpose: `docs/write-side.html:102,167`
+still describe P2P as the only path, and `docs/security/invariant-matrix.md`
+S11 plus `audit-manifest.md`'s egress inventory still assert no HTTP client is
+instantiated. All of that stays true until an adapter lands, and rewriting it
+now would describe code that does not exist; it moves with the adapter.

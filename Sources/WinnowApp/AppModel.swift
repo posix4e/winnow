@@ -726,11 +726,13 @@ final class AppModel {
     /// every route, and a re-route (issue #51) is the recorded alternative
     /// to pasting them somewhere by hand.
     ///
-    /// nil once it confirms -- at that point it is on the chain and the txid
-    /// is the useful handle.
+    /// nil once it confirms, is replaced, or is abandoned -- at that point the
+    /// txid is the useful handle and the bytes only invite a conflict.
     func rawTransactionHex(_ txid: Data) async -> String? {
-        if let receipt = await stack?.submissions.receipt(txid), receipt.confirmedAtHeight == nil {
-            return receipt.rawTransaction.hex
+        if let receipt = await stack?.submissions.receipt(txid) {
+            // Withdrawn once confirmed, replaced or abandoned (#155): the
+            // bytes of a replaced transaction are a conflicting rebroadcast.
+            return receipt.state.isTerminal ? nil : receipt.rawTransaction.hex
         }
         guard let broadcaster = stack?.broadcaster else { return nil }
         return await broadcaster.rawTransaction(txid)?.hex

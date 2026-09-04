@@ -82,6 +82,14 @@ struct HomeView: View {
                             .foregroundStyle(.orange)
                             .accessibilityIdentifier("relayStoreQuarantined")
                     }
+                    // Same rule for the receipt store (#150): a file set aside
+                    // in silence is how a user loses state without knowing.
+                    if let quarantined = model.status.submissionStoreQuarantined {
+                        Text(quarantined)
+                            .font(.footnote)
+                            .foregroundStyle(.orange)
+                            .accessibilityIdentifier("submissionStoreQuarantined")
+                    }
                     Button("Sync now") {
                         Task { await model.syncNow() }
                     }
