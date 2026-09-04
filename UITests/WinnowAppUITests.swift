@@ -74,13 +74,15 @@ final class WinnowAppUITests: XCTestCase {
     @discardableResult
     func launchApp(run: String = "main", reset: Bool = false, clipboard: String? = nil,
                    expectOnboarding: Bool = false,
-                   configureLocalNode: Bool = true) -> XCUIApplication {
+                   configureLocalNode: Bool = true,
+                   advanced: Bool = false) -> XCUIApplication {
         let app = XCUIApplication()
         app.launchEnvironment = [
             "WINNOW_E2E": "1",
             "WINNOW_E2E_RUN": run,
             "WINNOW_E2E_ENTROPY": Self.entropyHex,
         ]
+        if advanced { app.launchEnvironment["WINNOW_E2E_ADVANCED"] = "1" }
         if configureLocalNode {
             app.launchEnvironment["WINNOW_E2E_PEER"] =
                 "\(BitcoinCLI.nodeHost):\(BitcoinCLI.p2pPort)"
@@ -303,6 +305,84 @@ final class WinnowAppUITests: XCTestCase {
         XCTAssertTrue(app.staticTexts["Sent"].waitForExistence(timeout: 60),
                       "no sent entry in history")
         Screenshots.capture(app, "09-home-after-send", testCase: self)
+    }
+
+    // MARK: - 10 Submission routes (issue #51)
+
+    /// Advanced mode on: pick the Export route, sign without submitting, read
+    /// the receipt, then relay to peers from the recorded second thought and
+    /// watch the block confirm it. Runs after 02 (a funded wallet).
+    func test10AdvancedExportSendAndReceipt() async throws {
+        let destination = try Self.fixtureAddress(0xC5)
+        let app = launchApp(advanced: true)
+        XCTAssertTrue(poll(timeout: 120, "persisted funded balance") {
+            self.balanceText(app) != "0 sats" && self.balanceText(app) != ""
+        })
+
+        // Settings: the gate itself, and the Submissions entry it reveals.
+        app.tabBars.buttons["Settings"].tap()
+        XCTAssertTrue(app.switches["advancedModeToggle"].waitForExistence(timeout: 10))
+        XCTAssertTrue(app.buttons["submissionsLink"].exists, "advanced mode should list submissions")
+        Screenshots.capture(app, "30-settings-advanced-mode", testCase: self)
+
+        app.tabBars.buttons["Send"].tap()
+        app.typeInto("destinationField", destination)
+        app.typeInto("amountField", "500000")
+        let picker = app.descendants(matching: .any)["submissionRoutePicker"]
+        XCTAssertTrue(scrollUntilExists(app, picker, maxSwipes: 3), "no route picker in advanced mode")
+        picker.tap()
+        let exportOption = app.buttons["Export signed transaction"].firstMatch
+        XCTAssertTrue(exportOption.waitForExistence(timeout: 5), "the picker did not open")
+        Screenshots.capture(app, "31-send-route-picker", testCase: self)
+        exportOption.tap()
+
+        app.buttons["reviewButton"].tap()
+        let sendButton = app.buttons["sendButton"]
+        XCTAssertTrue(scrollUntilExists(app, sendButton, maxSwipes: 5), "no review section")
+        Screenshots.capture(app, "32-send-review-export", testCase: self)
+
+        let mempoolBefore = Set(try BitcoinCLI.mempoolTxids())
+        sendButton.tap()
+        XCTAssertTrue(app.staticTexts["exportNotice"].waitForExistence(timeout: 60),
+                      "export did not produce a signed, unsubmitted transaction")
+        // Nothing left the device: the node's mempool is unchanged.
+        try await Task.sleep(for: .seconds(3))
+        XCTAssertEqual(Set(try BitcoinCLI.mempoolTxids()), mempoolBefore, "export must not submit")
+        Screenshots.capture(app, "33-send-exported", testCase: self)
+
+        // The recorded second thought.
+        app.buttons["relayToPeersButton"].tap()
+        let relay = app.alerts.buttons["Relay"]
+        XCTAssertTrue(relay.waitForExistence(timeout: 10), "no relay confirmation alert")
+        relay.tap()
+        poll(timeout: 60, interval: 1, "tx relayed into the node's mempool after the re-route") {
+            ((try? Set(BitcoinCLI.mempoolTxids()).isSubset(of: mempoolBefore)) ?? true) == false
+        }
+        Screenshots.capture(app, "34-send-relayed-after-export", testCase: self)
+
+        let payout = try AddressDecoder.scriptPubKey(for: Self.fixtureAddress(0xD6), network: .signet)
+        try await SignetMiner.mineOntoTip(payingTo: payout)
+        poll(timeout: 240, interval: 5, "re-routed send confirmation") {
+            app.tabBars.buttons["Wallet"].tap()
+            self.nudgeSync(app)
+            app.tabBars.buttons["Send"].tap()
+            return self.scrollUntilExists(app, app.staticTexts["broadcastConfirmed"], maxSwipes: 3)
+        }
+        Screenshots.capture(app, "35-send-confirmed-after-export", testCase: self)
+
+        // The receipt, from the history row.
+        app.tabBars.buttons["Wallet"].tap()
+        let badge = app.buttons["submissionRouteBadge"].firstMatch
+        XCTAssertTrue(scrollUntilExists(app, badge, maxSwipes: 3), "no route badge on the history row")
+        badge.tap()
+        XCTAssertTrue(app.staticTexts["receiptRoute"].waitForExistence(timeout: 10), "no receipt view")
+        Screenshots.capture(app, "36-receipt", testCase: self)
+        app.buttons["Close"].tap()
+
+        app.tabBars.buttons["Settings"].tap()
+        app.buttons["submissionsLink"].tap()
+        XCTAssertTrue(app.navigationBars["Submissions"].waitForExistence(timeout: 10))
+        Screenshots.capture(app, "37-submissions-list", testCase: self)
     }
 
     // MARK: - 04 Vaults
