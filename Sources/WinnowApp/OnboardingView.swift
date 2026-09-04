@@ -1,4 +1,5 @@
 import LocalAuthentication
+import BitcoinP2P
 import SwiftUI
 import UIKit
 import WalletCore
@@ -58,7 +59,26 @@ struct OnboardingView: View {
                         .accessibilityIdentifier("importWalletButton")
                     }
                 } footer: {
-                    Text("Network: \(model.network.rawValue) (change in Settings). Your backup appears immediately; peer and header synchronization continues while you secure it.")
+                    Text("Your backup appears immediately; peer and header synchronization continues while you secure it.")
+                }
+                // Settings is not reachable from here, so the network has to
+                // be. Without this, switching to a network with no wallet
+                // lands on this screen with no way back to the one that has
+                // one — the footer used to say "change in Settings".
+                Section {
+                    Picker("Network", selection: Binding(
+                        get: { model.network },
+                        set: { newValue in Task { await model.switchNetwork(to: newValue) } }
+                    )) {
+                        Text("Signet").tag(BitcoinNetwork.signet)
+                        Text("Mainnet").tag(BitcoinNetwork.mainnet)
+                    }
+                    .disabled(model.e2e?.forcedNetwork != nil || busy != nil)
+                    .accessibilityIdentifier("onboardingNetworkPicker")
+                } footer: {
+                    Text(model.e2e?.forcedNetwork != nil
+                         ? "This reproducible story run is locked to public signet."
+                         : "Each network has its own wallet on this device. Switching opens that network's wallet, or this screen when it has none.")
                 }
                 if let busy {
                     Section { ProgressView(model.syncStatusText ?? busy) }
