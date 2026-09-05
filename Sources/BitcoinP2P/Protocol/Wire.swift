@@ -66,18 +66,33 @@ public struct ByteReader: Sendable {
     }
 
     /// Bitcoin compactSize ("varint"): 0xFD/0xFE/0xFF prefixes select 2/4/8-byte little-endian.
+    ///
+    /// Canonical only, as Bitcoin Core's `ReadCompactSize` enforces: a value
+    /// carried in a wider form than it needs (`fd 00 00` for zero) is
+    /// malformed. The wire has one spelling per number, so anything that hashes
+    /// or round-trips serialized bytes can rely on decode∘encode being the
+    /// identity; the fuzz harness checks exactly that on filters.
     public mutating func readVarInt() throws -> UInt64 {
         let first = try readUInt8()
+        let value: UInt64
+        let minimum: UInt64
         switch first {
         case ..<0xFD:
             return UInt64(first)
         case 0xFD:
-            return UInt64(try readUInt16())
+            value = UInt64(try readUInt16())
+            minimum = 0xFD
         case 0xFE:
-            return UInt64(try readUInt32())
+            value = UInt64(try readUInt32())
+            minimum = 0x1_0000
         default:
-            return try readUInt64()
+            value = try readUInt64()
+            minimum = 0x1_0000_0000
         }
+        guard value >= minimum else {
+            throw WireError.malformed("non-canonical compactSize: \(value) encoded with prefix 0x\(String(first, radix: 16))")
+        }
+        return value
     }
 
     /// compactSize-prefixed byte string.
