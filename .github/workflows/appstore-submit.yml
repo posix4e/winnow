@@ -8,7 +8,8 @@ name: App Store submission
 # Inputs: the version string of the build to attach (required) and either its
 # App Store Connect build id or its build number; `submit` is off by default,
 # so the first dispatch is a dry pass that attaches, writes the notes, and
-# reports without submitting.
+# reports without submitting. `status_only` skips everything but the report:
+# the way to check the metadata before any build exists to attach.
 on:
   workflow_dispatch:
     inputs:
@@ -26,6 +27,11 @@ on:
         type: string
       submit:
         description: Submit for App Store review after attaching and writing the notes
+        required: false
+        type: boolean
+        default: false
+      status_only:
+        description: Only report the App Store version's metadata state; attach nothing
         required: false
         type: boolean
         default: false
@@ -61,6 +67,7 @@ jobs:
           chmod 600 "${RUNNER_TEMP}/winnow-asc/AuthKey.p8"
 
       - name: Attach the build to the App Store version
+        if: ${{ !inputs.status_only }}
         env:
           ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
           ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
@@ -68,6 +75,7 @@ jobs:
         run: scripts/testflight.sh appstore-attach
 
       - name: Write What's New
+        if: ${{ !inputs.status_only }}
         env:
           ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
           ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
@@ -82,7 +90,7 @@ jobs:
         run: scripts/testflight.sh appstore-status
 
       - name: Submit for review
-        if: ${{ inputs.submit }}
+        if: ${{ inputs.submit && !inputs.status_only }}
         env:
           ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
           ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
@@ -91,7 +99,7 @@ jobs:
         run: scripts/testflight.sh appstore-submit
 
       - name: Report the state after submitting
-        if: ${{ inputs.submit }}
+        if: ${{ inputs.submit && !inputs.status_only }}
         env:
           ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
           ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}

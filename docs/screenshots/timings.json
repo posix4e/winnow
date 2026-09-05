@@ -1,6 +1,6 @@
 {
   "device" : "iPhone 17 Pro Max",
-  "run" : "2026-09-05T14:58:30Z",
+  "run" : "2026-09-05T15:53:07Z",
   "scenarios" : [
     {
       "name" : "onboarding",
@@ -28,11 +28,11 @@
       "name" : "funding",
       "steps" : [
         {
-          "seconds" : 1951.04,
-          "step" : "mine-101-blocks"
+          "seconds" : 30.85,
+          "step" : "mine-100-blocks"
         },
         {
-          "seconds" : 0.69,
+          "seconds" : 1.01,
           "step" : "mined→detected-by-filters"
         }
       ]
@@ -41,15 +41,15 @@
       "name" : "send",
       "steps" : [
         {
-          "seconds" : 0.66,
+          "seconds" : 1.12,
           "step" : "form→broadcast"
         },
         {
-          "seconds" : 0.02,
+          "seconds" : 0.01,
           "step" : "broadcast→echo/relay"
         },
         {
-          "seconds" : 18.26,
+          "seconds" : 6.26,
           "step" : "mine→confirmed"
         }
       ]
@@ -58,11 +58,7 @@
       "name" : "vault",
       "steps" : [
         {
-          "seconds" : 26.86,
-          "step" : "create"
-        },
-        {
-          "seconds" : 15.13,
+          "seconds" : 7.45,
           "step" : "cosign-review"
         }
       ]
@@ -71,19 +67,19 @@
       "name" : "import",
       "steps" : [
         {
-          "seconds" : 18.79,
+          "seconds" : 18.86,
           "step" : "verify"
         }
       ]
     }
   ],
   "totals" : {
-    "all" : 2037.67,
-    "funding" : 1951.73,
-    "import" : 18.79,
+    "all" : 71.78,
+    "funding" : 31.86,
+    "import" : 18.86,
     "onboarding" : 4,
     "receive" : 2.22,
-    "send" : 18.94,
-    "vault" : 41.99
+    "send" : 7.39,
+    "vault" : 7.45
   }
 }
