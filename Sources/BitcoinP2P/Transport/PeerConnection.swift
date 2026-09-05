@@ -226,6 +226,13 @@ public actor PeerConnection {
     /// Sends a request and awaits the first response matching `commands`.
     public func request(_ message: PeerMessage, expecting commands: Set<String>,
                         timeout: Duration = .seconds(30)) async throws -> PeerMessage {
+        // A reply can only follow its request. Whatever the backlog holds
+        // under the expected command arrived before this request was sent —
+        // an announcement, or a reply to an earlier request that was already
+        // satisfied from the backlog — and must not be handed back as the
+        // answer to this one. (An announcement dropped here is not lost: the
+        // reply covers the same headers.)
+        backlog.removeAll { commands.contains($0.command) }
         async let response = waitFor(matching: commands, timeout: timeout)
         try await send(message)
         return try await response
@@ -236,6 +243,10 @@ public actor PeerConnection {
     public func requestMany(_ message: PeerMessage, expecting command: String, count: Int,
                             timeout: Duration = .seconds(60)) async throws -> [PeerMessage] {
         precondition(count > 0)
+        // Same rule as `request`: a burst that timed out mid-delivery leaves
+        // its trailing messages in the backlog, and they are not the answer
+        // to the burst asked for now.
+        backlog.removeAll { $0.command == command }
         let id = UUID()
         scheduleTimeout(for: id, timeout: timeout)
         do {

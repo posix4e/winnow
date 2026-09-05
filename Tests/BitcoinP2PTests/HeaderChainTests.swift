@@ -93,6 +93,46 @@ struct HeaderChainTests {
         #expect(await headerChain.tipHash == longer[4].hash)
     }
 
+    @Test("headers the chain already holds are skipped, not read as a weaker branch")
+    func replayedHeadersAreNotABranch() async throws {
+        // The storefront capture found this on the signet fixture: a block
+        // announcement and the reply to the getheaders it prompted both
+        // carry the same header, the second copy waited in the connection's
+        // backlog, and the next sync took it as the answer. Read as a branch
+        // forking one below the tip with no more work, the peer was
+        // condemned for the session — the only peer, so the app went dark.
+        let chain = makeSyntheticChain(length: 6, watchHeight: 8)
+        let headers = chain.blocks.dropFirst().map(\.header)
+        let headerChain = try HeaderChain(params: chain.params)
+        try await headerChain.connect(Array(headers[0 ..< 4]))
+        #expect(await headerChain.height == 4)
+
+        // The tip again, alone: an announcement replayed.
+        let replayedTip = try await headerChain.connect([headers[3]])
+        #expect(replayedTip.appended == 0)
+        #expect(replayedTip.forkHeight == nil)
+        #expect(await headerChain.height == 4)
+
+        // A header below the tip, alone: a stale reply.
+        let stale = try await headerChain.connect([headers[2]])
+        #expect(stale.appended == 0)
+        #expect(await headerChain.tipHash == headers[3].hash)
+
+        // A reply that overlaps the tip appends only what is new.
+        let overlapping = try await headerChain.connect(Array(headers[2 ..< 6]))
+        #expect(overlapping.appended == 2)
+        #expect(overlapping.forkHeight == nil)
+        #expect(await headerChain.height == 6)
+        #expect(await headerChain.tipHash == headers[5].hash)
+
+        // A genuinely competing branch is still judged on work.
+        let rival = minedHeader(previousHash: headers[4].hash,
+                                merkleRoot: Data(repeating: 0xEE, count: 32), time: 1_600_090_000)
+        await #expect(throws: HeaderChainError.reorgWithoutMoreWork) {
+            try await headerChain.connect([rival])
+        }
+    }
+
     @Test("block locator: tip first, exponential steps, genesis last")
     func locator() async throws {
         let chain = makeSyntheticChain(length: 20, watchHeight: 6)
