@@ -1,16 +1,16 @@
 {
   "device" : "iPhone 17 Pro Max",
-  "run" : "2026-08-17T12:40:43Z",
+  "run" : "2026-09-05T14:58:30Z",
   "scenarios" : [
     {
       "name" : "onboarding",
       "steps" : [
         {
-          "seconds" : 2.74,
+          "seconds" : 2.41,
           "step" : "wallet-create"
         },
         {
-          "seconds" : 2.04,
+          "seconds" : 1.59,
           "step" : "backup→home"
         }
       ]
@@ -19,7 +19,7 @@
       "name" : "receive",
       "steps" : [
         {
-          "seconds" : 2.16,
+          "seconds" : 2.22,
           "step" : "address-shown"
         }
       ]
@@ -78,11 +78,11 @@
     }
   ],
   "totals" : {
-    "all" : 2038.39,
+    "all" : 2037.67,
     "funding" : 1951.73,
     "import" : 18.79,
-    "onboarding" : 4.78,
-    "receive" : 2.16,
+    "onboarding" : 4,
+    "receive" : 2.22,
     "send" : 18.94,
     "vault" : 41.99
   }

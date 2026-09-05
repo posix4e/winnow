@@ -152,6 +152,10 @@ final class WinnowAppUITests: XCTestCase {
         // Tap the child switch (right side of the row).
         let toggleThumb = toggle.children(matching: .switch).firstMatch
         let done = app.buttons["backupDoneButton"]
+        // On a 6.3-inch class the twelve words push Done below the fold;
+        // test09 already scrolls for it, and so must this.
+        XCTAssertTrue(scrollUntilExists(app, done, maxSwipes: 4), "backup Done button was not reachable")
+        XCTAssertTrue(scrollUntilExists(app, toggle, maxSwipes: 4, up: true))
         let enabled = poll(timeout: 20, interval: 1, "backup Done button enabled") {
             if done.isEnabled { return true }
             if toggleThumb.exists {
