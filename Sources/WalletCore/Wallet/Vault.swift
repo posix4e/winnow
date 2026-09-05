@@ -224,6 +224,97 @@ public struct Vault: Sendable {
         return Data(key.dropFirst()) == Taproot.unspendableInternalKey
     }
 
+    // MARK: - Signers
+
+    /// The number of approvals a spend needs.
+    public var threshold: Int {
+        switch policy {
+        case let .multiA(threshold, _, _, _): threshold
+        case let .muSig2(participants, _): participants.count
+        }
+    }
+
+    public var signerCount: Int {
+        switch policy {
+        case let .multiA(_, _, cosigners, _): cosigners.count
+        case let .muSig2(participants, _): participants.count
+        }
+    }
+
+    /// Script-path k-of-n: the shape shared savings use. MuSig2 vaults are an
+    /// Advanced-mode concern and never appear as savings.
+    public var isScriptPath: Bool {
+        if case .multiA = policy { true } else { false }
+    }
+
+    /// The compressed public key of every signer at (index, choice), in
+    /// descriptor order. Matching these against people's signer keys is how
+    /// a vault learns who co-owns it, without persisting a mapping that could
+    /// dangle or lie.
+    public func signerKeys(index: UInt32 = 0, choice: Int = 0) throws -> [Data] {
+        let signers: [Descriptor.KeyExpression]
+        switch policy {
+        case let .multiA(_, _, cosigners, _): signers = cosigners
+        case let .muSig2(participants, _): signers = participants.map { .single($0) }
+        }
+        return try signers.map { try descriptor.publicKey(of: $0, index: index, choice: choice) }
+    }
+
+    /// The signer key expressions as written in the descriptor, in order
+    /// (script-path vaults only). For the "details for experts" view.
+    public var cosignerExpressions: [String] {
+        guard case .multiA = policy else { return [] }
+        let text = descriptor.serialized()
+        guard let open = text.range(of: "multi_a(") else { return [] }
+        var depth = 0
+        var current = ""
+        var parts: [String] = []
+        for character in text[open.upperBound...] {
+            switch character {
+            case "(":
+                depth += 1
+                current.append(character)
+            case ")":
+                if depth == 0 {
+                    parts.append(current)
+                    return Array(parts.dropFirst())
+                }
+                depth -= 1
+                current.append(character)
+            case "," where depth == 0:
+                parts.append(current)
+                current = ""
+            default:
+                current.append(character)
+            }
+        }
+        return []
+    }
+
+    /// Which signers (by position) have approved every input of a script-path
+    /// spend, judged by the Taproot script signatures present, never by any
+    /// label in the PSBT. Inputs must be known vault coins so the coordinate
+    /// each key was derived at is certain.
+    public func signers(of psbt: PSBT, knownUTXOs: [WalletUTXO]) throws -> Set<Int> {
+        guard case let .multiA(_, _, cosigners, _) = policy else { return [] }
+        var approved: Set<Int>?
+        for (inputIndex, input) in psbt.inputs.enumerated() {
+            guard let txid = input.previousTxid, let vout = input.outputIndex,
+                  let known = knownUTXOs.first(where: { $0.outpoint == Transaction.Outpoint(txid: txid, vout: vout) })
+            else {
+                throw VaultError.invalidSpend("input \(inputIndex + 1) is not an available vault coin")
+            }
+            let signed = Set(input.tapScriptSignatures.keys.map(\.publicKey))
+            var here: Set<Int> = []
+            for (position, cosigner) in cosigners.enumerated() {
+                let key = try descriptor.publicKey(of: cosigner, index: known.index, choice: known.chain.rawValue)
+                if signed.contains(Data(key.dropFirst())) { here.insert(position) }
+            }
+            approved = approved.map { $0.intersection(here) } ?? here
+        }
+        return approved ?? []
+    }
+
     // MARK: - Watching
 
     static func hdNetwork(for network: BitcoinNetwork) -> HDKey.Network {
