@@ -28,6 +28,13 @@ actor LoopbackNode {
     /// headers rather than about the chain itself. This is the shape the
     /// cfcheckpt majority rule exists to defend against.
     let lieAboutFilterCommitments: Bool
+    /// Reports this height in its version message instead of the chain's
+    /// real height — a peer lying about where its tip is.
+    let claimedStartHeight: Int32?
+    /// Hangs up when asked about a block it does not have, which is what
+    /// Bitcoin Core does with a `getcfcheckpt` for an unknown stop hash. The
+    /// shape of a peer that is behind the tip we are asking about.
+    let disconnectOnUnknownStopHash: Bool
     /// Answers every getcfcheckpt with this stop hash instead of the one the
     /// client asked about — a peer replying about a different chain (#129).
     let cfcheckptStopHashOverride: Data?
@@ -67,8 +74,11 @@ actor LoopbackNode {
          corruptFilterAtHeight: Int? = nil,
          lieAboutFilterCommitments: Bool = false, lieSalt: UInt8 = 0xFF,
          cfcheckptStopHashOverride: Data? = nil,
+         disconnectOnUnknownStopHash: Bool = false, claimedStartHeight: Int32? = nil,
          autoRequestDelay: Duration? = nil, transactions: [Transaction] = [],
          startSilent: Bool = false, versionDelay: Duration = .zero) {
+        self.disconnectOnUnknownStopHash = disconnectOnUnknownStopHash
+        self.claimedStartHeight = claimedStartHeight
         self.params = params
         self.services = services
         self.chain = chain
@@ -276,7 +286,7 @@ actor LoopbackNode {
                        sender: .unspecified,
                        nonce: 0x0102_0304_0506_0708,
                        userAgent: "/loopback-node:0.1/",
-                       startHeight: Int32(max(0, chain.count - 1)),
+                       startHeight: claimedStartHeight ?? Int32(max(0, chain.count - 1)),
                        relay: false)
     }
 
@@ -320,7 +330,10 @@ actor LoopbackNode {
             try await send(.headers(batch))
 
         case let .getcfcheckpt(request):
-            guard let stop = height(ofHash: request.stopHash) else { return }
+            guard let stop = height(ofHash: request.stopHash) else {
+                if disconnectOnUnknownStopHash { connection?.cancel() }
+                return
+            }
             // Core's ProcessGetCFCheckPt: headers at heights 1000, 2000, …
             // ascending, capped at the stop height — the stop block itself is
             // included only when it is a checkpoint multiple.

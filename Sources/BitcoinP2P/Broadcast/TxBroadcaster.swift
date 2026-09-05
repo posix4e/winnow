@@ -555,6 +555,15 @@ public actor TxBroadcaster {
         var announced = 0
         for peer in peers {
             let key = peer.endpoint.description
+            // BIP133: a peer whose fee filter is above this transaction's
+            // rate has said it will drop the bytes unread. Announcing anyway
+            // spends an attempt on a peer that cannot help, and the
+            // deprioritization it earns hides the real reason. Skipped, not
+            // marked, so a filter that later drops lets it back in.
+            if let rate = pending[txid]?.feeRateSatPerVByte,
+               let floor = await peer.feeFilter, Double(floor) > rate * 1_000 {
+                continue
+            }
             if let relay = pending[txid]?.peers[key] {
                 if relay.state == .deprioritized { continue }
                 if relay.state != .requested, relay.state != .served,

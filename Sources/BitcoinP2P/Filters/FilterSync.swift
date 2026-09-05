@@ -224,9 +224,21 @@ public actor FilterSync {
         var checkpoints: [(peer: PeerConnection, message: CFCheckptMessage)] = []
         checkpoints.reserveCapacity(checkpointPeers.count)
         for peer in checkpointPeers {
-            let response = try await peer.request(
-                .getcfcheckpt(GetCFCheckptRequest(stopHash: tipHash)),
-                expecting: ["cfcheckpt"])
+            let response: PeerMessage
+            do {
+                response = try await peer.request(
+                    .getcfcheckpt(GetCFCheckptRequest(stopHash: tipHash)),
+                    expecting: ["cfcheckpt"])
+            } catch let error as PeerError where error.isTransport {
+                // Slow, dropped, or — the case that found this — a peer that
+                // hangs up because we asked about a tip it has never seen.
+                // Cool it off and ask the others, the same distinction the
+                // header sync draws (#82). Throwing here stalled a mainnet
+                // sync on the same batch every pass while two honest peers
+                // sat idle beside the broken one.
+                await pool.transportFailure(peer, reason: error.localizedDescription)
+                continue
+            }
             guard case let .cfcheckpt(message) = response else {
                 throw FilterSyncError.badPeerResponse("expected cfcheckpt")
             }
