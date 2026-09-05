@@ -3,49 +3,47 @@ import SwiftUI
 import UIKit
 import WalletCore
 
-/// The created vaults (k-of-n script-path and n-of-n MuSig2), with balances
-/// tracked by the combined filter scan.
-struct VaultsView: View {
+/// The raw vault list (k-of-n script-path and n-of-n MuSig2), as a section
+/// of the People tab in Advanced mode. Beginners see the same vaults as
+/// shared savings; this is the expert view of the same records.
+struct VaultsSection: View {
     @Environment(AppModel.self) private var model
     @State private var showCreate = false
 
     var body: some View {
-        NavigationStack {
-            List {
-                if model.vaults.isEmpty {
-                    Text("No vaults yet. A vault is a shared-custody Taproot descriptor watched by the same filter stream as the wallet.")
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
-                }
-                ForEach(model.vaults) { record in
-                    NavigationLink(destination: VaultDetailView(recordID: record.id)) {
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(record.name)
-                            Text(policySummary(record))
-                                .font(.caption)
-                                .foregroundStyle(.secondary)
-                        }
-                        Spacer()
-                        Text(satsText(record.balance))
-                            .font(.subheadline)
+        Section {
+            if model.vaults.isEmpty {
+                Text("No vaults yet. A vault is a shared-custody Taproot descriptor watched by the same filter stream as the wallet.")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+            }
+            ForEach(model.vaults) { record in
+                NavigationLink(destination: VaultDetailView(recordID: record.id)) {
+                    VStack(alignment: .leading, spacing: 2) {
+                        Text(record.name)
+                        Text(policySummary(record))
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
                     }
-                }
-                .onDelete { offsets in
-                    for index in offsets {
-                        Task { await model.removeVault(id: model.vaults[index].id) }
-                    }
+                    Spacer()
+                    Text(satsText(record.balance))
+                        .font(.subheadline)
                 }
             }
-            .navigationTitle("Vaults")
-            .toolbar {
-                ToolbarItem(placement: .primaryAction) {
-                    Button("New vault") { showCreate = true }
-                        .accessibilityIdentifier("newVaultButton")
+            .onDelete { offsets in
+                for index in offsets {
+                    Task { await model.removeVault(id: model.vaults[index].id) }
                 }
             }
-            .sheet(isPresented: $showCreate) {
-                VaultCreateView()
-            }
+            Button("New vault") { showCreate = true }
+                .accessibilityIdentifier("newVaultButton")
+        } header: {
+            Text("Vaults")
+        } footer: {
+            Text("The descriptors behind shared savings, and MuSig2 vaults, with their PSBT tools.")
+        }
+        .sheet(isPresented: $showCreate) {
+            VaultCreateView()
         }
     }
 

@@ -147,12 +147,7 @@ struct VaultSpendView: View {
         error = nil
         notice = nil
         created = nil
-        guard let record, let vault = try? Vault(record.descriptor, network: model.network) else { return }
-        let trimmed = destination.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !trimmed.lowercased().hasPrefix("sp1"), !trimmed.lowercased().hasPrefix("tsp1") else {
-            error = "Silent payments from vaults are not supported — the vault has no single input key to derive the output from."
-            return
-        }
+        guard let record else { return }
         do {
             guard let amount = Int64(amountText), amount > 0,
                   let feeRate = Double(feeRateText), feeRate > 0
@@ -160,20 +155,17 @@ struct VaultSpendView: View {
                 error = "Enter an amount in sats and a feerate in sat/vB."
                 return
             }
-            let payment = try Payment(amount: amount, address: trimmed, network: model.network)
-            let psbt = try vault.createSpend(utxos: record.utxos, payments: [payment],
-                                             changeIndex: record.nextChangeIndex,
-                                             feeRateSatPerVByte: feeRate,
-                                             chainTip: model.status.tipHeight)
+            let payment = try model.vaultPayment(amount: amount, address: destination)
+            let (psbt, lagsTip) = try model.createVaultSpend(record: record, payment: payment,
+                                                             feeRateSatPerVByte: feeRate)
             created = psbt.base64
             // #151, same as the ordinary send path: the PSBT's locktime came
             // from `status.tipHeight`, which lags while headers catch up.
-            notice = model.syncPhase.headerTipMayLagNetwork
+            notice = lagsTip
                 ? "Created while header sync is catching up: the spend carries a "
                     + "locktime behind the network tip, which on-chain reveals it was "
                     + "built mid-sync. Recreate it after sync to avoid that."
                 : nil
-            model.journalPSBT(stage: "vault-spend-created", psbt: psbt)
         } catch {
             self.error = error.localizedDescription
         }

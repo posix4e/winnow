@@ -220,6 +220,9 @@ final class AppModel {
     /// Set when `people.json` could not be read. Shown on the People tab;
     /// the store refuses mutations meanwhile. Never blocks boot.
     private(set) var peopleStorageNotice: String?
+    /// The wallet's own watched scripts, cached so a shared-savings review can
+    /// label an output "pays you" without an actor hop.
+    private(set) var ownWatchScripts: Set<Data> = []
     private(set) var wallet: Wallet?
     private(set) var stack: SyncStack?
     /// Copies of the wallet's id/descriptor for synchronous access (the Wallet
@@ -790,6 +793,7 @@ final class AppModel {
             snapshot.feeBumpableTxids = await wallet.feeBumpableTxids
             snapshot.observedFeeRates = await wallet.observedFeeRates
             snapshot.nextScanHeight = await wallet.nextScanHeight
+            ownWatchScripts = Set((try? await wallet.watchScripts()) ?? [])
         }
         if let stack {
             snapshot.peerCount = await stack.pool.connectedPeers().count
@@ -1264,6 +1268,19 @@ final class AppModel {
         /// review screen so the disclosure is informed; defaulted so direct
         /// constructions in tests describe an ordinary synced send.
         var locktimeLagsTip: Bool = false
+        /// The person this pays, for the review label only. `destination`
+        /// stays the address: the authorization boundary is unchanged.
+        var recipient: Recipient?
+
+        struct Recipient: Equatable {
+            var personID: String
+            var name: String
+            /// The receive-chain index the address was derived at; nil for a
+            /// person who gave one fixed address.
+            var paymentIndex: UInt32?
+
+            var derivesFreshAddresses: Bool { paymentIndex != nil }
+        }
 
         /// The total leaving the wallet as payment, excluding change and fee.
         var amountSent: Int64 {
@@ -1347,6 +1364,19 @@ final class AppModel {
                            locktimeLagsTip: syncPhase.headerTipMayLagNetwork)
     }
 
+    /// A payment to a person in the address book: the next fresh address is
+    /// peeked here and the counter moves only when the send commits.
+    func previewSend(to person: PersonRecord, amount: Int64, priority: FeePolicy.Priority,
+                     override: Double?) async throws -> SendPreview {
+        let (address, index) = try nextPaymentAddress(for: person)
+        var preview = try await previewSend(destination: address, amount: amount,
+                                            priority: priority, override: override)
+        preview.recipient = SendPreview.Recipient(
+            personID: person.id, name: person.name,
+            paymentIndex: person.derivesFreshAddresses ? index : nil)
+        return preview
+    }
+
     /// Builds, signs and broadcasts the previewed send. Returns the txid
     /// (internal byte order).
     /// Operations that move money and must never interleave.
@@ -1391,6 +1421,16 @@ final class AppModel {
         let txid = try await broadcast(prepared.built.transaction,
                                        feeRateSatPerVByte: preview.feeRateSatPerVByte)
         try await wallet.commit(prepared)
+        if let recipient = preview.recipient {
+            if let index = recipient.paymentIndex {
+                await advancePersonPaymentIndex(id: recipient.personID, past: index)
+            }
+            e2e?.journal("person.paid", fields: [
+                "name": recipient.name,
+                "paymentIndex": recipient.paymentIndex.map(String.init) ?? "fixed",
+                "txid": txid.displayHex,
+            ])
+        }
         await refresh()
         e2e?.journal("transaction.sent", fields: [
             "txid": txid.displayHex,
@@ -1570,7 +1610,7 @@ final class AppModel {
         }
     }
 
-    private func ownSignerIdentity() throws -> Data {
+    func ownSignerIdentity() throws -> Data {
         try PersonKeys.signerIdentity(try ownKeyExpression(multipathSuffix: true), network: network)
     }
 
@@ -1587,8 +1627,23 @@ final class AppModel {
     func ownPersonCard(name: String) throws -> PersonCard {
         let signer = try ownKeyExpression(multipathSuffix: true)
         let payTo = try PersonPayTo.descriptor("tr(\(signer))", network: network)
-        e2e?.journal("card.shared", fields: ["hasSignerKey": "true"])
         return PersonCard(network: network, name: name, payTo: payTo.text, signerKey: signer)
+    }
+
+    func journalCardShared() {
+        e2e?.journal("card.shared", fields: ["hasSignerKey": "true"])
+    }
+
+    func journalApproval(_ name: String, vaultID: String, fields: [String: String]) {
+        e2e?.journal(name, fields: fields.merging(["vaultID": vaultID]) { current, _ in current })
+    }
+
+    /// Moves a person's payment counter past `index` once an address at that
+    /// index has left this phone: a committed send, or a request shared with
+    /// co-owners. Never for a preview that was cancelled.
+    func advancePersonPaymentIndex(id: String, past index: UInt32) async {
+        try? await peopleStore.advancePaymentIndex(id: id, past: index)
+        people = await peopleStore.all
     }
 
     @discardableResult
@@ -1665,6 +1720,97 @@ final class AppModel {
 
     func approvalRequest(for record: VaultRecord, psbt: PSBT) -> ApprovalRequest {
         ApprovalRequest(network: network, vault: record.id, name: record.name, psbt: psbt)
+    }
+
+    // MARK: - Vault spends (shared by the expert and the savings screens)
+
+    enum VaultSpendError: LocalizedError {
+        case unknownVault
+        case silentPaymentDestination
+        case notAvailableCoins
+
+        var errorDescription: String? {
+            switch self {
+            case .unknownVault: "This vault is no longer on this phone."
+            case .silentPaymentDestination:
+                "Silent payments from vaults are not supported — the vault has no single input key to derive the output from."
+            case .notAvailableCoins: "An input of this PSBT is not a known UTXO of the vault."
+            }
+        }
+    }
+
+    /// The descriptor coordinates a spend may legitimately pay back into:
+    /// every coin's own, plus the next receive and change slots. Rebuilt from
+    /// trusted local state every time; PSBT metadata never decides ownership.
+    func vaultAuthorizationCoordinates(for record: VaultRecord) -> [Vault.OutputCoordinate] {
+        var coordinates = record.utxos.map { Vault.OutputCoordinate(choice: $0.chain.rawValue, index: $0.index) }
+        coordinates.append(Vault.OutputCoordinate(choice: AddressChain.receive.rawValue, index: record.nextReceiveIndex))
+        coordinates.append(Vault.OutputCoordinate(choice: AddressChain.change.rawValue, index: record.nextChangeIndex))
+        return coordinates
+    }
+
+    func vault(for record: VaultRecord) throws -> Vault {
+        try Vault(record.descriptor, network: network)
+    }
+
+    /// Proves a proposal is an exact, safe spend of the vault's known coins.
+    func reviewVaultSpend(_ psbt: PSBT, record: VaultRecord) throws -> Vault.SpendReview {
+        try vault(for: record).reviewSpend(psbt, knownUTXOs: record.utxos,
+                                           ownedOutputCoordinates: vaultAuthorizationCoordinates(for: record))
+    }
+
+    /// Builds the spend PSBT (creator role). `lagsTip` says the locktime came
+    /// from a header tip still catching up (#151), as the ordinary send path
+    /// discloses.
+    func createVaultSpend(record: VaultRecord, payment: Payment,
+                          feeRateSatPerVByte: Double) throws -> (psbt: PSBT, lagsTip: Bool) {
+        let vault = try vault(for: record)
+        let psbt = try vault.createSpend(utxos: record.utxos, payments: [payment],
+                                         changeIndex: record.nextChangeIndex,
+                                         feeRateSatPerVByte: feeRateSatPerVByte,
+                                         chainTip: status.tipHeight)
+        journalPSBT(stage: "vault-spend-created", psbt: psbt)
+        return (psbt, syncPhase.headerTipMayLagNetwork)
+    }
+
+    /// Resolves a destination for a vault spend: silent-payment codes are
+    /// refused with their own message.
+    func vaultPayment(amount: Int64, address: String) throws -> Payment {
+        let trimmed = address.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.lowercased().hasPrefix("sp1"), !trimmed.lowercased().hasPrefix("tsp1") else {
+            throw VaultSpendError.silentPaymentDestination
+        }
+        return try Payment(amount: amount, address: trimmed, network: network)
+    }
+
+    /// Adds this device's script-path signature to every input, after the
+    /// review that decides what the signature authorizes.
+    func partialSignVaultSpend(_ psbt: PSBT, record: VaultRecord, reason: String) async throws -> PSBT {
+        let vault = try vault(for: record)
+        let coordinates = vaultAuthorizationCoordinates(for: record)
+        let signed = try await withMasterKey(reason: reason) { master in
+            var candidate = psbt
+            try vault.partialSign(&candidate, master: master, knownUTXOs: record.utxos,
+                                  ownedOutputCoordinates: coordinates)
+            return candidate
+        }
+        journalPSBT(stage: "multi-a-partial-signed", psbt: signed)
+        return signed
+    }
+
+    /// Finalizes a fully-signed spend, broadcasts it, and commits it to the
+    /// vault's coins (inputs out, change in pending — the `Wallet.send` rule).
+    func finalizeAndBroadcastVaultSpend(_ psbt: PSBT, record: VaultRecord) async throws -> Data {
+        let vault = try vault(for: record)
+        var working = psbt
+        let transaction = try vault.finalizeSpend(&working, knownUTXOs: record.utxos,
+                                                  ownedOutputCoordinates: vaultAuthorizationCoordinates(for: record))
+        let txid = try await broadcast(transaction)
+        let changeIndex = record.nextChangeIndex
+        let changeScript = try? vault.scriptPubKey(index: changeIndex, choice: AddressChain.change.rawValue)
+        _ = await recordVaultSpend(id: record.id, transaction: transaction,
+                                   changeScriptPubKey: changeScript, changeIndex: changeIndex)
+        return txid
     }
 
     func advanceVaultReceiveIndex(id: String) async {

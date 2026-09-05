@@ -12,6 +12,10 @@ struct SendReviewInputs: Equatable {
     let priority: FeePolicy.Priority
     let overrideText: String
     let network: BitcoinNetwork
+    /// A payment to a person: which one, and the index its fresh address was
+    /// derived at, so a review made for an earlier address is never reused.
+    var personID: String?
+    var paymentIndex: UInt32?
 
     var trimmedDestination: String {
         destination.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -28,6 +32,12 @@ struct SendReviewInputs: Equatable {
 struct SendView: View {
     @Environment(AppModel.self) private var model
 
+    /// Preselected when opened from a person's screen.
+    init(recipient: PersonRecord? = nil) {
+        _selectedPersonID = State(initialValue: recipient?.id)
+    }
+
+    @State private var selectedPersonID: String?
     @State private var destination = ""
     @State private var amountText = ""
     @State private var priority: FeePolicy.Priority = .medium
@@ -49,25 +59,70 @@ struct SendView: View {
         Double(overrideText.trimmingCharacters(in: .whitespaces))
     }
 
+    private var selectedPerson: PersonRecord? {
+        guard let selectedPersonID else { return nil }
+        return model.people.first { $0.id == selectedPersonID && $0.payTo != nil }
+    }
+
+    private var payablePeople: [PersonRecord] {
+        model.people.filter { $0.payTo != nil }
+    }
+
     private var reviewInputs: SendReviewInputs {
-        SendReviewInputs(destination: destination, amountText: amountText,
+        SendReviewInputs(destination: selectedPerson == nil ? destination : "",
+                         amountText: amountText,
                          priority: priority, overrideText: overrideText,
-                         network: model.network)
+                         network: model.network,
+                         personID: selectedPerson?.id,
+                         paymentIndex: selectedPerson?.nextPaymentIndex)
+    }
+
+    private var canReview: Bool {
+        guard Int64(amountText) != nil else { return false }
+        if selectedPerson != nil { return true }
+        return !destination.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
     var body: some View {
         NavigationStack {
             Form {
                 Section("Destination") {
-                    TextField("Bitcoin address", text: $destination)
-                        .font(.system(.footnote, design: .monospaced))
-                        .autocorrectionDisabled()
-                        .textInputAutocapitalization(.never)
-                        .accessibilityIdentifier("destinationField")
-                    Button("Paste") {
-                        destination = UIPasteboard.general.string ?? ""
+                    if let person = selectedPerson {
+                        HStack {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text(person.name)
+                                    .accessibilityIdentifier("selectedPersonName")
+                                Text(person.derivesFreshAddresses ? "Fresh address for this payment" : "Their single address")
+                                    .font(.caption)
+                                    .foregroundStyle(.secondary)
+                            }
+                            Spacer()
+                            Button("Change") { selectedPersonID = nil }
+                                .accessibilityIdentifier("changeRecipientButton")
+                        }
+                    } else {
+                        TextField("Bitcoin address", text: $destination)
+                            .font(.system(.footnote, design: .monospaced))
+                            .autocorrectionDisabled()
+                            .textInputAutocapitalization(.never)
+                            .accessibilityIdentifier("destinationField")
+                        Button("Paste") {
+                            destination = UIPasteboard.general.string ?? ""
+                        }
+                        .accessibilityIdentifier("pasteDestinationButton")
+                        if !payablePeople.isEmpty {
+                            Menu("Choose a person") {
+                                ForEach(payablePeople) { person in
+                                    Button(person.name) {
+                                        selectedPersonID = person.id
+                                        destination = ""
+                                    }
+                                    .accessibilityIdentifier("choosePerson-\(person.name)")
+                                }
+                            }
+                            .accessibilityIdentifier("choosePersonMenu")
+                        }
                     }
-                    .accessibilityIdentifier("pasteDestinationButton")
                     TextField("Amount (sats)", text: $amountText)
                         .keyboardType(.numberPad)
                         .focused($amountFocused)
@@ -110,14 +165,32 @@ struct SendView: View {
                     Section {
                         Button("Review payment") { review() }
                             .accessibilityIdentifier("reviewButton")
-                            .disabled(destination.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-                                      || Int64(amountText) == nil)
+                            .disabled(!canReview)
                     }
                 }
 
                 if let preview, sentTxid == nil {
                     Section("Review") {
-                        LabeledContent("Pays", value: abbreviated(preview.destination))
+                        if let recipient = preview.recipient {
+                            VStack(alignment: .leading, spacing: 3) {
+                                LabeledContent("Pays", value: recipient.name)
+                                    .accessibilityIdentifier("reviewRecipient")
+                                Text(preview.destination)
+                                    .font(.system(.caption2, design: .monospaced))
+                                    .foregroundStyle(.secondary)
+                                    .textSelection(.enabled)
+                                    .accessibilityIdentifier("reviewDestination")
+                            }
+                            if !recipient.derivesFreshAddresses {
+                                Label("\(recipient.name) gave you a single address, so this payment reuses it. Anyone watching the chain can tie your payments to \(recipient.name) together. Ask \(recipient.name) for a Winnow contact card to get a fresh address each time.",
+                                      systemImage: "eye")
+                                    .font(.footnote)
+                                    .foregroundStyle(.orange)
+                                    .accessibilityIdentifier("addressReuseWarning")
+                            }
+                        } else {
+                            LabeledContent("Pays", value: abbreviated(preview.destination))
+                        }
                         LabeledContent("Amount",
                                        value: satsText(preview.payments.map(\.amount).reduce(0, +)))
                         LabeledContent("Fee", value: satsText(preview.fee))
@@ -245,12 +318,18 @@ struct SendView: View {
             error = "Enter an amount in sats."
             return
         }
+        let person = selectedPerson
         Task {
             do {
-                let candidate = try await model.previewSend(
-                    destination: requested.destination, amount: amount,
-                    priority: requested.priority,
-                    override: Double(requested.overrideText.trimmingCharacters(in: .whitespaces)))
+                let override = Double(requested.overrideText.trimmingCharacters(in: .whitespaces))
+                let candidate = if let person {
+                    try await model.previewSend(to: person, amount: amount,
+                                                priority: requested.priority, override: override)
+                } else {
+                    try await model.previewSend(
+                        destination: requested.destination, amount: amount,
+                        priority: requested.priority, override: override)
+                }
                 guard requested == reviewInputs else { return }
                 preview = candidate
             } catch {
@@ -283,6 +362,7 @@ struct SendView: View {
 
     private func reset() {
         destination = ""
+        selectedPersonID = nil
         amountText = ""
         preview = nil
         sentTxid = nil
