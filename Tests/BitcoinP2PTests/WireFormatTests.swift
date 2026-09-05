@@ -25,6 +25,32 @@ struct WireFormatTests {
         try reader.requireEnd()
     }
 
+    /// The same number spelled in a wider form than it needs is malformed, as
+    /// in Bitcoin Core. The first case is the fuzz reproducer from run
+    /// 33357405412: `fd 00 00` decoded as zero, re-encoded as `00`, and the
+    /// filter round trip changed bytes.
+    @Test("non-canonical compactSize is rejected", arguments: [
+        Data([0xFD, 0x00, 0x00]),
+        Data([0xFD, 0xFC, 0x00]),
+        Data([0xFE, 0xFF, 0xFF, 0x00, 0x00]),
+        Data([0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0x00, 0x00, 0x00, 0x00]),
+    ])
+    func nonCanonicalVarIntRejected(encoded: Data) {
+        var reader = ByteReader(encoded)
+        #expect(throws: WireError.self) { try reader.readVarInt() }
+    }
+
+    @Test("the smallest value of each compactSize width is accepted", arguments: [
+        (Data([0xFD, 0xFD, 0x00]), UInt64(0xFD)),
+        (Data([0xFE, 0x00, 0x00, 0x01, 0x00]), UInt64(0x1_0000)),
+        (Data([0xFF, 0x00, 0x00, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00]), UInt64(0x1_0000_0000)),
+    ])
+    func canonicalWidthBoundaryAccepted(encoded: Data, value: UInt64) throws {
+        var reader = ByteReader(encoded)
+        #expect(try reader.readVarInt() == value)
+        try reader.requireEnd()
+    }
+
     @Test("varstring round-trips")
     func varString() throws {
         var data = Data()
