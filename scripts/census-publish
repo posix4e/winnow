@@ -1,22 +1,23 @@
 #!/usr/bin/env python3
-"""Files a WinnowCensus summary under docs/census/<date>.json and rebuilds
-docs/census/index.json, the list the site's /peer-census page reads.
+"""Files a WinnowCensus summary as <dir>/<date>.json and rebuilds
+<dir>/index.json, the list the site's /peer-census page reads.
 
-    scripts/census-publish summary.json [--date YYYY-MM-DD]
+    scripts/census-publish summary.json --dir data/census [--date YYYY-MM-DD]
 
-Idempotent for a date: re-running replaces that day's file. The index keeps
-one line per day with the handful of numbers the trend chart needs, so the
-page never has to fetch every day's file to draw it.
+The directory is a checkout of the data-only `census-data` branch: main
+never carries a data commit, and the page reads the branch over GitHub's
+raw endpoint. Idempotent for a date: re-running replaces that day's file.
+The index keeps one line per day with the handful of numbers the trend
+chart needs, so the page never has to fetch every day's file to draw it.
 """
 import argparse, json, os, sys
 
-ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-CENSUS = os.path.join(ROOT, "docs", "census")
-
 parser = argparse.ArgumentParser()
 parser.add_argument("summary")
+parser.add_argument("--dir", required=True, help="the census/ directory of a census-data checkout")
 parser.add_argument("--date", help="YYYY-MM-DD; default is the summary's generatedAt")
 args = parser.parse_args()
+CENSUS = os.path.abspath(args.dir)
 
 summary = json.load(open(args.summary))
 date = args.date or summary["generatedAt"][:10]

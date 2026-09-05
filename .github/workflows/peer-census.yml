@@ -22,7 +22,7 @@ on:
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: write # the census-data branch only; main is never touched
 
 concurrency:
   group: peer-census
@@ -87,15 +87,28 @@ jobs:
           .build/release/WinnowCensus --input snapshot.json --parallel 128 --timeout 8 --hidden-timeout 30 \
             --tip "$TIP" $PROXIES --out census.jsonl --summary-json summary.json | tee census-summary.txt
 
-      - name: Publish the aggregate
+      - name: Publish the aggregate to the census-data branch
+        # A data-only orphan branch: main never carries a census commit, and
+        # the page reads the branch over raw.githubusercontent.com. The first
+        # run bootstraps the branch if it does not exist.
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
-          scripts/census-publish summary.json
+          REMOTE="https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          if git clone -q --depth 1 --branch census-data "$REMOTE" data 2>/dev/null; then
+            echo "census-data: existing branch"
+          else
+            mkdir data && git -C data init -q -b census-data && git -C data remote add origin "$REMOTE"
+            echo "census-data: bootstrapping"
+          fi
+          scripts/census-publish summary.json --dir data/census
+          cd data
           git config user.name "winnow-census"
           git config user.email "census@users.noreply.github.com"
-          git add docs/census
+          git add census
           git diff --cached --quiet && exit 0
-          git commit -m "census: $(date -u +%Y-%m-%d)"
-          git push origin HEAD:main
+          git commit -q -m "census: $(date -u +%Y-%m-%d)"
+          git push -q origin census-data
 
       - name: Keep the per-node detail for two weeks
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4

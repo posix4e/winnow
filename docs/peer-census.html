@@ -43,17 +43,27 @@
   <h2>How to read it</h2>
   <p><strong>Usable</strong> means the handshake completed and the node advertises <code>NODE_COMPACT_FILTERS</code>; Winnow refuses anything else at the door. <strong>At the tip</strong> means within a hundred blocks of the median reported height, the same tolerance the wallet's pool applies before unseating a peer. <strong>Stuck at the split</strong> means reporting a height within twenty blocks of 961,632, where the BIP-110 minority chain left the main chain on 2026-08-08 and stopped. <strong>Claiming a taller chain</strong> means reporting a height more than ten blocks above the tip: a node on some other chain, or lying.</p>
   <p><strong>Endpoints, not nodes.</strong> One node can listen on clearnet, Tor and I2P at once, and Bitcoin Core deliberately makes linking a node's addresses across networks hard, so the census cannot tell how many endpoints are doors into the same node. Distinct usable nodes lie somewhere between the clearnet count and the total.</p>
-  <p>The census judges what a node reports, never which software it runs. The family column is there because the answer turned out to depend on it. Tor and I2P nodes are dialled through a local SOCKS5 proxy when the run has one; a day without a network row did not dial that network. Per-node detail is kept as a two-week workflow artifact; this page carries aggregates only. Source: <code>WinnowCensus</code> in the repository, run by the <code>Peer census</code> workflow.</p>
+  <p>The census judges what a node reports, never which software it runs. The family column is there because the answer turned out to depend on it. Tor and I2P nodes are dialled through a local SOCKS5 proxy when the run has one; a day without a network row did not dial that network. Per-node detail is kept as a two-week workflow artifact; this page carries aggregates only, read from the repository's <code>census-data</code> branch so the wallet's own history never carries a daily commit. Source: <code>WinnowCensus</code> in the repository, run by the <code>Peer census</code> workflow.</p>
 </main>
 <script>
 (async function () {
   const fmt = n => n.toLocaleString('en-US');
   const pct = (n, d) => d ? (100 * n / d).toFixed(1) + '%' : '–';
-  const index = await (await fetch('census/index.json', { cache: 'no-store' })).json();
+  // The data lives on the census-data branch, not on the site: main never
+  // carries a daily commit. A local census/ folder wins for previews.
+  const sources = ['census/', 'https://raw.githubusercontent.com/posix4e/winnow/census-data/census/'];
+  let base = null, index = null;
+  for (const candidate of sources) {
+    try {
+      const response = await fetch(candidate + 'index.json', { cache: 'no-store' });
+      if (response.ok) { index = await response.json(); base = candidate; break; }
+    } catch (_) {}
+  }
+  if (!index) { document.getElementById('tiles').textContent = 'The census data could not be loaded.'; return; }
   const days = index.days;
   if (!days.length) return;
   const last = days[days.length - 1];
-  const latest = await (await fetch('census/' + last.date + '.json', { cache: 'no-store' })).json();
+  const latest = await (await fetch(base + last.date + '.json', { cache: 'no-store' })).json();
 
   const tiles = [
     [fmt(latest.dialled), 'addresses dialled on ' + last.date],
