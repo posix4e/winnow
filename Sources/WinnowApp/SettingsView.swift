@@ -79,9 +79,10 @@ struct SettingsView: View {
                     ))
                     .accessibilityIdentifier("advancedModeToggle")
                 } footer: {
-                    Text("Shows the controls most people never need: the test network, peers, chain verification and the block explorer. Off, the wallet just sends and receives.")
+                    Text("Shows the controls most people never need: fee bumping, the test network, your own peers, chain verification, the block explorer, build details and the raw vault tools. Off, the wallet sends, receives and saves with people. Nothing is deleted: a peer or setting you already have stays visible until you remove it.")
                 }
 
+                if model.showsManualPeers {
                 Section {
                     ForEach(model.manualPeers, id: \.self) { peer in
                         Text(peer).font(.system(.footnote, design: .monospaced))
@@ -106,7 +107,9 @@ struct SettingsView: View {
                 } footer: {
                     Text("Manual peers are tried before DNS seeds. Seeds resolve over HTTPS (Cloudflare 1.1.1.1), then system DNS. The default port is 8333 (mainnet) / 38333 (signet). Peers must serve BIP157 compact filters.")
                 }
+                }
 
+                if model.showsExplorerSettings {
                 Section {
                     TextField("Explorer website URL (empty = mempool.space)", text: Binding(
                         get: { model.esploraURLString },
@@ -125,7 +128,9 @@ struct SettingsView: View {
                 } footer: {
                     Text("This is a link destination only. Winnow never contacts it for balances, history, fees, synchronization, or broadcasting. Tapping an address or transaction shows a privacy warning before opening the selected website. You may enter a custom Esplora-compatible website.")
                 }
+                }
 
+                if model.showsChainVerification {
                 Section {
                     Toggle("Verify the chain from genesis", isOn: Binding(
                         get: { model.verifyFromGenesis },
@@ -142,7 +147,9 @@ struct SettingsView: View {
                 } footer: {
                     Text("Winnow normally starts from a block header built into the app, then verifies every block after it. That header was produced by syncing this same code from block 0, and anyone can reproduce it — but on your phone it begins as a value you are taking from us rather than one you computed. Turn this on to skip it and re-derive the entire chain from block 0 instead. It downloads and proof-of-work-checks every header ever mined, which takes several minutes and discards the headers already stored.")
                 }
+                }
 
+                if model.advancedMode {
                 Section("Connected peers") {
                     ForEach(connectedPeers) { peer in
                         VStack(alignment: .leading, spacing: 2) {
@@ -161,12 +168,15 @@ struct SettingsView: View {
                     Button("Refresh") { Task { await refreshPeers() } }
                         .accessibilityIdentifier("refreshPeersButton")
                 }
-
+                }
 
                 Section("About") {
-                    LabeledContent("WalletCore", value: WalletCore.version)
-                    LabeledContent("BitcoinP2P", value: BitcoinP2P.version)
-                    LabeledContent("Wallet ID", value: model.walletID ?? "—")
+                    LabeledContent("Version", value: AppModel.appVersionText)
+                    if model.advancedMode {
+                        LabeledContent("WalletCore", value: WalletCore.version)
+                        LabeledContent("BitcoinP2P", value: BitcoinP2P.version)
+                        LabeledContent("Wallet ID", value: model.walletID ?? "—")
+                    }
                     Button("Design papers") { showPapers = true }
                 }
 
@@ -179,12 +189,14 @@ struct SettingsView: View {
                     } header: {
                         Text("Danger zone")
                     } footer: {
-                        Text("Removes this \(model.network.rawValue) wallet and its vaults so you can create or import another. The key is deleted from this device — without your recovery phrase the money is gone. Block headers are kept, so the next wallet does not re-sync the chain.")
+                        Text("Removes this \(model.network.rawValue) wallet and its shared savings so you can create or import another. The key is deleted from this device — without your recovery phrase the money is gone. People you added stay on this phone, and block headers are kept, so the next wallet does not re-sync the chain.")
                     }
                 }
             }
             .navigationTitle("Settings")
-            .task { await refreshPeers() }
+            .task(id: model.advancedMode) {
+                if model.advancedMode { await refreshPeers() }
+            }
             .alert("Delete this wallet?", isPresented: $showDestroyWallet) {
                 Button("Delete wallet", role: .destructive) {
                     Task {

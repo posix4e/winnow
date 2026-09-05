@@ -41,34 +41,57 @@ struct HomeView: View {
                 }
 
                 Section("Sync") {
-                    if let statusText = model.syncStatusText {
-                        if case .peerDiscoveryFailed = model.syncPhase {
-                            Text(statusText)
+                    if model.advancedMode {
+                        if let statusText = model.syncStatusText {
+                            if case .peerDiscoveryFailed = model.syncPhase {
+                                Text(statusText)
+                                    .font(.footnote)
+                                    .foregroundStyle(.red)
+                                Button("Retry") {
+                                    Task { await model.retryPeerDiscovery() }
+                                }
+                                .accessibilityIdentifier("retryPeersButton")
+                            } else {
+                                ProgressView(statusText)
+                                    .accessibilityIdentifier("syncProgressText")
+                            }
+                        }
+                        // nextScanHeight is the NEXT block to scan, so a fully
+                        // scanned tip reads "tip+1 of tip" — clamp the display.
+                        // Absent when no scan has produced a position yet: the
+                        // status line above is already saying what is happening,
+                        // and a zeroed row said "block 0 of 0" (#99).
+                        if let filterScan = model.syncPhase.filterScanText(
+                            fallbackScanned: model.status.nextScanHeight,
+                            fallbackTip: model.status.tipHeight
+                        ) {
+                            LabeledContent("Filter scan", value: filterScan)
+                        }
+                        LabeledContent("Peers", value: "\(model.status.peerCount)")
+                        if model.status.syncing, model.syncStatusText == nil {
+                            ProgressView("Scanning filters…")
+                        }
+                    } else {
+                        // One line for a beginner. The detail above is the
+                        // same state, shown to those who asked for it.
+                        switch model.syncSummary {
+                        case .peersUnavailable:
+                            Text("Couldn't reach the Bitcoin network — check your connection.")
                                 .font(.footnote)
                                 .foregroundStyle(.red)
+                                .accessibilityIdentifier("syncSummaryText")
                             Button("Retry") {
                                 Task { await model.retryPeerDiscovery() }
                             }
                             .accessibilityIdentifier("retryPeersButton")
-                        } else {
-                            ProgressView(statusText)
-                                .accessibilityIdentifier("syncProgressText")
+                        case .syncing:
+                            ProgressView("Syncing…")
+                                .accessibilityIdentifier("syncSummaryText")
+                        case .synced:
+                            Label("Synced", systemImage: "checkmark.circle")
+                                .foregroundStyle(.secondary)
+                                .accessibilityIdentifier("syncSummaryText")
                         }
-                    }
-                    // nextScanHeight is the NEXT block to scan, so a fully
-                    // scanned tip reads "tip+1 of tip" — clamp the display.
-                    // Absent when no scan has produced a position yet: the
-                    // status line above is already saying what is happening,
-                    // and a zeroed row said "block 0 of 0" (#99).
-                    if let filterScan = model.syncPhase.filterScanText(
-                        fallbackScanned: model.status.nextScanHeight,
-                        fallbackTip: model.status.tipHeight
-                    ) {
-                        LabeledContent("Filter scan", value: filterScan)
-                    }
-                    LabeledContent("Peers", value: "\(model.status.peerCount)")
-                    if model.status.syncing, model.syncStatusText == nil {
-                        ProgressView("Scanning filters…")
                     }
                     if let error = model.status.lastSyncError {
                         Text(error)
@@ -97,7 +120,8 @@ struct HomeView: View {
                     }
                     ForEach(Array(model.status.history.enumerated()), id: \.offset) { _, entry in
                         HistoryRow(entry: entry,
-                                   canBump: model.status.feeBumpableTxids.contains(entry.txid))
+                                   canBump: model.advancedMode
+                                       && model.status.feeBumpableTxids.contains(entry.txid))
                     }
                 }
             }

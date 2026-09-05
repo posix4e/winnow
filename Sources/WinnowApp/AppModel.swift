@@ -147,6 +147,24 @@ final class AppModel {
             }
         }
 
+        /// The one line a beginner reads. Everything but "reachable" and
+        /// "done" is syncing: `.idle` is transient while foregrounded, and a
+        /// running scan is progress, not a state to name.
+        enum Summary: Equatable {
+            case syncing
+            case synced
+            case peersUnavailable
+        }
+
+        static func summary(phase: SyncPhase, syncing: Bool) -> Summary {
+            switch phase {
+            case .peerDiscoveryFailed: .peersUnavailable
+            case .synced where !syncing: .synced
+            case .idle, .connecting, .headers, .filters, .synced: .syncing
+            }
+        }
+
+
         /// Where the filter scan has actually reached, or `nil` when there is
         /// no honest number to give.
         ///
@@ -185,6 +203,8 @@ final class AppModel {
     }
 
     /// One-line rendering of `syncPhase`; nil when there is nothing to show.
+    var syncSummary: SyncPhase.Summary { SyncPhase.summary(phase: syncPhase, syncing: status.syncing) }
+
     var syncStatusText: String? {
         switch syncPhase {
         case .idle, .synced:
@@ -1506,6 +1526,21 @@ final class AppModel {
     var showsNetworkPicker: Bool {
         advancedMode || network != Self.defaultNetwork || e2e?.forcedNetwork != nil
     }
+
+    /// The same rule for every control that owns persisted state: shown in
+    /// Advanced mode, and shown while that state is non-default, so turning
+    /// the flag off hides a control but never strands what it set.
+    var showsManualPeers: Bool { advancedMode || !manualPeers.isEmpty }
+    var showsChainVerification: Bool { advancedMode || verifyFromGenesis }
+    var showsExplorerSettings: Bool { advancedMode || !esploraURLString.isEmpty }
+
+    /// "0.6.0 (123)", from the bundle the app shipped in.
+    static let appVersionText: String = {
+        let info = Bundle.main.infoDictionary ?? [:]
+        let version = info["CFBundleShortVersionString"] as? String ?? "?"
+        let build = info["CFBundleVersion"] as? String ?? "?"
+        return "\(version) (\(build))"
+    }()
 
     func setAdvancedMode(_ enabled: Bool) {
         guard enabled != advancedMode else { return }

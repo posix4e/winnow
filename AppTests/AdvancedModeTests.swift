@@ -13,21 +13,63 @@ final class AdvancedModeTests: XCTestCase {
 
     private var savedNetwork: String?
 
+    private var saved: [String: Any?] = [:]
+    private var trackedKeys: [String] {
+        [AppModel.DefaultsKey.network, AppModel.DefaultsKey.advancedMode,
+         AppModel.DefaultsKey.verifyFromGenesis,
+         AppModel.DefaultsKey.manualPeers(.mainnet), AppModel.DefaultsKey.esploraURL(.mainnet)]
+    }
+
     override func setUp() {
         super.setUp()
-        savedNetwork = UserDefaults.standard.string(forKey: AppModel.DefaultsKey.network)
-        UserDefaults.standard.removeObject(forKey: AppModel.DefaultsKey.advancedMode)
-        UserDefaults.standard.removeObject(forKey: AppModel.DefaultsKey.network)
+        for key in trackedKeys {
+            saved[key] = UserDefaults.standard.object(forKey: key)
+            UserDefaults.standard.removeObject(forKey: key)
+        }
     }
 
     override func tearDown() {
-        UserDefaults.standard.removeObject(forKey: AppModel.DefaultsKey.advancedMode)
-        if let savedNetwork {
-            UserDefaults.standard.set(savedNetwork, forKey: AppModel.DefaultsKey.network)
-        } else {
-            UserDefaults.standard.removeObject(forKey: AppModel.DefaultsKey.network)
+        for key in trackedKeys {
+            if let value = saved[key] ?? nil {
+                UserDefaults.standard.set(value, forKey: key)
+            } else {
+                UserDefaults.standard.removeObject(forKey: key)
+            }
         }
         super.tearDown()
+    }
+
+    func testBeginnerKeepsManualPeersWhileAnyAreSet() throws {
+        let model = AppModel(deviceAuthenticator: SilentAuthenticator())
+        XCTAssertFalse(model.showsManualPeers)
+        try model.addManualPeer("127.0.0.1:38401")
+        XCTAssertTrue(model.showsManualPeers, "a configured peer keeps its section")
+        model.setAdvancedMode(true)
+        model.setAdvancedMode(false)
+        XCTAssertEqual(model.manualPeers, ["127.0.0.1:38401"], "hide, never delete")
+        model.removeManualPeers(at: IndexSet(integer: 0))
+        XCTAssertFalse(model.showsManualPeers)
+        model.setAdvancedMode(true)
+        XCTAssertTrue(model.showsManualPeers)
+    }
+
+    func testBeginnerKeepsChainVerificationWhileOn() {
+        UserDefaults.standard.set(true, forKey: AppModel.DefaultsKey.verifyFromGenesis)
+        let model = AppModel(deviceAuthenticator: SilentAuthenticator())
+        XCTAssertFalse(model.advancedMode)
+        XCTAssertTrue(model.showsChainVerification)
+        XCTAssertFalse(AppModel(deviceAuthenticator: SilentAuthenticator()).showsExplorerSettings)
+    }
+
+    func testBeginnerKeepsExplorerSettingsWhileCustomised() {
+        let model = AppModel(deviceAuthenticator: SilentAuthenticator())
+        XCTAssertFalse(model.showsExplorerSettings)
+        model.setEsploraURL("https://example.org")
+        XCTAssertTrue(model.showsExplorerSettings)
+        model.setEsploraURL("")
+        XCTAssertFalse(model.showsExplorerSettings)
+        XCTAssertTrue(model.esploraTransactionURL(Data(repeating: 0xAB, count: 32)).absoluteString
+            .hasPrefix("https://mempool.space/tx/"), "the history link works with the section hidden")
     }
 
     func testAFreshInstallIsOnMainnetAndHidesTheNetworkPicker() {
