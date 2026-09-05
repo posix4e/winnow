@@ -35,15 +35,17 @@ struct VaultsSection: View {
                     Task { await model.removeVault(id: model.vaults[index].id) }
                 }
             }
+            // The sheet hangs off the row, not the Section: a modifier on a
+            // Section inside a List is dropped, and the sheet never presents.
             Button("New vault") { showCreate = true }
                 .accessibilityIdentifier("newVaultButton")
+                .sheet(isPresented: $showCreate) {
+                    VaultCreateView()
+                }
         } header: {
             Text("Vaults")
         } footer: {
             Text("The descriptors behind shared savings, and MuSig2 vaults, with their PSBT tools.")
-        }
-        .sheet(isPresented: $showCreate) {
-            VaultCreateView()
         }
     }
 

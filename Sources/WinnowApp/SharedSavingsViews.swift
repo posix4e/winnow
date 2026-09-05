@@ -405,22 +405,22 @@ struct AskApprovalView: View {
                             Button("Change") { selectedPersonID = nil }
                         }
                     } else {
-                        TextField("Bitcoin address", text: $address)
+                        // People as rows rather than a menu: one tap, and
+                        // every name is on screen for the person choosing.
+                        ForEach(payablePeople) { candidate in
+                            Button {
+                                selectedPersonID = candidate.id
+                                address = ""
+                            } label: {
+                                Label(candidate.name, systemImage: "person")
+                            }
+                            .accessibilityIdentifier("askChoosePerson-\(candidate.name)")
+                        }
+                        TextField(payablePeople.isEmpty ? "Bitcoin address" : "Or a Bitcoin address", text: $address)
                             .font(.system(.footnote, design: .monospaced))
                             .autocorrectionDisabled()
                             .textInputAutocapitalization(.never)
                             .accessibilityIdentifier("askDestinationField")
-                        if !payablePeople.isEmpty {
-                            Menu("Choose a person") {
-                                ForEach(payablePeople) { candidate in
-                                    Button(candidate.name) {
-                                        selectedPersonID = candidate.id
-                                        address = ""
-                                    }
-                                    .accessibilityIdentifier("askChoosePerson-\(candidate.name)")
-                                }
-                            }
-                        }
                     }
                     TextField("Amount (sats)", text: $amountText)
                         .keyboardType(.numberPad)
