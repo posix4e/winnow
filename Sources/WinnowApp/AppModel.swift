@@ -500,12 +500,18 @@ final class AppModel {
             descriptions.append("\(endpoint) \(userAgent)")
         }
         descriptions.sort()
+        // Why peers were dropped, so a journal that shows "connected 0,
+        // exhausted" also says what the pool held against each endpoint.
+        let rejections = await stack.pool.rejectionReasons
+            .map { "\($0.key.description): \($0.value)" }
+            .sorted()
         let fields = [
             "connected": String(connection.connected),
             "target": String(connection.target),
             "dialing": String(connection.dialing),
             "exhausted": String(connection.exhausted),
             "peers": descriptions.joined(separator: ","),
+            "rejected": rejections.joined(separator: " | "),
         ]
         let fingerprint = fields.keys.sorted().map { "\($0)=\(fields[$0] ?? "")" }
             .joined(separator: "|")
@@ -1524,7 +1530,10 @@ final class AppModel {
     /// to get back: hiding the picker behind a flag the user just turned off
     /// would strand it there.
     var showsNetworkPicker: Bool {
-        advancedMode || network != Self.defaultNetwork || e2e?.forcedNetwork != nil
+        // A forced E2E network needs no clause of its own: a forced signet
+        // differs from the default and shows the row through that, and a
+        // forced mainnet should look exactly like production.
+        advancedMode || network != Self.defaultNetwork
     }
 
     /// The same rule for every control that owns persisted state: shown in
