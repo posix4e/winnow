@@ -729,8 +729,11 @@ final class WinnowAppUITests: XCTestCase {
         // are not in the accessibility tree until scrolled to.
         XCTAssertTrue(scrollUntilExists(app, app.buttons["sendButton"], maxSwipes: 5), "no send button")
         app.buttons["sendButton"].tap()
+        // The Broadcast section lands below the fold of the sheet on a
+        // 6.3-inch class, and an off-screen row is not in the tree.
         XCTAssertTrue(poll(timeout: 60, "broadcast to Alice") {
-            app.staticTexts["broadcastPending"].exists || app.staticTexts["broadcastConfirmed"].exists
+            self.scrollUntilExists(app, app.staticTexts["broadcastPending"], maxSwipes: 2)
+                || app.staticTexts["broadcastConfirmed"].exists
         })
         let payout = try AddressDecoder.scriptPubKey(for: Self.fixtureAddress(0xD4), network: .signet)
         try await SignetMiner.mineOntoTip(payingTo: payout)
@@ -1134,7 +1137,13 @@ final class WinnowAppUITests: XCTestCase {
 
         XCUIDevice.shared.press(.home)
         app.activate()
-        XCTAssertFalse(shareLink.waitForExistence(timeout: 3),
+        // The clear happens on the scene's background transition, which a
+        // slow simulator delivers a moment after the app is back: wait for
+        // the link to go, rather than reading it in the first three seconds.
+        XCTAssertTrue(poll(timeout: 15, interval: 1, "staged seed export cleared on backgrounding") {
+            !shareLink.exists
+        }, "staged seed export survived backgrounding")
+        XCTAssertFalse(shareLink.exists,
                        "staged seed export survived backgrounding")
         XCTAssertTrue(scrollUntilExists(app, exportButton, up: true),
                       "seed export sheet did not dismiss to Settings")

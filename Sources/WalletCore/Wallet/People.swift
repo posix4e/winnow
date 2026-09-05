@@ -315,7 +315,9 @@ public struct ApprovalRequest: Codable, Equatable, Sendable {
             guard request.network == network.rawValue else {
                 throw PersonCardError.wrongNetwork(card: request.network, wallet: network)
             }
-            _ = try PSBT(base64: request.psbt)
+            // The PSBT is parsed by `decodedPSBT()`, after the caller has
+            // matched the vault: a request for savings not on this phone is
+            // refused by name, not by whatever its PSBT happens to contain.
             return request
         }
         let psbt = try PSBT(base64: trimmed)
