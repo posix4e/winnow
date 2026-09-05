@@ -98,6 +98,14 @@ final class AppModel {
         var relayStoreQuarantined: String?
         /// BIP133 feefilter floor across connected peers (sat/vB).
         var feeFloorSatPerVByte: Double?
+        /// Every submission receipt, newest first (issue #51).
+        var receipts: [SubmissionReceipt] = []
+        /// A damaged receipt store was set aside so sync could continue.
+        var submissionStoreQuarantined: String?
+
+        func receipt(for txid: Data) -> SubmissionReceipt? {
+            receipts.first { $0.txid == txid }
+        }
     }
 
     /// The per-network backend stack: peer pool, header chain, filter sync
@@ -108,6 +116,9 @@ final class AppModel {
         let chain: HeaderChain
         var filters: FilterSync?
         let broadcaster: TxBroadcaster
+        /// Routes and receipts (issue #51). Wraps the broadcaster for the
+        /// peers route and owns the miner routes.
+        let submissions: SubmissionCoordinator
     }
 
     /// Coarse-grained live sync phase for the UI (polled from the actors once
@@ -234,10 +245,15 @@ final class AppModel {
     /// On means re-derive every block's work from block 0, which is what the
     /// app did before the checkpoint existed.
     private(set) var verifyFromGenesis: Bool
+    /// Off by default. Gates submission routes, receipts, and every other
+    /// control a beginner should never have to read. Global, not per
+    /// network: it is a statement about the user, not the chain.
+    private(set) var advancedMode: Bool
 
     private var syncTask: Task<Void, Never>?
     private var phaseTask: Task<Void, Never>?
     private var broadcasterEventTask: Task<Void, Never>?
+    private var submissionEventTask: Task<Void, Never>?
     private var isActive = false
     private var buildingStack = false
     /// Prevents the E2E journal from repeating an identical wallet/vault
@@ -259,6 +275,8 @@ final class AppModel {
         static let legacyEsploraURL = "esploraURL"
         /// Deliberately global: a preference, not a chain-specific endpoint.
         static let verifyFromGenesis = "verifyFromGenesis"
+        /// Deliberately global, like verifyFromGenesis.
+        static let advancedMode = "advancedMode"
         /// Set at wallet creation, cleared only by the backup sheet's
         /// confirmed Done — a relaunch in between resumes the backup.
         static func backupPending(_ walletID: String) -> String { "backupPending.\(walletID)" }
@@ -272,9 +290,11 @@ final class AppModel {
         keyStore = e2e.map { KeychainStore(service: $0.keychainService) } ?? KeychainStore()
         let defaults = e2e?.defaults ?? .standard
         self.defaults = defaults
+        // Mainnet is the default (#9). The E2E harness is a custom-signet
+        // fixture, so a test launch that names no network still gets signet.
         let selectedNetwork = e2e?.forcedNetwork
             ?? BitcoinNetwork(rawValue: defaults.string(forKey: DefaultsKey.network) ?? "")
-            ?? .signet
+            ?? (e2e != nil ? .signet : Self.defaultNetwork)
         network = selectedNetwork
         if e2e?.forcedNetwork != nil {
             defaults.set(selectedNetwork.rawValue, forKey: DefaultsKey.network)
@@ -284,6 +304,7 @@ final class AppModel {
         manualPeers = scoped.manualPeers
         esploraURLString = scoped.esploraURL
         verifyFromGenesis = defaults.bool(forKey: DefaultsKey.verifyFromGenesis)
+        advancedMode = defaults.bool(forKey: DefaultsKey.advancedMode) || e2e?.advancedMode == true
         // Test mode preconfigures the local node as the (only) manual peer;
         // custom signets have no DNS seeds.
         if let peer = e2e?.peer, !manualPeers.contains(peer) {
@@ -506,13 +527,18 @@ final class AppModel {
             }.value
             let broadcaster = try makeBroadcaster(
                 pool: pool, storageURL: dir.appending(path: "broadcast.json"))
-            var newStack = SyncStack(pool: pool, chain: chain, filters: nil, broadcaster: broadcaster)
+            let submissions = try makeSubmissionCoordinator(
+                relay: broadcaster, storageURL: dir.appending(path: "submissions.json"))
+            var newStack = SyncStack(pool: pool, chain: chain, filters: nil, broadcaster: broadcaster,
+                                     submissions: submissions)
             if let wallet {
                 newStack.filters = try await makeFilterSync(pool: pool, chain: chain,
                                                             startHeight: wallet.nextScanHeight)
             }
             stack = newStack
             observeBroadcasterFailures(broadcaster)
+            observeSubmissionEvents(submissions)
+            await submissions.start()
             // Before anything scans: a marker here means a previous rollback
             // was interrupted, and the state it was repairing is exactly the
             // state a scan would otherwise build on.
@@ -576,6 +602,64 @@ final class AppModel {
         }
     }
 
+    /// Where a quarantined receipt store is set aside; same rule as the relay store.
+    static let quarantinedSubmissionStoreName = "submissions.damaged.json"
+
+    /// Builds the submission coordinator around the broadcaster, setting a
+    /// damaged receipt store aside for the same reason `makeBroadcaster`
+    /// does (#150): receipts are bookkeeping, and one bad record in them must
+    /// not take headers and filters down with it.
+    ///
+    /// The relay is resolved per route. `minerOnly` and `export` get `nil`,
+    /// which is the whole of the "miner-only never touches peers" guarantee:
+    /// there is no relay to call on those paths.
+    func makeSubmissionCoordinator(relay broadcaster: TxBroadcaster,
+                                   storageURL: URL) throws -> SubmissionCoordinator {
+        let miners: SubmissionCoordinator.MinerResolver = { provider in
+            // No adapter ships yet; the picker offers no miner route until
+            // one does. A stale receipt that names one is held, not retried.
+            throw SubmissionError.providerUnavailable(provider, reason: "no adapter is built for it yet")
+        }
+        let relay: SubmissionCoordinator.RelayResolver = { route in
+            route.touchesPeers ? broadcaster : nil
+        }
+        do {
+            return try SubmissionCoordinator(relay: relay, miners: miners, storageURL: storageURL)
+        } catch let error as SubmissionStoreError {
+            let quarantine = storageURL.deletingLastPathComponent()
+                .appending(path: Self.quarantinedSubmissionStoreName)
+            try? FileManager.default.removeItem(at: quarantine)
+            try FileManager.default.moveItem(at: storageURL, to: quarantine)
+            status.submissionStoreQuarantined =
+                "Submission receipts could not be read (\(error.localizedDescription)). "
+                + "The file was set aside as \(Self.quarantinedSubmissionStoreName) and tracking started fresh. "
+                + "Your balance, history and pending relay are unaffected."
+            return try SubmissionCoordinator(relay: relay, miners: miners, storageURL: storageURL)
+        }
+    }
+
+    /// Keeps the UI's receipts current as routes progress in the background,
+    /// and surfaces a persistence failure the way the relay store's is.
+    private func observeSubmissionEvents(_ submissions: SubmissionCoordinator) {
+        submissionEventTask?.cancel()
+        submissionEventTask = Task { [weak self] in
+            for await event in await submissions.events() {
+                guard !Task.isCancelled, let self else { return }
+                switch event {
+                case let .persistenceFailed(reason):
+                    self.status.lastSyncError = reason
+                case let .rerouted(txid, route):
+                    self.e2e?.journal("submission.rerouted", fields: [
+                        "txid": txid.displayHex, "route": route.label,
+                    ])
+                    await self.refresh()
+                default:
+                    await self.refresh()
+                }
+            }
+        }
+    }
+
     /// Names the height an interrupted rollback was heading for.
     static let rollbackMarkerName = "rollback.height"
 
@@ -609,6 +693,9 @@ final class AppModel {
         // wallet just re-reserved its inputs, and this makes sure the network
         // hears the transaction again instead of only our bookkeeping.
         try await stack?.broadcaster.rollBack(to: forkHeight)
+        // Receipts follow: a miner-only send goes back in flight and is
+        // resubmitted to its miner, never announced to peers.
+        try await stack?.submissions.rollBack(to: forkHeight)
     }
 
     /// Clears the marker once a sync that included a rollback has completed.
@@ -634,14 +721,21 @@ final class AppModel {
 
     /// The signed bytes of a still-pending transaction, hex-encoded.
     ///
-    /// Winnow relays over its own peer connections and has no fallback
-    /// submission path. When relay is not working, the transaction itself is
-    /// the only thing that can leave the device, so the user is given it
-    /// rather than left with a txid for something no one has seen.
+    /// When relay is not working, or the route never relayed at all, the
+    /// transaction itself is the only thing that can leave the device, so
+    /// the user is given it rather than left with a txid for something no
+    /// one has seen. The receipt is the source now: it holds the bytes for
+    /// every route, and a re-route (issue #51) is the recorded alternative
+    /// to pasting them somewhere by hand.
     ///
-    /// nil once it confirms and leaves the pending set -- at that point it is
-    /// on the chain and the txid is the useful handle.
+    /// nil once it confirms, is replaced, or is abandoned -- at that point the
+    /// txid is the useful handle and the bytes only invite a conflict.
     func rawTransactionHex(_ txid: Data) async -> String? {
+        if let receipt = await stack?.submissions.receipt(txid) {
+            // Withdrawn once confirmed, replaced or abandoned (#155): the
+            // bytes of a replaced transaction are a conflicting rebroadcast.
+            return receipt.state.isTerminal ? nil : receipt.rawTransaction.hex
+        }
         guard let broadcaster = stack?.broadcaster else { return nil }
         return await broadcaster.rawTransaction(txid)?.hex
     }
@@ -703,6 +797,7 @@ final class AppModel {
             var scripts = try await wallet.watchScripts()
             scripts.append(contentsOf: try await vaultStore.watchScripts(network: network))
             let broadcaster = stack.broadcaster
+            let submissions = stack.submissions
             let network = network
             let vaultStore = vaultStore
             try await filters.sync(watchScripts: scripts,
@@ -713,6 +808,8 @@ final class AppModel {
                 let walletEffect = try await wallet.apply(match: match)
                 for discarded in walletEffect.discardedReplacements {
                     try await broadcaster.cancel(discarded)
+                    // A conflicting spend confirmed; this one is over.
+                    try? await submissions.abandon(discarded)
                 }
                 try await vaultStore.apply(match: match, network: network)
                 let pending = await broadcaster.pendingTxids
@@ -722,6 +819,12 @@ final class AppModel {
                     // deleted with its raw transaction (#157).
                     try await broadcaster.markConfirmed(tx.txid, atHeight: match.height)
                 }
+                // The only path to a confirmed receipt: a block Winnow
+                // verified itself, never a provider's status answer.
+                let awaitingBlock = await submissions.pendingTxids
+                for tx in match.block.transactions where awaitingBlock.contains(tx.txid) {
+                    try await submissions.markConfirmed(tx.txid, atHeight: match.height)
+                }
             }
             // apply() does not move the wallet frontier — FilterSync is
             // authoritative here. Persist it so exportBundle() and the next
@@ -730,6 +833,7 @@ final class AppModel {
             // Held confirmation tombstones age out on the same 100-block
             // horizon spent-coin tombstones do (#157).
             try await broadcaster.pruneConfirmed(scannedTo: await filters.nextScanHeight)
+            try await submissions.pruneConfirmed(scannedTo: await filters.nextScanHeight)
             // Every store that a rollback touches has now been rewound and the
             // scan that followed it has finished, so the target is no longer
             // needed. Cleared only on the success path: a sync that threw may
@@ -772,6 +876,7 @@ final class AppModel {
                 snapshot.nextScanHeight = await filters.nextScanHeight
             }
             snapshot.feeFloorSatPerVByte = await stack.pool.feeFilterFloorSatPerVByte()
+            snapshot.receipts = await stack.submissions.receipts
         }
         snapshot.syncing = status.syncing
         snapshot.lastSyncError = status.lastSyncError
@@ -781,6 +886,7 @@ final class AppModel {
         // on the refresh that runs moments after the stack is built, leaving
         // the user's relay queue silently gone.
         snapshot.relayStoreQuarantined = status.relayStoreQuarantined
+        snapshot.submissionStoreQuarantined = status.submissionStoreQuarantined
         status = snapshot
         vaults = await vaultStore.all
         journalSnapshotIfChanged()
@@ -955,8 +1061,11 @@ final class AppModel {
         syncTask?.cancel()
         syncTask = nil
         await stack?.broadcaster.shutdown()
+        await stack?.submissions.shutdown()
         broadcasterEventTask?.cancel()
         broadcasterEventTask = nil
+        submissionEventTask?.cancel()
+        submissionEventTask = nil
         if let dir = storageDirectory() {
             for name in ["filters.json", "broadcast.json", "vaults.json"] {
                 try? FileManager.default.removeItem(at: dir.appending(path: name))
@@ -990,9 +1099,17 @@ final class AppModel {
                 guard let dir = storageDirectory() else { throw AppError.noStack }
                 let broadcaster = try TxBroadcaster(
                     pool: existingStack.pool, storageURL: dir.appending(path: "broadcast.json"))
+                // The previous session's coordinator wraps the previous
+                // broadcaster; end it before the replacement loads the same store.
+                await existingStack.submissions.shutdown()
+                let submissions = try makeSubmissionCoordinator(
+                    relay: broadcaster, storageURL: dir.appending(path: "submissions.json"))
                 self.stack = SyncStack(pool: existingStack.pool, chain: existingStack.chain,
-                                       filters: filters, broadcaster: broadcaster)
+                                       filters: filters, broadcaster: broadcaster,
+                                       submissions: submissions)
                 observeBroadcasterFailures(broadcaster)
+                observeSubmissionEvents(submissions)
+                await submissions.start()
             }
         }
         await refresh()
@@ -1080,8 +1197,11 @@ final class AppModel {
         syncTask = nil
         await stack?.pool.stop()
         await stack?.broadcaster.shutdown()
+        await stack?.submissions.shutdown()
         broadcasterEventTask?.cancel()
         broadcasterEventTask = nil
+        submissionEventTask?.cancel()
+        submissionEventTask = nil
         stack = nil
 
         // Key first: a throw after this must not leave a wallet file whose
@@ -1229,6 +1349,10 @@ final class AppModel {
         /// review screen so the disclosure is informed; defaulted so direct
         /// constructions in tests describe an ordinary synced send.
         var locktimeLagsTip: Bool = false
+        /// How the signed transaction leaves the phone (issue #51). Part of
+        /// the review identity: `SendReviewInputs` carries it too, so changing
+        /// it after review clears the preview like any other edit.
+        var route: SubmissionRoute = .peers
 
         /// The total leaving the wallet as payment, excluding change and fee.
         var amountSent: Int64 {
@@ -1291,7 +1415,7 @@ final class AppModel {
     /// Parses the destination (any standard address) and previews coin
     /// selection at the resolved feerate.
     func previewSend(destination: String, amount: Int64, priority: FeePolicy.Priority,
-                     override: Double?) async throws -> SendPreview {
+                     override: Double?, route: SubmissionRoute = .peers) async throws -> SendPreview {
         guard let wallet else { throw AppError.noWallet }
         let feeRate = await resolvedFeeRate(priority: priority, override: override)
         let trimmed = destination.trimmingCharacters(in: .whitespacesAndNewlines)
@@ -1309,7 +1433,8 @@ final class AppModel {
                            selectedOutpoints: selection.selected.map {
                                .init(txid: $0.txid, vout: $0.vout)
                            }, change: change,
-                           locktimeLagsTip: syncPhase.headerTipMayLagNetwork)
+                           locktimeLagsTip: syncPhase.headerTipMayLagNetwork,
+                           route: route)
     }
 
     /// Builds, signs and broadcasts the previewed send. Returns the txid
@@ -1346,15 +1471,22 @@ final class AppModel {
         try await exclusively(.spending) {
         guard let wallet else { throw AppError.noWallet }
         try await authenticateSensitiveAction(reason: "Sign and send this Bitcoin transaction")
-        // Build and sign WITHOUT touching wallet state, hand the tx to the
-        // broadcaster, and only then commit the selection. If broadcast throws
-        // (no stack, disk error), nothing was spent locally — no stranded UTXOs.
+        // Build and sign WITHOUT touching wallet state, hand the tx to its
+        // route, and only then commit the selection. The coordinator throws
+        // only when nothing left the device (no stack, disk error, malformed
+        // bytes), so a throw here means nothing was spent locally — no
+        // stranded UTXOs. A miner's rejection, or a transport failure after
+        // the request went out, returns normally with the receipt saying so:
+        // the signed bytes may be anywhere by then, and the inputs must be
+        // reserved or the next send could double-spend them.
         let prepared = try await wallet.buildSend(payments: preview.payments,
                                                   feeRateSatPerVByte: preview.feeRateSatPerVByte,
                                                   chainTip: await chainTipHeight)
         guard preview.authorizes(prepared.built) else { throw AppError.sendReviewChanged }
-        let txid = try await broadcast(prepared.built.transaction,
-                                       feeRateSatPerVByte: preview.feeRateSatPerVByte)
+        let receipt = try await submit(prepared.built.transaction,
+                                       feeRateSatPerVByte: preview.feeRateSatPerVByte,
+                                       route: preview.route, origin: .walletSend)
+        let txid = receipt.txid
         try await wallet.commit(prepared)
         await refresh()
         e2e?.journal("transaction.sent", fields: [
@@ -1390,15 +1522,22 @@ final class AppModel {
         guard preview.authorizes(prepared.built) else { throw AppError.sendReviewChanged }
         let replacementVSize = TransactionBuilder.vsize(of: prepared.built.transaction)
         let replacementRate = Double(prepared.built.fee) / Double(replacementVSize)
-        let replacementTxid = try await broadcast(
-            prepared.built.transaction, feeRateSatPerVByte: replacementRate)
+        // The replacement takes the original's route: a miner-only send is
+        // bumped through the same miner, never quietly through peers.
+        let route = await stack?.submissions.receipt(preview.originalTxid)?.route ?? .peers
+        let replacement = try await submit(
+            prepared.built.transaction, feeRateSatPerVByte: replacementRate,
+            route: route, origin: .feeBump(original: preview.originalTxid))
+        let replacementTxid = replacement.txid
         do {
             try await wallet.commitFeeBump(prepared)
         } catch {
             try await broadcaster.cancel(replacementTxid)
+            try? await stack?.submissions.abandon(replacementTxid)
             throw error
         }
         try await broadcaster.cancel(preview.originalTxid)
+        try? await stack?.submissions.markReplaced(preview.originalTxid, by: replacementTxid)
         await refresh()
         e2e?.journal("transaction.replaced", fields: [
             "original": preview.originalTxid.displayHex,
@@ -1409,16 +1548,65 @@ final class AppModel {
         }
     }
 
-    /// Broadcasts a fully-signed transaction via P2P relay. Block-explorer
-    /// settings are links only and are never used as a broadcast backend.
-    /// `feeRateSatPerVByte` (known from the send preview) enables the
-    /// broadcaster's BIP133 fee-floor events.
-    func broadcast(_ transaction: BitcoinTransaction, feeRateSatPerVByte: Double? = nil) async throws -> Data {
-        guard let broadcaster = stack?.broadcaster else { throw AppError.noStack }
+    /// Hands a fully-signed transaction to its route and records the receipt.
+    /// Block-explorer settings are links only and are never used as a
+    /// submission backend. `feeRateSatPerVByte` (known from the send preview)
+    /// enables the broadcaster's BIP133 fee-floor events on the peers route.
+    func submit(_ transaction: BitcoinTransaction, feeRateSatPerVByte: Double? = nil,
+                route: SubmissionRoute, origin: SubmissionOrigin) async throws -> SubmissionReceipt {
+        guard let stack else { throw AppError.noStack }
         let raw = transaction.serialized(includeWitness: true)
-        let txid = try await broadcaster.broadcast(raw, feeRateSatPerVByte: feeRateSatPerVByte)
-        e2e?.journal("transaction.broadcast", fields: ["txid": txid.displayHex, "raw": raw.hex])
-        return txid
+        let receipt = try await stack.submissions.submit(rawTx: raw, feeRateSatPerVByte: feeRateSatPerVByte,
+                                                         route: route, origin: origin)
+        if route.touchesPeers {
+            e2e?.journal("transaction.broadcast", fields: ["txid": receipt.txid.displayHex, "raw": raw.hex])
+        }
+        e2e?.journal("submission.recorded", fields: [
+            "txid": receipt.txid.displayHex, "route": route.label, "state": receipt.state.rawValue,
+        ])
+        return receipt
+    }
+
+    /// The peers route, for callers that have no route choice yet (vault
+    /// spends this cut). Returns the txid, as the old broadcaster seam did.
+    func broadcast(_ transaction: BitcoinTransaction, feeRateSatPerVByte: Double? = nil,
+                   origin: SubmissionOrigin = .walletSend) async throws -> Data {
+        try await submit(transaction, feeRateSatPerVByte: feeRateSatPerVByte,
+                         route: .peers, origin: origin).txid
+    }
+
+    /// Sends a receipt through another route after the user approved the
+    /// change on its alert. The approval is recorded before anything moves.
+    func reroute(_ txid: Data, to route: SubmissionRoute) async throws -> SubmissionReceipt {
+        guard let stack else { throw AppError.noStack }
+        let receipt = try await stack.submissions.reroute(txid, to: route)
+        await refresh()
+        return receipt
+    }
+
+    /// Stops tracking a receipt. Wallet state is untouched.
+    func abandonSubmission(_ txid: Data) async throws {
+        guard let stack else { throw AppError.noStack }
+        try await stack.submissions.abandon(txid)
+        await refresh()
+    }
+
+    /// What a fresh install runs on.
+    static let defaultNetwork: BitcoinNetwork = .mainnet
+
+    /// Whether the network picker is shown. Signet is an Advanced-mode
+    /// concern, but a wallet that is already on signet must always be able
+    /// to get back: hiding the picker behind a flag the user just turned off
+    /// would strand it there.
+    var showsNetworkPicker: Bool {
+        advancedMode || network != Self.defaultNetwork || e2e?.forcedNetwork != nil
+    }
+
+    func setAdvancedMode(_ enabled: Bool) {
+        guard enabled != advancedMode else { return }
+        advancedMode = enabled
+        defaults.set(enabled, forKey: DefaultsKey.advancedMode)
+        e2e?.journal("setting.advancedMode", fields: ["enabled": String(enabled)])
     }
 
     // MARK: - Vaults
@@ -1606,8 +1794,11 @@ final class AppModel {
         syncTask = nil
         await stack?.pool.stop()
         await stack?.broadcaster.shutdown()
+        await stack?.submissions.shutdown()
         broadcasterEventTask?.cancel()
         broadcasterEventTask = nil
+        submissionEventTask?.cancel()
+        submissionEventTask = nil
         stack = nil
         wallet = nil
         walletID = nil
@@ -1670,8 +1861,11 @@ final class AppModel {
         syncTask = nil
         await stack?.pool.stop()
         await stack?.broadcaster.shutdown()
+        await stack?.submissions.shutdown()
         broadcasterEventTask?.cancel()
         broadcasterEventTask = nil
+        submissionEventTask?.cancel()
+        submissionEventTask = nil
         stack = nil
         await activate()
         await refresh()

@@ -270,28 +270,37 @@ inputs at a higher fee, and history retains the original, intermediate
 replacements, and final confirmed transaction. The Brisa Café signet story
 verified a two-step replacement chain.
 
-### 6.1 Coming soon: planned submission routes
+### 6.1 Submission routes and receipts
 
-Signing and submission are separate decisions. Winnow's planned modes are:
+Signing and submission are separate decisions. A route is chosen before
+review, pinned into the reviewed payment, and recorded in a durable receipt:
 
-| Route | Behavior |
-|---|---|
-| **Bitcoin peers** | Shipping default; ordinary P2P relay. |
-| **Selected miner only** | Submit to one chosen miner; never fall back silently to peers. |
-| **Miner and peers** | Use both routes and label the broader disclosure. |
-| **Export signed transaction** | Do not submit; hand the transaction to another system. |
+| Route | Behavior | Status |
+|---|---|---|
+| **Bitcoin peers** | Default; ordinary P2P relay. The only route beginner mode uses. | Implemented |
+| **Export signed transaction** | Do not submit; hand the transaction to another system. The coins are reserved, and the receipt can relay it to peers later on an explicit, recorded approval. | Implemented |
+| **Selected miner only** | Submit to one chosen miner; never fall back silently to peers. | Planned |
+| **Miner and peers** | Use both routes and label the broader disclosure. | Planned |
 
-Each route needs a receipt distinct from ordinary relay state: endpoint,
-request identity, acceptance or rejection, response, and polling status. A
-selected miner receives the raw transaction and connection metadata and may
-log, reject, delay, or disclose it. Direct submission is not anonymity.
+Every transaction Winnow signs now carries a receipt distinct from relay
+state: the route, every explicit route change with its time, a lifecycle
+(constructed, submitted, relayed, accepted, rejected, replaced, confirmed,
+abandoned), the provider's last answer as an advisory snapshot, and retry and
+polling schedules that survive a restart. Only Winnow's own verified block
+path moves a receipt to confirmed; nothing a provider reports does. The coins
+a signed transaction spends are reserved the moment its bytes leave the phone
+or are exported, including when a provider rejects it, so no later send can
+conflict with it. Routes and receipts are shown only in Advanced mode.
 
-The miner API is **coming soon · planned** in
-[issue 59](https://github.com/posix4e/winnow/issues/59). The first pilot is
-scoped around MARA Slipstream's documented beta API, whose
-published interface includes single transactions, transaction packages, status
-queries, fee requirements, and support statements for RBF and CPFP. That is
-research scope, not a partnership or endorsement.
+A selected miner receives the raw transaction and connection metadata and may
+log, reject, delay, or disclose it. Direct submission is not anonymity. The
+miner adapters are **planned** in
+[issue 59](https://github.com/posix4e/winnow/issues/59): a curated provider
+directory names MARA Slipstream, whose documented beta API includes single
+transactions, transaction packages, status queries and fee requirements, and
+a Bitcoin Core node reachable over RPC. There is no discovery protocol for
+miners; providers are added by hand with a documentation link and evidence.
+That is research scope, not a partnership or endorsement.
 
 ## 7. Taproot shared custody
 
@@ -423,8 +432,8 @@ that recovery words never appear in a video frame.
   referrals, rankings, account integrations, or production signer packages.
 - **Not a custody company or legal agreement.** Software cannot authenticate
   heirs, resolve disputes, enforce loan repayment, or replace legal advice.
-- **Not private-miner submission today.** P2P is the shipping broadcast path;
-  selected-miner and export-only routes are planned.
+- **Not private-miner submission today.** P2P is the shipping broadcast path
+  and export is the only other route; the miner adapters are planned.
 - **No Silent Payment support in this build.** Both send and receive live on
   the `alpha` branch; receiving additionally depends on tweak-data
   infrastructure that does not exist publicly.
@@ -445,7 +454,7 @@ and miner-API issues are explicitly labeled `help wanted`:
 6. [Specify a versioned provider signer package](https://github.com/posix4e/winnow/issues/49).
 7. [Decide provider-directory governance](https://github.com/posix4e/winnow/issues/52).
 8. [Decide referral disclosure, ranking, and click privacy](https://github.com/posix4e/winnow/issues/57).
-9. [Add submission modes and durable receipts](https://github.com/posix4e/winnow/issues/51).
+9. [Add submission modes and durable receipts](https://github.com/posix4e/winnow/issues/51) — routes, receipts and the export route landed; miner routes wait on item 10.
 10. [Build the MARA Slipstream direct-miner pilot](https://github.com/posix4e/winnow/issues/59).
 11. [Extend the reproducible story](https://github.com/posix4e/winnow/issues/56).
 

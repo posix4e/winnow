@@ -82,6 +82,14 @@ struct HomeView: View {
                             .foregroundStyle(.orange)
                             .accessibilityIdentifier("relayStoreQuarantined")
                     }
+                    // Same rule for the receipt store (#150): a file set aside
+                    // in silence is how a user loses state without knowing.
+                    if let quarantined = model.status.submissionStoreQuarantined {
+                        Text(quarantined)
+                            .font(.footnote)
+                            .foregroundStyle(.orange)
+                            .accessibilityIdentifier("submissionStoreQuarantined")
+                    }
                     Button("Sync now") {
                         Task { await model.syncNow() }
                     }
@@ -123,6 +131,7 @@ private struct HistoryRow: View {
     let entry: HistoryEntry
     let canBump: Bool
     @State private var showFeeBump = false
+    @State private var showReceipt = false
 
     /// Net effect on the wallet: received (incl. our own change) minus spent.
     private var net: Int64 { entry.received - entry.spent }
@@ -145,6 +154,23 @@ private struct HistoryRow: View {
                         .buttonStyle(.bordered)
                         .controlSize(.small)
                         .accessibilityIdentifier("bumpFeeButton")
+                }
+                // The route and its state, for anyone who asked to see them.
+                // A beginner's pending non-peers receipt still says so, with
+                // the way to manage it, rather than silently offering nothing.
+                if let receipt = model.status.receipt(for: entry.txid) {
+                    if model.advancedMode {
+                        Button("\(receipt.route.label) · \(receipt.state.rawValue)") { showReceipt = true }
+                            .buttonStyle(.plain)
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .accessibilityIdentifier("submissionRouteBadge")
+                    } else if receipt.route != .peers, !receipt.state.isTerminal {
+                        Text("\(receipt.route.label) · turn on Advanced mode in Settings to manage this submission")
+                            .font(.caption)
+                            .foregroundStyle(.secondary)
+                            .accessibilityIdentifier("submissionRouteBadge")
+                    }
                 }
             }
             Spacer()
@@ -174,6 +200,9 @@ private struct HistoryRow: View {
         }
         .sheet(isPresented: $showFeeBump) {
             FeeBumpView(txid: entry.txid)
+        }
+        .sheet(isPresented: $showReceipt) {
+            ReceiptView(txid: entry.txid)
         }
     }
 }
