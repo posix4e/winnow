@@ -32,11 +32,15 @@ struct SendReviewInputs: Equatable {
 struct SendView: View {
     @Environment(AppModel.self) private var model
 
-    /// Preselected when opened from a person's screen.
+    /// Preselected when opened from a person's screen, where the view is a
+    /// sheet and needs its own way out.
     init(recipient: PersonRecord? = nil) {
         _selectedPersonID = State(initialValue: recipient?.id)
+        presentedAsSheet = recipient != nil
     }
 
+    private let presentedAsSheet: Bool
+    @Environment(\.dismiss) private var dismiss
     @State private var selectedPersonID: String?
     @State private var destination = ""
     @State private var amountText = ""
@@ -279,6 +283,14 @@ struct SendView: View {
                 }
             }
             .navigationTitle("Send")
+            .toolbar {
+                if presentedAsSheet {
+                    ToolbarItem(placement: .cancellationAction) {
+                        Button("Done") { dismiss() }
+                            .accessibilityIdentifier("sendSheetDoneButton")
+                    }
+                }
+            }
             .task(id: feeInputs) {
                 resolvedRate = await model.resolvedFeeRate(priority: priority, override: override)
             }
