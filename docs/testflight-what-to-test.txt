@@ -1,5 +1,9 @@
-Vault setup
+Peers and sync
 
-Add and remove signer keys. Confirm Required signatures can move both up and down, never exceeds the total number of keys, and defaults to 2-of-2 once two keys are present.
+Let the wallet sync from a fresh install, or use Sync now in Settings, and open Connected peers while it runs. No peer should keep its seat while reporting a tip thousands of blocks behind the others; such a peer is dropped and its slot refilled. The filter scan should reach the current tip, with no sync error line.
 
-Paste an invalid signer key. Winnow should keep it editable and explain what is wrong in plain language. Paste a private signer key and confirm Winnow refuses to add or save it.
+Background: about one in twelve compact-filter peers on the network is stuck on the BIP-110 fork chain from August. The previous build could stall on one of them. This build unseats them, fails over when one hangs up mid-sync, and ships a fallback peer list with none on it.
+
+Sending
+
+Send a small amount on the network you use. It should be announced only to peers whose fee filter accepts it, and confirm as before.
