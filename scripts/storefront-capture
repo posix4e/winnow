@@ -1,0 +1,67 @@
+#!/usr/bin/env bash
+# App Store screenshots from the real app against the local signet fixture
+# (#39). Runs UITests/StorefrontCaptureTests on an iPhone 17 Pro Max
+# simulator (the 6.9-inch class App Store Connect asks for), then refuses to
+# succeed unless every expected PNG exists at 1320 x 2868.
+#
+# Needs the fixture up (scripts/signet-fixture up) and bitcoin-cli on PATH.
+# Output directory: $WINNOW_SCREENSHOT_DIR, default docs/screenshots.
+set -euo pipefail
+cd "$(dirname "$0")/.."
+
+if [ -f "$HOME/.winnow-node.env" ]; then
+  set -a
+  # shellcheck disable=SC1091
+  . "$HOME/.winnow-node.env"
+  set +a
+fi
+: "${WINNOW_DATADIR:=$HOME/.bitcoin-mysignet}"
+: "${WINNOW_RPC_PORT:=38400}"
+if ! bitcoin-cli -datadir="$WINNOW_DATADIR" -rpcport="$WINNOW_RPC_PORT" getblockcount >/dev/null 2>&1; then
+  echo "the signet fixture is not answering on RPC port $WINNOW_RPC_PORT; run scripts/signet-fixture up" >&2
+  exit 1
+fi
+
+SIM="iPhone 17 Pro Max"
+if ! xcrun simctl list devices available | grep -q "$SIM ("; then
+  echo "creating a $SIM simulator"
+  xcrun simctl create "$SIM" "$SIM" >/dev/null
+fi
+
+OUT="${WINNOW_SCREENSHOT_DIR:-$PWD/docs/screenshots}"
+mkdir -p "$OUT"
+
+XCODEGEN=$(command -v xcodegen || echo /opt/homebrew/bin/xcodegen)
+"$XCODEGEN" generate >/dev/null
+
+# xcodebuild forwards only TEST_RUNNER_-prefixed variables into the runner.
+TEST_RUNNER_WINNOW_E2E_STOREFRONT=1 \
+TEST_RUNNER_WINNOW_SCREENSHOT_DIR="$OUT" \
+xcodebuild test \
+  -project WinnowApp.xcodeproj -scheme WinnowApp \
+  -destination "platform=iOS Simulator,name=$SIM" \
+  -only-testing:WinnowAppUITests/StorefrontCaptureTests \
+  -skipPackagePluginValidation -skipMacroValidation \
+  ${WINNOW_DERIVED_DATA:+-derivedDataPath "$WINNOW_DERIVED_DATA"} \
+  | grep -E "Test Case|error:|\*\* TEST" || true
+
+EXPECTED="01-onboarding 02-receive 03-receive-unconfirmed 04-home 05-send-form 06-send-review \
+07-home-after-send 08-people 09-shared-savings 10-approve-request"
+status=0
+for name in $EXPECTED; do
+  file="$OUT/store-$name.png"
+  if [ ! -f "$file" ]; then
+    echo "missing: $file" >&2
+    status=1
+    continue
+  fi
+  dims=$(sips -g pixelWidth -g pixelHeight "$file" | awk '/pixel/ {print $2}' | paste -sd x -)
+  if [ "$dims" != "1320x2868" ]; then
+    echo "wrong size ($dims): $file" >&2
+    status=1
+  fi
+done
+if [ "$status" -eq 0 ]; then
+  echo "storefront set complete in $OUT"
+fi
+exit "$status"

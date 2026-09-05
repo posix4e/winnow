@@ -1,32 +1,49 @@
 # App Store screenshot candidates
 
-The canonical UI suite was last captured on 2026-08-17 using an iPhone 17 Pro Max simulator. Every PNG in `docs/screenshots/` is 1320 × 2868 pixels, the 6.9-inch portrait size.
+Two sets live in `docs/screenshots/`, both 1320 × 2868 pixels (the 6.9-inch
+portrait size App Store Connect asks for), both from the real app on the
+local signet fixture, iPhone 17 Pro Max simulator.
 
-Use these six files, in this order, as the composition candidates for the final recapture:
+## The storefront set (`store-*.png`)
 
-1. `01-onboarding.png` — product and privacy model
-2. `03-receive.png` — native Taproot receive flow
-3. `05-send-form.png` — fee selection without a fee server
-4. `06-send-review.png` — explicit payment review before signing
-5. `24-people.png` — the address book, with fresh addresses per payment
-6. `26-savings-share.png` — shared savings, 2 of 3, shared as a card
+Produced by `scripts/storefront-capture` (UITests/StorefrontCaptureTests,
+#39): a story with believable amounts in the beginner shell, its own wallet
+(entropy pinned per run from the chain height), and a keyed node wallet as
+the payer so received payments look like payments, not coinbases. The script
+fails unless all ten files exist at the right size.
 
-`15-approve-request.png` (a co-owner approving a spend in plain words) and
-`25-pay-person-review.png` (a review that names the person) are the
-alternates. `11-vault-list.png` and `15-vault-cosign.png` were the raw vault
-views; the app now shows those only in Advanced mode, and the beginner shots
-above replace them in the set. Every capture shows the four tabs Wallet,
-Send, People, Settings; the Vaults section appears in `10-vault-create` and
-`11-vault-list` because that run launches in Advanced mode.
+Use these six, in this order:
 
-These are deterministic signet fixtures, not real funds. All six were visually inspected on 2026-08-17; none contains a mnemonic or development endpoint. They are not yet upload-ready: onboarding explicitly names signet and the payment screens use testnet addresses. Recapture and recheck the set after the mainnet-default change in #9.
+1. `store-01-onboarding.png` — product and privacy model, no network row
+2. `store-02-receive.png` — a fresh Taproot address (`store-03-receive-unconfirmed.png` tells the mempool-window story instead)
+3. `store-05-send-form.png` — fee selection without a fee server, before any address is typed
+4. `store-06-send-review.png` — explicit payment review before signing
+5. `store-08-people.png` — the address book and shared savings side by side
+6. `store-09-shared-savings.png` — savings held with two people, 2 of 3 must approve
 
-Do not upload `02`, `14`, `20`, `21`, or `22`: they display the deterministic test mnemonic. Do not upload `07`, `08`, `12`, or `13`: they expose development-node or service configuration. The remaining captures are engineering evidence, not selected store artwork. No App Store upload is performed by the test suite.
+`store-04-home.png`, `store-07-home-after-send.png` and
+`store-10-approve-request.png` are the alternates. Every capture shows the
+four tabs Wallet, Send, People, Settings, and none launches in Advanced
+mode. Addresses are `tb1p…` (signet): accepted, not doctored. Nothing in the
+set shows a mnemonic, a development endpoint or a node address.
+
+## The functional set (`NN-name.png`)
+
+The UI suite's own evidence (WinnowAppUITests), last captured 2026-09-05.
+Not store artwork: `02`, `14`, `20`, `21` and `22` display the deterministic
+test mnemonic; `07`, `08`, `12` and `13` expose development-node or service
+configuration; `10` and `11` launch in Advanced mode and show the Vaults
+section. `15-approve-request.png`, `24-people.png`, `25-pay-person-review.png`
+and `26-savings-share.png` are the People-flow shots the storefront set
+re-stages with better amounts. Measured scenario timings are in
+[`docs/screenshots/timings.json`](../../docs/screenshots/timings.json).
+
+No App Store upload is performed by any test; the six picks are uploaded by
+hand in App Store Connect, and `scripts/testflight.sh appstore-status`
+reports the screenshot sets it finds there.
 
 Validation command:
 
 ```sh
-sips -g pixelWidth -g pixelHeight docs/screenshots/*.png
+sips -g pixelWidth -g pixelHeight docs/screenshots/store-*.png
 ```
-
-The producing run executed 10 tests with zero failures. Its measured scenario timings are in [`docs/screenshots/timings.json`](../../docs/screenshots/timings.json).

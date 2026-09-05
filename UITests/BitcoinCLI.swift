@@ -46,6 +46,11 @@ enum BitcoinCLI {
         return fileOverrides[key]
     }
 
+    /// The same lookup for suites that gate on an environment flag of their
+    /// own (the storefront capture): process environment first, then
+    /// ~/.winnow-node.env.
+    static func environmentValue(_ key: String) -> String? { env(key) }
+
     private static let fileOverrides: [String: String] = {
         let url = URL(fileURLWithPath: hostHome).appending(path: ".winnow-node.env")
         guard let text = try? String(contentsOf: url, encoding: .utf8) else { return [:] }
@@ -207,6 +212,38 @@ enum BitcoinCLI {
     /// A fresh bech32m address from the node's "miner" wallet (send target).
     static func newMinerAddress() throws -> String {
         try run(["getnewaddress", "e2e", "bech32m"], wallet: "miner")
+    }
+
+    // MARK: - A spending wallet on the node
+
+    /// Loads or creates a keyed descriptor wallet on the node. The fixture's
+    /// "miner" wallet is blank (signing key only), so a suite that wants the
+    /// node to *pay* the app needs a wallet of its own.
+    static func ensureWallet(_ name: String) throws {
+        if try run(["listwallets"]).contains("\"\(name)\"") { return }
+        if (try? run(["loadwallet", name])) != nil { return }
+        try run(["-named", "createwallet", "wallet_name=\(name)"])
+    }
+
+    /// A fresh bech32m address from `wallet`.
+    static func newAddress(wallet: String) throws -> String {
+        try run(["getnewaddress", "", "bech32m"], wallet: wallet)
+    }
+
+    /// `wallet`'s trusted (spendable, confirmed) balance in sats.
+    static func trustedBalanceSats(wallet: String) throws -> Int64 {
+        let balances = try runObject(["getbalances"], wallet: wallet)
+        guard let mine = balances["mine"] as? [String: Any], let trusted = mine["trusted"] else { return 0 }
+        return try sats(trusted)
+    }
+
+    /// Pays `sats` to `address` from `wallet` at `feeRate` sat/vB; returns
+    /// the txid. Amounts are formatted from integers, never through Double.
+    @discardableResult
+    static func sendToAddress(wallet: String, address: String, sats: Int64, feeRate: Int) throws -> String {
+        let amount = "\(sats / 100_000_000)." + String(format: "%08d", sats % 100_000_000)
+        return try run(["-named", "sendtoaddress", "address=\(address)", "amount=\(amount)",
+                        "fee_rate=\(feeRate)"], wallet: wallet)
     }
 
     /// (txid, value in sats, scriptPubKey hex) of a transaction's output 0.
