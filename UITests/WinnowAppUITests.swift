@@ -152,28 +152,29 @@ final class WinnowAppUITests: XCTestCase {
         // Tap the child switch (right side of the row).
         let toggleThumb = toggle.children(matching: .switch).firstMatch
         let done = app.buttons["backupDoneButton"]
-        // On a 6.3-inch class the twelve words push Done below the fold;
-        // test09 already scrolls for it, and so must this.
-        XCTAssertTrue(scrollUntilExists(app, done, maxSwipes: 4), "backup Done button was not reachable")
-        XCTAssertTrue(scrollUntilExists(app, toggle, maxSwipes: 4, up: true))
-        let enabled = poll(timeout: 20, interval: 1, "backup Done button enabled") {
-            // Off-screen Form rows leave the accessibility tree, so on a
-            // smaller screen Done may not exist again until scrolled to.
-            if done.exists, done.isEnabled { return true }
-            if toggleThumb.exists {
-                toggleThumb.tap()
-            } else {
-                toggle.coordinate(withNormalizedOffset: CGVector(dx: 0.92, dy: 0.5)).tap()
-            }
-            return done.exists && done.isEnabled
+        // The switch reports its own state ("1" when on), so read that
+        // rather than using Done's enablement as a proxy: on a 6.3-inch
+        // class Done sits below the fold, and an off-screen Form row is not
+        // in the accessibility tree at all.
+        func toggleIsOn() -> Bool {
+            let value = (toggleThumb.exists ? toggleThumb.value : toggle.value) as? String
+            return value == "1"
         }
-        if !enabled {
+        let flipped = poll(timeout: 20, interval: 1, "written-down toggle on") {
+            if toggleIsOn() { return true }
+            _ = self.scrollUntilExists(app, toggle, maxSwipes: 4, up: true)
+            app.flipSwitch(toggle)
+            return toggleIsOn()
+        }
+        if !flipped {
             Screenshots.capture(app, "debug-01-backup", testCase: self)
             print("E2E debug: writtenDownToggle value = \(toggle.value ?? "nil")")
             print(app.debugDescription)
         }
+        XCTAssertTrue(flipped, "the written-down toggle never read on")
         let backupStart = Date()
-        XCTAssertTrue(scrollUntilExists(app, done, maxSwipes: 4), "backup Done button left the screen")
+        XCTAssertTrue(scrollUntilExists(app, done, maxSwipes: 4), "backup Done button was not reachable")
+        XCTAssertTrue(poll(timeout: 10, interval: 1, "backup Done button enabled") { done.isEnabled })
         done.tap()
         XCTAssertTrue(app.staticTexts["balanceText"].waitForExistence(timeout: 60),
                       "wallet home did not appear after backup")
@@ -549,7 +550,21 @@ final class WinnowAppUITests: XCTestCase {
         let savingsRow = app.staticTexts["E2E Vault"].firstMatch
         XCTAssertTrue(savingsRow.waitForExistence(timeout: 30),
                       "savings from test04 missing — run the full suite")
+        // The balance the app shows before funding: it may already hold
+        // coins from earlier attempts, so "non-zero" would not prove the
+        // app has scanned the coin this request is about to spend.
+        savingsRow.tap()
+        let balance = app.staticTexts["savingsBalance"]
+        func shownBalance() -> Int64 {
+            guard balance.exists else { return -1 }
+            let text = balance.label.isEmpty ? ((balance.value as? String) ?? "") : balance.label
+            return Int64(text.filter(\.isNumber)) ?? -1
+        }
+        _ = balance.waitForExistence(timeout: 20)
+        let balanceBefore = max(shownBalance(), 0)
+        var fundedNow: Int64 = 0
         if try freshCoins().isEmpty {
+            fundedNow = 200_000
             let mempoolBefore = Set(try BitcoinCLI.mempoolTxids())
             app.tabBars.buttons["Send"].tap()
             app.typeInto("destinationField", savingsAddress)
@@ -576,10 +591,10 @@ final class WinnowAppUITests: XCTestCase {
             return XCTFail("the savings were not funded")
         }
         app.tabBars.buttons["People"].tap()
-        savingsRow.tap()
-        let balance = app.staticTexts["savingsBalance"]
+        if !balance.exists { savingsRow.tap() }
+        let target = max(balanceBefore + fundedNow, 1)
         XCTAssertTrue(poll(timeout: 240, interval: 5, "the savings see their coin") {
-            if balance.exists, (balance.value as? String ?? balance.label) != "0 sats" { return true }
+            if shownBalance() >= target { return true }
             app.tabBars.buttons["Wallet"].tap()
             self.nudgeSync(app)
             app.tabBars.buttons["People"].tap()
@@ -634,13 +649,20 @@ final class WinnowAppUITests: XCTestCase {
         Timings.record("vault", step: "cosign-review", from: reviewStart)
         Screenshots.capture(app, "15-approve-request", testCase: self)
 
-        app.buttons["approveButton"].tap()
-        XCTAssertTrue(poll(timeout: 60, "this phone's approval") { progress.exists && progress.label.contains("2 of 2") })
+        let approveNow = app.buttons["approveButton"]
+        XCTAssertTrue(scrollUntilExists(app, approveNow), "no Approve button")
+        approveNow.tap()
+        XCTAssertTrue(poll(timeout: 60, "this phone's approval") {
+            _ = self.scrollUntilExists(app, progress, maxSwipes: 2, up: true)
+            return progress.exists && progress.label.contains("2 of 2")
+        })
         XCTAssertTrue(scrollUntilExists(app, app.staticTexts["Share your approval"]), "no approval to share back")
         let finish = app.buttons["finishApprovalButton"]
         XCTAssertTrue(scrollUntilExists(app, finish, up: true) && finish.isEnabled, "Finish is not offered at threshold")
         finish.tap()
-        XCTAssertTrue(app.staticTexts["approvalBroadcast"].waitForExistence(timeout: 60), "the finish did not broadcast")
+        XCTAssertTrue(poll(timeout: 60, "the finish broadcasts") {
+            self.scrollUntilExists(app, app.staticTexts["approvalBroadcast"], maxSwipes: 2)
+        }, "the finish did not broadcast")
         XCTAssertTrue(poll(timeout: 60, interval: 1, "spend in the node's mempool") {
             (try? BitcoinCLI.mempoolTxids().isEmpty == false) ?? false
         })

@@ -1,6 +1,6 @@
 {
   "device" : "iPhone 17 Pro Max",
-  "run" : "2026-09-05T15:53:07Z",
+  "run" : "2026-09-05T16:22:54Z",
   "scenarios" : [
     {
       "name" : "onboarding",
@@ -58,7 +58,7 @@
       "name" : "vault",
       "steps" : [
         {
-          "seconds" : 7.45,
+          "seconds" : 7.36,
           "step" : "cosign-review"
         }
       ]
@@ -74,12 +74,12 @@
     }
   ],
   "totals" : {
-    "all" : 71.78,
+    "all" : 71.69,
     "funding" : 31.86,
     "import" : 18.86,
     "onboarding" : 4,
     "receive" : 2.22,
     "send" : 7.39,
-    "vault" : 7.45
+    "vault" : 7.36
   }
 }

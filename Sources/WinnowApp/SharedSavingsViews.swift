@@ -278,8 +278,12 @@ struct SharedSavingsDetailView: View {
                 }
 
                 Section("Balance · confirmed") {
-                    LabeledContent("Total", value: satsText(record.balance))
-                        .accessibilityIdentifier("savingsBalance")
+                    LabeledContent("Total") {
+                        // The identifier sits on the value so tests read the
+                        // amount, not the row's label.
+                        Text(satsText(record.balance))
+                            .accessibilityIdentifier("savingsBalance")
+                    }
                     if record.utxos.isEmpty {
                         Text("No money in yet. Payments to the address above appear once they confirm in a block.")
                             .font(.footnote)
