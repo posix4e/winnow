@@ -355,7 +355,22 @@ public actor HeaderChain {
                 throw HeaderChainError.badPeerResponse("expected headers")
             }
             if batch.isEmpty { return outcome }
-            let connected = try connect(batch)
+            let connected: ConnectOutcome
+            do {
+                connected = try connect(batch)
+            } catch HeaderChainError.reorgWithoutMoreWork
+                where batch.count == 1 && heightByHash[batch[0].previousHash] == height - 1 {
+                // A sibling of our tip with no more work: the losing block
+                // of a race the peer saw first. Being on the losing side is
+                // a state, not a lie, so it is treated like a replay — ask
+                // again, a bounded number of times, and end without a
+                // fault. A lighter branch longer than one block is not what
+                // a race produces and stays a fault.
+                outcome.staleSiblings += 1
+                replays += 1
+                if replays > Self.maxReplayedBatches { return outcome }
+                continue
+            }
             outcome.absorb(connected)
             // A batch made only of headers already held answers nothing: it
             // was an announcement or a stale reply that the wait consumed in
@@ -510,6 +525,10 @@ public actor HeaderChain {
         public var minForkHeight: UInt32?
         /// Headers disconnected across the whole sync.
         public var disconnectedHeaders: Int = 0
+
+        /// Batches that offered a sibling of the tip with no more work — the
+        /// peer is on the losing side of a race, not lying.
+        public var staleSiblings = 0
 
         mutating func absorb(_ batch: ConnectOutcome) {
             connected += batch.appended
