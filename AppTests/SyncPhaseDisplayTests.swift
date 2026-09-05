@@ -100,3 +100,19 @@ final class FilterScanRowHonestyTests: XCTestCase {
             .filterScanText(fallbackScanned: 0, fallbackTip: 0))
     }
 }
+
+/// The one sync line a beginner reads.
+final class BeginnerSyncSummaryTests: XCTestCase {
+    func testEveryPhaseHasABeginnerSummary() {
+        typealias Phase = AppModel.SyncPhase
+        for phase in [Phase.idle, .connecting(connected: 1, target: 3),
+                      .headers(synced: 1, tipEstimate: 2), .filters(scanned: 1, tip: 2)] {
+            XCTAssertEqual(Phase.summary(phase: phase, syncing: false), .syncing, "\(phase)")
+            XCTAssertEqual(Phase.summary(phase: phase, syncing: true), .syncing, "\(phase)")
+        }
+        XCTAssertEqual(Phase.summary(phase: .synced, syncing: false), .synced)
+        XCTAssertEqual(Phase.summary(phase: .synced, syncing: true), .syncing, "a running scan is progress")
+        XCTAssertEqual(Phase.summary(phase: .peerDiscoveryFailed, syncing: false), .peersUnavailable)
+        XCTAssertEqual(Phase.summary(phase: .peerDiscoveryFailed, syncing: true), .peersUnavailable)
+    }
+}

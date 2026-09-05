@@ -8,8 +8,16 @@ Use these six files, in this order, as the composition candidates for the final 
 2. `03-receive.png` — native Taproot receive flow
 3. `05-send-form.png` — fee selection without a fee server
 4. `06-send-review.png` — explicit payment review before signing
-5. `11-vault-list.png` — 2-of-3 vault support
-6. `15-vault-cosign.png` — output-by-output PSBT review
+5. `24-people.png` — the address book, with fresh addresses per payment
+6. `26-savings-share.png` — shared savings, 2 of 3, shared as a card
+
+`15-approve-request.png` (a co-owner approving a spend in plain words) and
+`25-pay-person-review.png` (a review that names the person) are the
+alternates. `11-vault-list.png` and `15-vault-cosign.png` were the raw vault
+views; the app now shows those only in Advanced mode, and the beginner shots
+above replace them in the set. Every capture shows the four tabs Wallet,
+Send, People, Settings; the Vaults section appears in `10-vault-create` and
+`11-vault-list` because that run launches in Advanced mode.
 
 These are deterministic signet fixtures, not real funds. All six were visually inspected on 2026-08-17; none contains a mnemonic or development endpoint. They are not yet upload-ready: onboarding explicitly names signet and the payment screens use testnet addresses. Recapture and recheck the set after the mainnet-default change in #9.
 

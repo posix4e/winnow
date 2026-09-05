@@ -2,11 +2,12 @@
 
 A private, opinionated, modern Bitcoin wallet for iOS — 100% Swift, one dependency.
 
-**[Public beta on TestFlight](https://testflight.apple.com/join/83djpNE7)** — signet by default.
+**[Public beta on TestFlight](https://testflight.apple.com/join/83djpNE7)** — mainnet by default; signet is one Advanced-mode toggle away.
 
 - **Pure P2P by default.** The read side is BIP157/158 compact block filters served by full-node peers — no server ever learns your addresses. Bounded **mempool windows** (short full-relay subscriptions while the Receive or Send screen is open) give 0-conf payment detection and propagation tracking without any server. Design papers, framed around the phone: [design-paper index](.github/internal/design-papers.md).
 - **Taproot only.** P2TR receiving (BIP86); no legacy address types, no ECDSA signing paths.
-- **Two modern multisig flavors.** MuSig2 (BIP327) n-of-n vaults and script-path k-of-n (`multi_a`, BIP387/388), coordinated over PSBTv2 (BIP370/371/373).
+- **People and shared savings.** An address book of people, each with a public account key so every payment to them gets a fresh address, and savings held together as a Taproot k-of-n that no single key can spend: pick co-owners, choose how many must approve, ask for and give approvals as text. Cards carry public keys only.
+- **Two modern multisig flavors.** MuSig2 (BIP327) n-of-n vaults and script-path k-of-n (`multi_a`, BIP387/388), coordinated over PSBTv2 (BIP370/371/373). Shared savings are the k-of-n form in plain words; Advanced mode shows the descriptors and PSBTs.
 - **Silent payments** (BIP352) live on the [`alpha`](../../tree/alpha) branch, not here. Receiving needs a per-block tweak-data server that does not exist as public infrastructure, which is the unsolved part; see `ALPHA.md` on that branch.
 - **One runtime dependency:** [`swift-secp256k1`](https://github.com/21-DOT-DEV/swift-secp256k1) (Bitcoin Core's libsecp256k1), pinned.
 - **Warned explorer links** — choose mempool.space or a custom Esplora website; Winnow opens it only after a tap and privacy warning, never as a wallet backend.
@@ -32,7 +33,11 @@ DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer swift test   # unit, pr
 /opt/homebrew/bin/xcodegen && open WinnowApp.xcodeproj                # iOS app
 ```
 
-Default network for development is signet. Point the app at your own
+Mainnet is the default network, and the app starts in beginner mode: Wallet,
+Send, People, Settings. Turn on Advanced mode in Settings for the test
+network, your own peers, chain verification, the block explorer, fee bumping,
+build details and the raw vault tools; a peer or setting you already have
+stays visible until you remove it. Switch to signet there for development. Point the app at your own
 filter-serving node (Settings → Manual peers); the node needs
 `blockfilterindex=1` and `peerblockfilters=1`.
 

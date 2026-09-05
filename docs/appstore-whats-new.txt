@@ -1,0 +1,7 @@
+Winnow keeps your bitcoin on your phone and reads the chain straight from ordinary Bitcoin nodes. No account, no server, no company in the middle.
+
+This first release:
+• Send and receive with fresh Taproot addresses.
+• People: an address book where every payment to someone gets a fresh address, from a card they share with you.
+• Shared savings: hold money together with the people you choose, and decide how many of you must approve before it moves.
+• Advanced mode for the test network, your own peers, chain verification and the raw multisig tools.

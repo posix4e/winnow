@@ -839,3 +839,64 @@ a chain starting at 900,000 cannot ask about earlier blocks. Found by measuring:
 a birthday-0 wallet hit `FilterSyncError` outright. Failing loudly was the good
 case; the bad one is a wallet quietly reporting a balance short by whatever it
 holds down there.
+
+---
+
+## 2026-09-05 · Claude — People, shared savings, beginner mode (#6 #7 #9)
+
+Same branch `feat/mainnet-default`, on top of the entry below. The App Store
+build shows a beginner Wallet, Send, People, Settings.
+
+- **People** (`Sources/WinnowApp/PeopleStore.swift`, `PeopleView.swift`;
+  primitives in `Sources/WalletCore/Wallet/People.swift`): a person is a
+  name, a pay-to key (`PersonPayTo`: a single-key ranged `tr()` descriptor,
+  receive chain only, or one fixed address with a reuse warning) and a
+  script-path signer key. `people.json` is per network, public keys only,
+  validated as strictly as `vaults.json`, and deliberately survives
+  deleting a wallet (it is absent from the file lists in `adopt` and
+  `destroyWallet`). Damage is a notice on the tab and a refusal to mutate,
+  never a blocked boot. Cards (`PersonCard`, `SharedSavingsCard`,
+  `ApprovalRequest`) are sorted-key JSON with a `winnow` kind field.
+- **Shared savings** are k-of-n vaults read through their signer keys
+  (`AppModel.recomputeSharedSavings`): nothing persisted maps a vault to
+  people, so the mapping cannot dangle or lie. Creation ends on the savings
+  card on purpose: a co-owner's phone scans forward from when it adds the
+  descriptor and `Vault.reviewSpend` refuses coins it has not seen, so the
+  card must travel before money does. `VaultSpendSession` +
+  `ApprovalView` are the beginner spend flow; the expert `VaultSignView`
+  and `VaultSpendView` now call the same `AppModel` helpers
+  (`reviewVaultSpend`, `createVaultSpend`, `partialSignVaultSpend`,
+  `finalizeAndBroadcastVaultSpend`).
+- **Paying a person** peeks `nextPaymentIndex` at review and advances it
+  only when the send commits (`SendPreview.recipient`); a request built
+  for a person advances it when the request exists. Two payers can still
+  collide on the recipient's receive chain (they share it with the
+  recipient's own Receive screen): a privacy cost, stated on the card
+  screen, never a loss, because the recipient's wallet moves its frontier
+  past every payment it finds.
+- **Beginner mode** hides: Filter scan / Peers rows (one-line
+  `SyncPhase.summary`), Bump fee, Connected peers, About internals, the raw
+  Vaults section. Manual peers, chain verification and the explorer stay
+  while non-default (`showsManualPeers` etc.). `WINNOW_E2E_ADVANCED=1`
+  launches advanced; test04 and test05 use it, test07 became the beginner
+  approve-and-finish flow on real signet coins, tests 10–12 cover people,
+  the beginner shell, and savings creation.
+- Not done: QR scanning of cards, editing people, "Delete all people", a
+  guard for more than 20 in-flight payments to one person, silent-payment
+  pay-to, MuSig2 savings in beginner mode.
+
+---
+
+## 2026-09-05 · Claude — Advanced mode and mainnet by default (#9, #8)
+
+Branch `feat/mainnet-default`, extracted from the `feat/submission-routes`
+draft so the App Store build can carry the flag without the routes work.
+
+- `AppModel.advancedMode` (global `DefaultsKey.advancedMode`, off by
+  default, `WINNOW_E2E_ADVANCED=1` for UI tests) and the Settings toggle.
+- `AppModel.defaultNetwork = .mainnet`; the Network picker in Settings and
+  onboarding shows only in Advanced mode, except that a wallet already on
+  signet always keeps it (`showsNetworkPicker`), so turning the flag off can
+  never strand one there.
+- #8, the owner's mainnet acceptance run, is still the gate for calling the
+  flip verified; v0.5.1 removed the stale-peer stall that blocked it.

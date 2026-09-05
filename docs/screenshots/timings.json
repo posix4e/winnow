@@ -1,16 +1,16 @@
 {
   "device" : "iPhone 17 Pro Max",
-  "run" : "2026-08-17T12:40:43Z",
+  "run" : "2026-09-05T16:22:54Z",
   "scenarios" : [
     {
       "name" : "onboarding",
       "steps" : [
         {
-          "seconds" : 2.74,
+          "seconds" : 2.41,
           "step" : "wallet-create"
         },
         {
-          "seconds" : 2.04,
+          "seconds" : 1.59,
           "step" : "backup→home"
         }
       ]
@@ -19,7 +19,7 @@
       "name" : "receive",
       "steps" : [
         {
-          "seconds" : 2.16,
+          "seconds" : 2.22,
           "step" : "address-shown"
         }
       ]
@@ -28,11 +28,11 @@
       "name" : "funding",
       "steps" : [
         {
-          "seconds" : 1951.04,
-          "step" : "mine-101-blocks"
+          "seconds" : 30.85,
+          "step" : "mine-100-blocks"
         },
         {
-          "seconds" : 0.69,
+          "seconds" : 1.01,
           "step" : "mined→detected-by-filters"
         }
       ]
@@ -41,15 +41,15 @@
       "name" : "send",
       "steps" : [
         {
-          "seconds" : 0.66,
+          "seconds" : 1.12,
           "step" : "form→broadcast"
         },
         {
-          "seconds" : 0.02,
+          "seconds" : 0.01,
           "step" : "broadcast→echo/relay"
         },
         {
-          "seconds" : 18.26,
+          "seconds" : 6.26,
           "step" : "mine→confirmed"
         }
       ]
@@ -58,11 +58,7 @@
       "name" : "vault",
       "steps" : [
         {
-          "seconds" : 26.86,
-          "step" : "create"
-        },
-        {
-          "seconds" : 15.13,
+          "seconds" : 7.36,
           "step" : "cosign-review"
         }
       ]
@@ -71,19 +67,19 @@
       "name" : "import",
       "steps" : [
         {
-          "seconds" : 18.79,
+          "seconds" : 18.86,
           "step" : "verify"
         }
       ]
     }
   ],
   "totals" : {
-    "all" : 2038.39,
-    "funding" : 1951.73,
-    "import" : 18.79,
-    "onboarding" : 4.78,
-    "receive" : 2.16,
-    "send" : 18.94,
-    "vault" : 41.99
+    "all" : 71.69,
+    "funding" : 31.86,
+    "import" : 18.86,
+    "onboarding" : 4,
+    "receive" : 2.22,
+    "send" : 7.39,
+    "vault" : 7.36
   }
 }
