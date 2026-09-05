@@ -1014,8 +1014,13 @@ final class WinnowAppUITests: XCTestCase {
         Screenshots.capture(settled, "22-phrase-revealed", testCase: self)
         XCUIDevice.shared.press(.home)
         settled.activate()
-        XCTAssertFalse(settled.staticTexts[firstWord].waitForExistence(timeout: 3),
-                       "Settings recovery phrase survived backgrounding")
+        // As in test08: the clear rides on the scene's background
+        // transition, which a slow simulator delivers a moment after the
+        // app is back, so wait for the phrase to go rather than read it in
+        // the first three seconds.
+        XCTAssertTrue(poll(timeout: 15, interval: 1, "recovery phrase cleared on backgrounding") {
+            !settled.staticTexts[firstWord].exists
+        }, "Settings recovery phrase survived backgrounding")
         XCTAssertTrue(scrollUntilExists(settled, revealButton, up: true),
                       "phrase sheet did not dismiss to Settings")
 
