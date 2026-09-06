@@ -26,6 +26,19 @@ func testMaster() throws -> HDKey {
     try HDKey(seed: BIP39.seed(mnemonic: testMnemonic))
 }
 
+/// Mines until the node's tip is at least `height`, paying an unspendable
+/// burn output, so a check that reads recent blocks holds on a fresh
+/// fixture at height 0 as well as on a long-lived one. Every other suite
+/// already mines what it needs; this is the same courtesy for the checks
+/// that only read.
+func ensureChain(atLeast height: Int) async throws {
+    let burnScript = try BIP86.scriptPubKey(
+        internalKey: BIP86.xonlyPublicKey(of: testMaster().derived(path: "m/86'/1'/9'/0/2")))
+    while try BitcoinCLI.blockCount() < height {
+        _ = try await SignetMiner.mineOntoTip(payingTo: burnScript)
+    }
+}
+
 /// Thread-safe sink for FilterSync matches.
 final class MatchCollector: @unchecked Sendable {
     private let lock = NSLock()
