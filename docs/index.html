@@ -104,12 +104,12 @@
     -webkit-backdrop-filter:saturate(180%) blur(18px);
     border-bottom:1px solid var(--rule);
   }
-  .nav-in{display:flex;align-items:center;justify-content:space-between;height:46px}
+  .nav-in{display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:.6rem 1rem;min-height:46px;padding-block:.65rem}
   .brand{display:flex;align-items:center;gap:.5rem;font-weight:650;letter-spacing:-.02em;font-size:.98rem}
   .glyph{width:1.15rem;height:1.15rem;border-radius:.3rem;background:var(--mark);flex:none;
     display:grid;place-items:center}
   .glyph svg{width:.72rem;height:.72rem;display:block}
-  .nav-links{display:flex;gap:1.35rem;font-size:.855rem}
+  .nav-links{display:flex;flex-wrap:wrap;gap:.6rem 1.1rem;font-size:.875rem}
   .nav-links a{color:var(--ink-2)}
   .nav-links a:hover{color:var(--ink);text-decoration:none}
   @media (max-width:26rem){ .nav-links a.hide-xs{display:none} }
@@ -245,6 +245,20 @@
   }
   .status .dot{width:.42rem;height:.42rem;border-radius:50%;background:var(--good);flex:none}
 
+  /* ── release roadmap ───────────────────────────────────── */
+  #roadmap{scroll-margin-top:7rem}
+  .roadmap-intro{max-width:43rem}
+  .roadmap-intro .sub{max-width:none;margin-top:1.2rem}
+  .roadmap-status{margin-top:1.2rem;font-size:.95rem;color:var(--ink-2)}
+  .roadmap-list{list-style:none;margin-top:2.5rem;border-top:1px solid var(--rule)}
+  .roadmap-step{display:grid;grid-template-columns:1fr;gap:.8rem 2rem;padding:1.8rem 0;border-bottom:1px solid var(--rule)}
+  .roadmap-version{font:650 1.8rem var(--mono);color:var(--seed);font-variant-numeric:tabular-nums}
+  .roadmap-version span{display:block;margin-top:.4rem;font:500 .875rem var(--sans);color:var(--ink-2)}
+  .roadmap-step h3{font-size:1.3rem;line-height:1.2}
+  .roadmap-step p{margin-top:.7rem;max-width:43rem;color:var(--ink-2)}
+  .roadmap-step .roadmap-detail{font-size:.95rem}
+  @media(min-width:40rem){.roadmap-step{grid-template-columns:8rem minmax(0,1fr)}}
+
   /* ── footer ─────────────────────────────────────────────── */
   footer{border-top:1px solid var(--rule);padding:2.2rem 0 3rem;font-size:.875rem;color:var(--ink-3)}
   .foot-in{display:flex;flex-wrap:wrap;gap:.9rem 2rem;justify-content:space-between;align-items:flex-start}
@@ -344,8 +358,8 @@
     <div class="nav-links">
       <a href="#custody">How you hold it</a>
       <a href="#how" class="hide-xs">How it works</a>
+      <a href="#roadmap">Roadmap</a>
       <a href="/architecture" class="hide-xs">Architecture</a>
-      <a href="/paper.md">Paper</a>
       <a href="https://github.com/posix4e/winnow">Source</a>
     </div>
   </div>
@@ -354,11 +368,11 @@
 <header class="hero">
   <div class="wrap hero-grid">
     <div class="copy">
-      <p class="eyebrow">Public beta · open source</p>
+      <p class="eyebrow">Early access · open source</p>
       <h1>Start with one.<span class="soft">Add protection when it matters.</span></h1>
       <p class="sub">A Bitcoin wallet that runs on your phone. No servers, shortcuts or tricks.</p>
       <div class="cta">
-        <a class="btn" href="https://testflight.apple.com/join/83djpNE7">Join the public beta</a>
+        <a class="btn" href="https://testflight.apple.com/join/83djpNE7">Try Winnow on TestFlight</a>
         <a class="btn ghost" href="#how">See how it works</a>
       </div>
     </div>
@@ -538,11 +552,63 @@
   </div>
 </section>
 
+<!-- ══ release roadmap ══ -->
+<section id="roadmap" aria-labelledby="roadmap-title">
+  <div class="wrap">
+    <div class="roadmap-intro">
+      <p class="eyebrow">Release roadmap</p>
+      <h2 id="roadmap-title">The path to 1.0. Then the next Bitcoin proposals.</h2>
+      <p class="sub">First, add a Safe for long-term storage. Then stabilize, open the official beta, and use security review to decide when 1.0 is ready.</p>
+      <p class="roadmap-status">Current release: <a href="https://github.com/posix4e/winnow/releases/tag/v0.6.0">0.6 · early access</a>. These are planned milestones; readiness sets the schedule.</p>
+    </div>
+    <ol class="roadmap-list" role="list">
+      <li class="roadmap-step">
+        <div class="roadmap-version">0.7<span>Next milestone</span></div>
+        <div>
+          <h3>The P2WSH Safe</h3>
+          <p>Add an opt-in Safe that keeps fresh spending public keys hidden while coins are parked. It uses Bitcoin's existing P2WSH rules and ordinary compact filters, with private backups, fresh change, and a complete restore-and-withdraw flow.</p>
+          <p class="roadmap-detail">This protects parked coins against slow quantum key recovery when the keys stay private. Spending reveals the key, so withdrawal still needs to confirm before an attacker can recover it. It is not full post-quantum signing. <a href="https://github.com/posix4e/winnow/issues/187">Safe design and release criteria →</a></p>
+        </div>
+      </li>
+      <li class="roadmap-step">
+        <div class="roadmap-version">0.8<span>Planned</span></div>
+        <div>
+          <h3>Stabilization</h3>
+          <p>Focus on reliable backup and recovery, offline catch-up, withdrawals and fee bumps. Exercise interrupted syncs and chain reorganizations, fix regressions, and measure memory, bandwidth and battery use on supported iPhones.</p>
+        </div>
+      </li>
+      <li class="roadmap-step">
+        <div class="roadmap-version">0.9<span>Planned</span></div>
+        <div>
+          <h3>Official beta</h3>
+          <p>Open the official beta with a defined feature set, documented recovery steps and known limitations. Use broader testing and feedback to validate everyday use before the 1.0 review.</p>
+        </div>
+      </li>
+      <li class="roadmap-step">
+        <div class="roadmap-version">1.0<span>Review milestone</span></div>
+        <div>
+          <h3>Release after security review</h3>
+          <p>Security review determines release readiness. Address release-blocking findings, recheck the fixes, and publish the review scope, results and remaining limitations before calling Winnow 1.0.</p>
+        </div>
+      </li>
+      <li class="roadmap-step">
+        <div class="roadmap-version">2.0<span>Next development phase</span></div>
+        <div>
+          <h3>Work on the next BIP options</h3>
+          <p>Begin research and prototypes for the next Bitcoin Improvement Proposals, including <a href="https://github.com/bitcoin/bips/blob/master/bip-0360.mediawiki">P2MR (BIP360)</a> and an opt-in path from existing Safes. Mainnet use depends on network activation and wallet readiness; merging a proposal alone does not enable it. <a href="https://github.com/posix4e/winnow/issues/123">P2MR plan →</a></p>
+          <p>For <a href="https://github.com/posix4e/winnow/issues/188">full Silent Payments</a>, the plan is compact public tweak data from compatible Bitcoin peers, matched locally on the phone. No dedicated servers or indexers, and no full-chain downloads. This requires new peer support; missing peers or history leave checks resumable, with no server fallback.</p>
+          <p class="roadmap-detail">Silent Payments adds payment privacy. P2MR addresses long-term public-key exposure. Full post-quantum spending remains separate future work. <a href="https://github.com/posix4e/winnow/issues/186">Follow the full roadmap →</a></p>
+        </div>
+      </li>
+    </ol>
+  </div>
+</section>
+
 <!-- ══ CTA ══ -->
 <section>
   <div class="wrap">
     <div class="cta-panel">
-      <p class="eyebrow">Public beta · open source</p>
+      <p class="eyebrow">Early access · open source</p>
       <h2>Try Winnow.</h2>
       <p class="sub">Free, open source, and yours to inspect.</p>
       <div class="cta" style="justify-content:center">
@@ -557,6 +623,7 @@
   <div class="wrap foot-in">
     <span>Winnow — a Taproot-first Bitcoin wallet for iPhone. Free and open source.</span>
     <div class="foot-links">
+      <a href="#roadmap">Roadmap</a>
       <a href="/custody">How you hold it</a>
       <a href="/present">Presentation</a>
       <a href="/architecture">Architecture</a>
