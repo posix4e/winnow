@@ -1,0 +1,22 @@
+# Winnow CI fixture: a disposable custom signet holding no value.
+# Written by infra/fixture/bootstrap.sh; edits here are overwritten.
+signet=1
+
+[signet]
+signetchallenge=512102d4d3dfe322ab358061c7e08beebb48dc06a4c175342b975ecd0d55a79e6d6cdc51ae
+rpcport=38400
+port=38401
+rpcbind=127.0.0.1
+rpcbind=@BIND_ADDRESS@
+rpcallowip=127.0.0.1
+rpcallowip=100.64.0.0/10
+listen=1
+# The differential suite diffs our filters against the node's, so it serves them.
+blockfilterindex=1
+peerblockfilters=1
+txindex=1
+fallbackfee=0.0002
+# An isolated chain: no seeds, no outbound discovery.
+dnsseed=0
+# CI runners authenticate with the fixed winnow-ci credential (repo secret BTC_SWIFT_RPC_COOKIE).
+@RPCAUTH@

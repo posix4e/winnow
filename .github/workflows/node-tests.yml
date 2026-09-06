@@ -5,6 +5,9 @@ name: Node e2e (manual)
 # and ordinary development must not depend on a bitcoind running on an owner's
 # workstation. Enable this workflow only after provisioning a dedicated runner
 # with the `node-e2e` label and its own disposable custom-signet fixture.
+# Both are recreatable from infra/ (infra/README.md): the fixture with
+# infra/fixture/bootstrap.sh on a docker host on the tailnet, the macOS runner
+# with infra/runner/provision.sh after cloning an OSX-KVM guest.
 #
 # Node location is configurable via repository VARIABLES (not secrets) —
 # unset variables fall back to the local-dev defaults:

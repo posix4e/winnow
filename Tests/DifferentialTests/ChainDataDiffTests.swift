@@ -32,7 +32,8 @@ struct FilterDiffTests {
     }
 
     @Test("rebuilt basic filters match getblockfilter for the 5 most recent blocks")
-    func filters() throws {
+    func filters() async throws {
+        try await ensureChain(atLeast: 5)
         let tip = try BitcoinCLI.blockCount()
         try #require(tip >= 5)
         for height in (tip - 4) ... tip {
@@ -68,9 +69,10 @@ struct FilterDiffTests {
 @Suite("getblockheader differential", .enabled(if: diffEnabled))
 struct HeaderDiffTests {
     @Test("header fields and proof of work across the chain")
-    func headers() throws {
+    func headers() async throws {
         let params = NetworkParams.customSignet(challenge: BitcoinCLI.challenge,
                                                 defaultPort: BitcoinCLI.p2pPort)
+        try await ensureChain(atLeast: 5)
         let tip = try BitcoinCLI.blockCount()
         for height in Set([0, 1, tip / 2, tip - 1, tip]).sorted() {
             let hashDisplay = try BitcoinCLI.blockHash(at: height)

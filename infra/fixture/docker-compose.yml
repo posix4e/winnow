@@ -1,0 +1,15 @@
+# The CI signet fixture: a disposable custom signet that holds no value,
+# served to the node-e2e runner over Tailscale. Bring it up with
+# infra/fixture/bootstrap.sh, which writes bitcoin.conf first.
+#
+# Core 31.1 by digest: the differential suite compares against this exact
+# version, and VaultInteropDiffTests need musig() descriptors (Core >= 30).
+services:
+  winnow-signet:
+    image: bitcoin/bitcoin@sha256:da25cedc66b1daefff9f412ee196c901a899c3fa68a33b20849c3e08b5c40d63 # 31.1
+    container_name: winnow-signet
+    network_mode: host
+    restart: unless-stopped
+    command: ["-signet", "-printtoconsole"]
+    volumes:
+      - ${WINNOW_FIXTURE_DIR:-./data}:/home/bitcoin/.bitcoin
