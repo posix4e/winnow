@@ -309,6 +309,10 @@ public actor PeerPool {
         lastRejection[endpoint]
     }
 
+    /// Every endpoint dropped this session with the reason it was dropped,
+    /// for diagnostics that want the whole picture (the E2E journal).
+    public var rejectionReasons: [PeerEndpoint: String] { lastRejection }
+
     /// Syncs headers against connected peers with bounded failover. Header
     /// batches already accepted by `HeaderChain` remain persisted, so the next
     /// peer resumes from that progress rather than restarting at genesis.
