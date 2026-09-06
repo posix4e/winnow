@@ -9,6 +9,14 @@
 #
 # Steps (also runnable individually): register-bundle-id, create-app, upload,
 # wait-processing, notes, internal, external, status, all.
+#
+# App Store (never part of `all`; run by .github/workflows/appstore-submit.yml
+# on a manual dispatch): appstore-status, appstore-attach, appstore-notes,
+# appstore-submit. They act on one App Store version, APPSTORE_VERSION_ID
+# (the 1.0 version created in App Store Connect) or the version whose string
+# is APPSTORE_VERSION_STRING; attach a processed build to it, set its What's
+# New, and create a review submission. appstore-submit refuses to run unless
+# APPSTORE_CONFIRM_SUBMIT=yes.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -28,6 +36,12 @@ EXPECTED_MARKETING_VERSION="${TESTFLIGHT_MARKETING_VERSION:-}"
 # succeeded and the release still failed here. Default: 30 minutes.
 BUILD_WAIT_ATTEMPTS="${TESTFLIGHT_BUILD_WAIT_ATTEMPTS:-90}"
 BUILD_WAIT_SECONDS="${TESTFLIGHT_BUILD_WAIT_SECONDS:-20}"
+# App Store review, issue #7. The version id is the 1.0 record already in
+# App Store Connect; a version string finds it instead when the id is unset.
+APPSTORE_VERSION_ID="${APPSTORE_VERSION_ID-15a15f27-9d88-40d7-8e06-0efd5619b301}"
+APPSTORE_VERSION_STRING="${APPSTORE_VERSION_STRING:-$EXPECTED_MARKETING_VERSION}"
+APPSTORE_WHATS_NEW_FILE="${APPSTORE_WHATS_NEW_FILE:-docs/appstore-whats-new.txt}"
+APPSTORE_CONFIRM_SUBMIT="${APPSTORE_CONFIRM_SUBMIT:-}"
 
 jwt() { DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer swift scripts/asc-jwt.swift "$KEY_PATH" "$KEY_ID" "$ISSUER"; }
 asc() { # asc <METHOD> <path> [json-body]
@@ -271,6 +285,301 @@ print(a["internalBuildState"], a["externalBuildState"])
   case "$review" in WAITING_FOR_REVIEW|IN_REVIEW|APPROVED) ;; *) return 1 ;; esac
 }
 
+
+# MARK: - App Store (issue #7)
+
+version_id() {
+  if [ -n "$APPSTORE_VERSION_ID" ]; then
+    printf '%s\n' "$APPSTORE_VERSION_ID"
+    return
+  fi
+  [ -n "$APPSTORE_VERSION_STRING" ] || { echo "set APPSTORE_VERSION_ID or APPSTORE_VERSION_STRING" >&2; return 1; }
+  asc GET "/apps/$(app_id)/appStoreVersions?filter[platform]=IOS&filter[versionString]=$APPSTORE_VERSION_STRING&limit=2" | python3 -c '
+import json, sys
+rows = json.load(sys.stdin)["data"]
+if len(rows) != 1:
+    raise SystemExit(f"expected exactly one App Store version for that string; found {len(rows)}")
+print(rows[0]["id"])
+'
+}
+
+version_json() {
+  asc GET "/appStoreVersions/$(version_id)?include=build,appStoreVersionLocalizations&fields[appStoreVersions]=versionString,appVersionState,platform,releaseType,createdDate&fields[builds]=version,processingState,uploadedDate&fields[appStoreVersionLocalizations]=locale,whatsNew,description,keywords,supportUrl,marketingUrl,promotionalText"
+}
+
+version_state() {
+  version_json | python3 -c 'import json,sys; print(json.load(sys.stdin)["data"]["attributes"]["appVersionState"])'
+}
+
+version_build() {
+  version_json | python3 -c '
+import json, sys
+data = json.load(sys.stdin)["data"]
+build = (data.get("relationships", {}).get("build", {}) or {}).get("data") or {}
+print(build.get("id", ""))
+'
+}
+
+build_for_appstore() {
+  # The bare "latest upload" fallback in build_id is fine for TestFlight,
+  # where the worst case is testers seeing a build early. For App Store
+  # review the build must be named.
+  if [ -z "${TESTFLIGHT_BUILD_ID:-}" ] && { [ -z "$EXPECTED_BUILD_NUMBER" ] || [ -z "$EXPECTED_MARKETING_VERSION" ]; }; then
+    echo "appstore: name the build with TESTFLIGHT_BUILD_ID, or TESTFLIGHT_MARKETING_VERSION plus TESTFLIGHT_BUILD_NUMBER" >&2
+    return 1
+  fi
+  build_id
+}
+
+step_appstore_attach() {
+  local bid vid state attached prerelease payload attributes
+  bid=$(build_for_appstore)
+  vid=$(version_id)
+  TESTFLIGHT_BUILD_ID="$bid" step_wait_processing >/dev/null
+  if [ -n "$APPSTORE_VERSION_STRING" ]; then
+    prerelease=$(asc GET "/builds/$bid?include=preReleaseVersion&fields[preReleaseVersions]=version" | python3 -c '
+import json, sys
+included = json.load(sys.stdin).get("included", [])
+print(next((row["attributes"]["version"] for row in included if row["type"] == "preReleaseVersions"), ""))
+')
+    if [ "$prerelease" != "$APPSTORE_VERSION_STRING" ]; then
+      echo "appstore: build $bid is version $prerelease, not $APPSTORE_VERSION_STRING" >&2
+      return 1
+    fi
+  fi
+  attached=$(version_build)
+  if [ "$attached" = "$bid" ]; then
+    echo "appstore: build $bid is already attached to version $vid"
+    return 0
+  fi
+  state=$(version_state)
+  case "$state" in
+    PREPARE_FOR_SUBMISSION|DEVELOPER_REJECTED|METADATA_REJECTED|REJECTED|INVALID_BINARY) ;;
+    *)
+      echo "appstore: version $vid is $state; a build can only be attached while it is being prepared" >&2
+      return 1
+      ;;
+  esac
+  attributes='{}'
+  [ -n "$APPSTORE_VERSION_STRING" ] && attributes='{"versionString":"'"$APPSTORE_VERSION_STRING"'"}'
+  payload='{"data":{"type":"appStoreVersions","id":"'"$vid"'","attributes":'"$attributes"',"relationships":{"build":{"data":{"type":"builds","id":"'"$bid"'"}}}}}'
+  asc PATCH "/appStoreVersions/$vid" "$payload" >/dev/null
+  attached=$(asc GET "/appStoreVersions/$vid/build" | python3 -c 'import json,sys; print((json.load(sys.stdin)["data"] or {}).get("id", ""))')
+  if [ "$attached" != "$bid" ]; then
+    echo "appstore: App Store Connect did not report build $bid on version $vid after the attach" >&2
+    return 1
+  fi
+  echo "appstore: attached build $bid to version $vid${APPSTORE_VERSION_STRING:+ ($APPSTORE_VERSION_STRING)}"
+}
+
+step_appstore_notes() {
+  local vid localization_id payload response expected actual
+  vid=$(version_id)
+  if [ ! -s "$APPSTORE_WHATS_NEW_FILE" ]; then
+    echo "App Store What's New file is missing or empty: $APPSTORE_WHATS_NEW_FILE" >&2
+    return 1
+  fi
+  localization_id=$(asc GET "/appStoreVersions/$vid/appStoreVersionLocalizations?limit=200" | python3 -c '
+import json, sys
+rows = json.load(sys.stdin)["data"]
+matches = [row for row in rows if row.get("attributes", {}).get("locale") == "en-US"]
+if len(matches) > 1:
+    raise SystemExit(f"expected at most one en-US localization; found {len(matches)}")
+print(matches[0]["id"] if matches else "")
+')
+  if [ -n "$localization_id" ]; then
+    payload=$(python3 -c '
+import json, pathlib, sys
+path, resource_id = sys.argv[1:]
+print(json.dumps({"data": {"type": "appStoreVersionLocalizations", "id": resource_id,
+                           "attributes": {"whatsNew": pathlib.Path(path).read_text().rstrip()}}}))
+' "$APPSTORE_WHATS_NEW_FILE" "$localization_id")
+    response=$(asc PATCH "/appStoreVersionLocalizations/$localization_id" "$payload")
+    echo "appstore: updated en-US What's New for version $vid"
+  else
+    payload=$(python3 -c '
+import json, pathlib, sys
+path, version_id = sys.argv[1:]
+print(json.dumps({"data": {"type": "appStoreVersionLocalizations",
+                           "attributes": {"locale": "en-US", "whatsNew": pathlib.Path(path).read_text().rstrip()},
+                           "relationships": {"appStoreVersion": {"data": {"type": "appStoreVersions", "id": version_id}}}}}))
+' "$APPSTORE_WHATS_NEW_FILE" "$vid")
+    response=$(asc POST /appStoreVersionLocalizations "$payload")
+    echo "appstore: created en-US What's New for version $vid"
+  fi
+  expected=$(python3 -c 'import pathlib,sys; print(pathlib.Path(sys.argv[1]).read_text().rstrip())' "$APPSTORE_WHATS_NEW_FILE")
+  actual=$(printf '%s' "$response" | python3 -c 'import json,sys; print(json.load(sys.stdin)["data"]["attributes"]["whatsNew"])')
+  if [ "$actual" != "$expected" ]; then
+    echo "appstore: App Store Connect did not return the requested What's New text" >&2
+    return 1
+  fi
+}
+
+open_review_submissions() {
+  asc GET "/reviewSubmissions?filter[app]=$(app_id)&filter[platform]=IOS&filter[state]=READY_FOR_REVIEW,WAITING_FOR_REVIEW,IN_REVIEW,UNRESOLVED_ISSUES&limit=10"
+}
+
+# Prints everything first, then fails on whatever is missing, so a CI log is
+# the proof that the metadata behind "already set" is actually there.
+step_appstore_status() {
+  local vid aid tmp
+  vid=$(version_id)
+  aid=$(app_id)
+  tmp=$(mktemp -d)
+  version_json > "$tmp/version.json"
+  asc GET "/appStoreVersions/$vid/appStoreVersionLocalizations?include=appScreenshotSets&fields[appScreenshotSets]=screenshotDisplayType&limit=200" > "$tmp/localizations.json"
+  asc GET "/apps/$aid/appInfos?include=appInfoLocalizations,primaryCategory&fields[appInfos]=state,appStoreAgeRating&fields[appInfoLocalizations]=locale,name,subtitle,privacyPolicyUrl&fields[appCategories]=platforms" > "$tmp/appinfos.json"
+  open_review_submissions > "$tmp/submissions.json"
+  python3 - "$tmp" <<'EOF'
+import json, pathlib, sys
+tmp = pathlib.Path(sys.argv[1])
+version = json.loads((tmp / "version.json").read_text())
+localizations = json.loads((tmp / "localizations.json").read_text())
+appinfos = json.loads((tmp / "appinfos.json").read_text())
+submissions = json.loads((tmp / "submissions.json").read_text())
+
+data = version["data"]
+attributes = data["attributes"]
+build = (data.get("relationships", {}).get("build", {}) or {}).get("data") or {}
+included = {(row["type"], row["id"]): row for row in version.get("included", [])}
+build_row = included.get(("builds", build.get("id")))
+build_text = "none"
+if build_row:
+    b = build_row["attributes"]
+    build_text = f'{build["id"]} (build {b.get("version")}, {b.get("processingState")})'
+print(f'version={data["id"]} string={attributes.get("versionString")} state={attributes.get("appVersionState")} '
+      f'release={attributes.get("releaseType")} build={build_text}')
+
+missing = []
+if not build_row:
+    missing.append("build")
+
+sets = {row["id"]: row["attributes"].get("screenshotDisplayType") for row in localizations.get("included", [])
+        if row["type"] == "appScreenshotSets"}
+en_us = None
+for row in localizations["data"]:
+    a = row["attributes"]
+    set_ids = [ref["id"] for ref in (row.get("relationships", {}).get("appScreenshotSets", {}).get("data") or [])]
+    kinds = sorted({sets.get(sid, "?") for sid in set_ids})
+    print(f'  locale={a.get("locale")} whatsNew={"yes" if a.get("whatsNew") else "no"} '
+          f'description={len(a.get("description") or "")} chars keywords={"yes" if a.get("keywords") else "no"} '
+          f'supportUrl={a.get("supportUrl") or "none"} marketingUrl={a.get("marketingUrl") or "none"} '
+          f'screenshotSets={",".join(kinds) or "none"}')
+    if a.get("locale") == "en-US":
+        en_us = a
+if en_us is None:
+    missing.append("en-US localization")
+else:
+    for key in ("whatsNew", "description", "keywords", "supportUrl"):
+        if not en_us.get(key):
+            missing.append(key)
+
+infos = appinfos["data"]
+info_included = {(row["type"], row["id"]): row for row in appinfos.get("included", [])}
+active = infos[0] if infos else None
+if active:
+    a = active["attributes"]
+    category = (active.get("relationships", {}).get("primaryCategory", {}) or {}).get("data") or {}
+    print(f'  appInfo state={a.get("state")} ageRating={a.get("appStoreAgeRating") or "unset"} '
+          f'primaryCategory={category.get("id") or "none"}')
+    if not category.get("id"):
+        missing.append("primaryCategory")
+    if not a.get("appStoreAgeRating"):
+        missing.append("appStoreAgeRating")
+    name_found = False
+    for ref in (active.get("relationships", {}).get("appInfoLocalizations", {}).get("data") or []):
+        row = info_included.get(("appInfoLocalizations", ref["id"]))
+        if not row:
+            continue
+        la = row["attributes"]
+        print(f'  appInfo locale={la.get("locale")} name={la.get("name") or "none"} subtitle={la.get("subtitle") or "none"} '
+              f'privacyPolicyUrl={la.get("privacyPolicyUrl") or "none"}')
+        if la.get("locale") == "en-US":
+            name_found = bool(la.get("name"))
+            if not la.get("privacyPolicyUrl"):
+                missing.append("privacyPolicyUrl")
+    if not name_found:
+        missing.append("name")
+else:
+    missing.append("appInfo")
+
+rows = submissions["data"]
+print(f'  openReviewSubmissions={len(rows)}' + "".join(f' {r["id"]}:{r["attributes"].get("state")}' for r in rows))
+
+if missing:
+    print("appstore: missing " + ", ".join(missing), file=sys.stderr)
+    raise SystemExit(1)
+print("appstore: metadata complete")
+EOF
+  local result=$?
+  rm -rf "$tmp"
+  return $result
+}
+
+step_appstore_submit() {
+  local vid aid attached whats_new rs state payload
+  if [ "$APPSTORE_CONFIRM_SUBMIT" != "yes" ]; then
+    echo "appstore: refusing to submit without APPSTORE_CONFIRM_SUBMIT=yes" >&2
+    return 1
+  fi
+  vid=$(version_id)
+  aid=$(app_id)
+  attached=$(version_build)
+  if [ -z "$attached" ]; then
+    echo "appstore: version $vid has no build attached; run appstore-attach first" >&2
+    return 1
+  fi
+  whats_new=$(asc GET "/appStoreVersions/$vid/appStoreVersionLocalizations?limit=200" | python3 -c '
+import json, sys
+rows = json.load(sys.stdin)["data"]
+print(next((row["attributes"].get("whatsNew") or "" for row in rows if row["attributes"].get("locale") == "en-US"), ""))
+')
+  if [ -z "$whats_new" ]; then
+    echo "appstore: version $vid has no en-US What's New; run appstore-notes first" >&2
+    return 1
+  fi
+
+  read -r rs state < <(open_review_submissions | python3 -c '
+import json, sys
+rows = json.load(sys.stdin)["data"]
+print((rows[0]["id"] + " " + rows[0]["attributes"]["state"]) if rows else "- NONE")
+')
+  case "$state" in
+    WAITING_FOR_REVIEW|IN_REVIEW)
+      echo "appstore: submission $rs is already $state"
+      return 0
+      ;;
+    UNRESOLVED_ISSUES)
+      echo "appstore: submission $rs has unresolved issues; resolve them in App Store Connect" >&2
+      return 1
+      ;;
+    READY_FOR_REVIEW)
+      echo "appstore: reusing open submission $rs"
+      ;;
+    *)
+      rs=$(asc POST /reviewSubmissions '{"data":{"type":"reviewSubmissions","attributes":{"platform":"IOS"},"relationships":{"app":{"data":{"type":"apps","id":"'"$aid"'"}}}}}' \
+        | python3 -c 'import json,sys; print(json.load(sys.stdin)["data"]["id"])')
+      echo "appstore: created submission $rs"
+      ;;
+  esac
+  payload='{"data":{"type":"reviewSubmissionItems","relationships":{"reviewSubmission":{"data":{"type":"reviewSubmissions","id":"'"$rs"'"}},"appStoreVersion":{"data":{"type":"appStoreVersions","id":"'"$vid"'"}}}}}'
+  if ! asc POST /reviewSubmissionItems "$payload" >/dev/null; then
+    echo "appstore: the version could not be added to submission $rs (already there, or not ready)" >&2
+  fi
+  asc PATCH "/reviewSubmissions/$rs" '{"data":{"type":"reviewSubmissions","id":"'"$rs"'","attributes":{"submitted":true}}}' >/dev/null
+  for attempt in $(seq 1 12); do
+    state=$(asc GET "/reviewSubmissions/$rs" | python3 -c 'import json,sys; print(json.load(sys.stdin)["data"]["attributes"]["state"])')
+    echo "appstore: submission $rs is $state"
+    case "$state" in
+      WAITING_FOR_REVIEW|IN_REVIEW) return 0 ;;
+      UNRESOLVED_ISSUES) return 1 ;;
+    esac
+    sleep 15
+  done
+  echo "appstore: submission $rs did not reach WAITING_FOR_REVIEW" >&2
+  return 1
+}
+
 case "${1:-all}" in
   register-bundle-id) step_register_bundle_id ;;
   create-app) step_create_app ;;
@@ -280,6 +589,10 @@ case "${1:-all}" in
   internal) step_internal ;;
   external) step_external ;;
   status) step_status ;;
+  appstore-status) step_appstore_status ;;
+  appstore-attach) step_appstore_attach ;;
+  appstore-notes) step_appstore_notes ;;
+  appstore-submit) step_appstore_submit ;;
   all) step_register_bundle_id; step_create_app; step_upload; step_wait_processing; step_notes; step_internal; step_external ;;
   *) echo "unknown step $1" >&2; exit 2 ;;
 esac

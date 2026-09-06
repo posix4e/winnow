@@ -239,4 +239,15 @@ enum BitcoinCLI {
     static func mempoolTxids() throws -> [String] {
         (try runJSON(["getrawmempool"]) as? [String]) ?? []
     }
+
+    /// Unspent outputs paying a scriptPubKey (hex), from the node's UTXO set.
+    static func unspents(scriptHex: String) throws
+        -> [(txid: String, vout: UInt32, amount: Int64, height: UInt32)] {
+        let result = try runObject(["scantxoutset", "start", "[\"raw(\(scriptHex))\"]"])
+        return try array(result, "unspents").compactMap { entry in
+            guard let object = entry as? [String: Any], let value = object["amount"] else { return nil }
+            return (try string(object, "txid"), UInt32(try int(object, "vout")),
+                    try sats(value), UInt32(try int(object, "height")))
+        }
+    }
 }

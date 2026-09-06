@@ -51,6 +51,9 @@ struct E2EMode {
     /// Manual story runs exercise Local Authentication on the simulator.
     /// Ordinary XCUITests leave this false so they can run unattended.
     let requireDeviceAuthentication: Bool
+    /// `WINNOW_E2E_ADVANCED=1`: launch with advanced mode on, so a UI test can
+    /// reach the advanced controls without tapping through Settings first.
+    let advancedMode: Bool
 
     static let keychainServicePrefix = "org.btc-swift.wallet.e2e"
 
@@ -97,7 +100,8 @@ struct E2EMode {
                        forcedNetwork: environment["WINNOW_E2E_NETWORK"]
                            .flatMap(BitcoinNetwork.init(rawValue:)),
                        initialTab: environment["WINNOW_E2E_TAB"],
-                       requireDeviceAuthentication: environment["WINNOW_E2E_DEVICE_AUTH"] == "1"))
+                       requireDeviceAuthentication: environment["WINNOW_E2E_DEVICE_AUTH"] == "1",
+                       advancedMode: environment["WINNOW_E2E_ADVANCED"] == "1"))
     }
 
     static var current: E2EMode? {
@@ -274,6 +278,7 @@ struct E2EMode {
     var forcedNetwork: BitcoinNetwork? { unavailable() }
     var initialTab: String? { unavailable() }
     var requireDeviceAuthentication: Bool { unavailable() }
+    var advancedMode: Bool { unavailable() }
     var keychainService: String { unavailable() }
     var defaults: UserDefaults { unavailable() }
     var networkParams: NetworkParams? { unavailable() }

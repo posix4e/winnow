@@ -1,0 +1,113 @@
+name: App Store submission
+
+# Attaches a processed build to the App Store version, sets its What's New,
+# prints the metadata state, and, only when asked, submits it for review.
+# Manual by design: nothing here runs on a tag push. release.yml stops at
+# TestFlight; this is the last step of issue #7 and the owner triggers it.
+#
+# Inputs: the version string of the build to attach (required) and either its
+# App Store Connect build id or its build number; `submit` is off by default,
+# so the first dispatch is a dry pass that attaches, writes the notes, and
+# reports without submitting. `status_only` skips everything but the report:
+# the way to check the metadata before any build exists to attach.
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Marketing version of the build to attach (for example 1.0.0)
+        required: true
+        type: string
+      build_id:
+        description: App Store Connect build id; blank resolves by version and build number
+        required: false
+        type: string
+      build_number:
+        description: Build number (the release run number); used with version when build_id is blank
+        required: false
+        type: string
+      submit:
+        description: Submit for App Store review after attaching and writing the notes
+        required: false
+        type: boolean
+        default: false
+      status_only:
+        description: Only report the App Store version's metadata state; attach nothing
+        required: false
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: appstore-submit
+  cancel-in-progress: false
+
+env:
+  TESTFLIGHT_BUILD_ID: ${{ inputs.build_id }}
+  TESTFLIGHT_MARKETING_VERSION: ${{ inputs.version }}
+  TESTFLIGHT_BUILD_NUMBER: ${{ inputs.build_number }}
+  APPSTORE_VERSION_STRING: ${{ inputs.version }}
+
+jobs:
+  submit:
+    runs-on: macos-latest
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          persist-credentials: false
+
+      - name: Install App Store Connect key
+        env:
+          ASC_PRIVATE_KEY: ${{ secrets.ASC_PRIVATE_KEY }}
+        run: |
+          install -d -m 700 "${RUNNER_TEMP}/winnow-asc"
+          printf '%s' "$ASC_PRIVATE_KEY" > "${RUNNER_TEMP}/winnow-asc/AuthKey.p8"
+          chmod 600 "${RUNNER_TEMP}/winnow-asc/AuthKey.p8"
+
+      - name: Attach the build to the App Store version
+        if: ${{ !inputs.status_only }}
+        env:
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+          ASC_KEY_PATH: ${{ runner.temp }}/winnow-asc/AuthKey.p8
+        run: scripts/testflight.sh appstore-attach
+
+      - name: Write What's New
+        if: ${{ !inputs.status_only }}
+        env:
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+          ASC_KEY_PATH: ${{ runner.temp }}/winnow-asc/AuthKey.p8
+        run: scripts/testflight.sh appstore-notes
+
+      - name: Report the metadata state
+        env:
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+          ASC_KEY_PATH: ${{ runner.temp }}/winnow-asc/AuthKey.p8
+        run: scripts/testflight.sh appstore-status
+
+      - name: Submit for review
+        if: ${{ inputs.submit && !inputs.status_only }}
+        env:
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+          ASC_KEY_PATH: ${{ runner.temp }}/winnow-asc/AuthKey.p8
+          APPSTORE_CONFIRM_SUBMIT: "yes"
+        run: scripts/testflight.sh appstore-submit
+
+      - name: Report the state after submitting
+        if: ${{ inputs.submit && !inputs.status_only }}
+        env:
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+          ASC_KEY_PATH: ${{ runner.temp }}/winnow-asc/AuthKey.p8
+        run: scripts/testflight.sh appstore-status
+
+      - name: Remove App Store Connect key
+        if: always()
+        run: |
+          rm -f "${RUNNER_TEMP}/winnow-asc/AuthKey.p8"
+          rmdir "${RUNNER_TEMP}/winnow-asc" 2>/dev/null || true

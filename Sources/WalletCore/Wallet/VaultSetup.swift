@@ -218,3 +218,14 @@ public enum VaultThreshold {
         return clamped(threshold, keyCount: keyCount)
     }
 }
+
+extension VaultCosignerKey {
+    /// The compressed public key this signer resolves to at (index, choice):
+    /// what a shared-savings descriptor is matched against to find its
+    /// co-owners, and the identity two people are refused to share.
+    public func publicKey(index: UInt32, choice: Int = 0) throws -> Data {
+        let descriptor = try Descriptor("rawtr(\(expression))")
+        guard case let .rawtr(key) = descriptor.expression else { throw VaultCosignerKeyError.malformed }
+        return try descriptor.publicKey(of: key, index: index, choice: choice)
+    }
+}

@@ -75,7 +75,9 @@ actor VaultStore {
     private let writeData: @Sendable (Data, URL) throws -> Void
 
     init(writeData: @escaping @Sendable (Data, URL) throws -> Void = { data, url in
-        try data.write(to: url, options: .atomic)
+        // Atomic, and unreadable until the device has been unlocked once
+        // since boot: the same class the submission store uses for its file.
+        try data.write(to: url, options: [.atomic, .completeFileProtectionUntilFirstUserAuthentication])
     }) {
         self.writeData = writeData
     }

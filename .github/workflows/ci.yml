@@ -27,7 +27,10 @@ on:
       - "docs/og.png"
       - "docs/present-qr.png"
       - ".github/workflows/site.yml"
+      - ".github/workflows/appstore-submit.yml"
       - ".github/agent-handoff.md"
+      - "docs/appstore-whats-new.txt"
+      - "docs/testflight-what-to-test.txt"
   pull_request:
     paths-ignore: *site-only
 

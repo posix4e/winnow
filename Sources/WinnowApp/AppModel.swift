@@ -60,10 +60,14 @@ final class AppModel {
         case spendAlreadyInFlight
         /// No storage directory, so a rollback target cannot be recorded.
         case noStorage
+        case personCannotBePaid
+        case personCannotCoOwn(String)
 
         var errorDescription: String? {
             switch self {
             case .noWallet: "No wallet is open."
+            case .personCannotBePaid: "This person has no pay-to key or address yet. Ask them for their Winnow card."
+            case let .personCannotCoOwn(name): "\(name) has no signer key yet. Ask them for their Winnow card before creating savings together."
             case .noStack: "The sync stack is not running."
             case .noPeers: "No peers reachable. Check the network connection or add a manual peer in Settings."
             case .mnemonicUnavailable: "The new wallet's mnemonic could not be read back from the Keychain."
@@ -143,6 +147,24 @@ final class AppModel {
             }
         }
 
+        /// The one line a beginner reads. Everything but "reachable" and
+        /// "done" is syncing: `.idle` is transient while foregrounded, and a
+        /// running scan is progress, not a state to name.
+        enum Summary: Equatable {
+            case syncing
+            case synced
+            case peersUnavailable
+        }
+
+        static func summary(phase: SyncPhase, syncing: Bool) -> Summary {
+            switch phase {
+            case .peerDiscoveryFailed: .peersUnavailable
+            case .synced where !syncing: .synced
+            case .idle, .connecting, .headers, .filters, .synced: .syncing
+            }
+        }
+
+
         /// Where the filter scan has actually reached, or `nil` when there is
         /// no honest number to give.
         ///
@@ -181,6 +203,8 @@ final class AppModel {
     }
 
     /// One-line rendering of `syncPhase`; nil when there is nothing to show.
+    var syncSummary: SyncPhase.Summary { SyncPhase.summary(phase: syncPhase, syncing: status.syncing) }
+
     var syncStatusText: String? {
         switch syncPhase {
         case .idle, .synced:
@@ -208,6 +232,17 @@ final class AppModel {
     private(set) var status = Status()
     private(set) var syncPhase: SyncPhase = .idle
     private(set) var vaults: [VaultRecord] = []
+    /// The address book for this network, and the vaults read as savings
+    /// shared with the people in it. Both are recomputed by `refresh()` and
+    /// after every people mutation.
+    private(set) var people: [PersonRecord] = []
+    private(set) var sharedSavings: [SharedSavings] = []
+    /// Set when `people.json` could not be read. Shown on the People tab;
+    /// the store refuses mutations meanwhile. Never blocks boot.
+    private(set) var peopleStorageNotice: String?
+    /// The wallet's own watched scripts, cached so a shared-savings review can
+    /// label an output "pays you" without an actor hop.
+    private(set) var ownWatchScripts: Set<Data> = []
     private(set) var wallet: Wallet?
     private(set) var stack: SyncStack?
     /// Copies of the wallet's id/descriptor for synchronous access (the Wallet
@@ -220,6 +255,7 @@ final class AppModel {
     /// never touch a real wallet's secrets.
     let keyStore: any KeyStore
     let vaultStore = VaultStore()
+    let peopleStore = PeopleStore()
     private let defaults: UserDefaults
     private let deviceAuthenticator: any DeviceAuthenticating
 
@@ -234,6 +270,10 @@ final class AppModel {
     /// On means re-derive every block's work from block 0, which is what the
     /// app did before the checkpoint existed.
     private(set) var verifyFromGenesis: Bool
+    /// Off by default. Gates the network picker and every other control a
+    /// beginner should never have to read. Global, not per network: it is a
+    /// statement about the user, not the chain.
+    private(set) var advancedMode: Bool
 
     private var syncTask: Task<Void, Never>?
     private var phaseTask: Task<Void, Never>?
@@ -259,6 +299,10 @@ final class AppModel {
         static let legacyEsploraURL = "esploraURL"
         /// Deliberately global: a preference, not a chain-specific endpoint.
         static let verifyFromGenesis = "verifyFromGenesis"
+        /// Deliberately global, like verifyFromGenesis.
+        static let advancedMode = "advancedMode"
+        /// The name on the card this wallet shares. Global: it is the user's.
+        static let ownDisplayName = "ownDisplayName"
         /// Set at wallet creation, cleared only by the backup sheet's
         /// confirmed Done — a relaunch in between resumes the backup.
         static func backupPending(_ walletID: String) -> String { "backupPending.\(walletID)" }
@@ -272,9 +316,11 @@ final class AppModel {
         keyStore = e2e.map { KeychainStore(service: $0.keychainService) } ?? KeychainStore()
         let defaults = e2e?.defaults ?? .standard
         self.defaults = defaults
+        // Mainnet is the default (#9). The E2E harness is a custom-signet
+        // fixture, so a test launch that names no network still gets signet.
         let selectedNetwork = e2e?.forcedNetwork
             ?? BitcoinNetwork(rawValue: defaults.string(forKey: DefaultsKey.network) ?? "")
-            ?? .signet
+            ?? (e2e != nil ? .signet : Self.defaultNetwork)
         network = selectedNetwork
         if e2e?.forcedNetwork != nil {
             defaults.set(selectedNetwork.rawValue, forKey: DefaultsKey.network)
@@ -284,6 +330,7 @@ final class AppModel {
         manualPeers = scoped.manualPeers
         esploraURLString = scoped.esploraURL
         verifyFromGenesis = defaults.bool(forKey: DefaultsKey.verifyFromGenesis)
+        advancedMode = defaults.bool(forKey: DefaultsKey.advancedMode) || e2e?.advancedMode == true
         // Test mode preconfigures the local node as the (only) manual peer;
         // custom signets have no DNS seeds.
         if let peer = e2e?.peer, !manualPeers.contains(peer) {
@@ -307,6 +354,7 @@ final class AppModel {
             stage = .storageDamaged(message)
             return
         }
+        await configurePeople()
         guard let walletURL = walletURL() else {
             stage = .storageDamaged(
                 "Winnow could not access its protected local storage. No wallet files or keys were changed.")
@@ -317,6 +365,7 @@ final class AppModel {
             self.wallet = wallet
             walletID = await wallet.id
             walletDescriptor = await wallet.descriptor
+            recomputeSharedSavings()
             // A wallet whose backup was never confirmed re-enters onboarding:
             // the backup sheet resumes from the Keychain (#5).
             let backupPending = hasPendingBackup
@@ -764,6 +813,7 @@ final class AppModel {
             snapshot.feeBumpableTxids = await wallet.feeBumpableTxids
             snapshot.observedFeeRates = await wallet.observedFeeRates
             snapshot.nextScanHeight = await wallet.nextScanHeight
+            ownWatchScripts = Set((try? await wallet.watchScripts()) ?? [])
         }
         if let stack {
             snapshot.peerCount = await stack.pool.connectedPeers().count
@@ -783,6 +833,8 @@ final class AppModel {
         snapshot.relayStoreQuarantined = status.relayStoreQuarantined
         status = snapshot
         vaults = await vaultStore.all
+        people = await peopleStore.all
+        recomputeSharedSavings()
         journalSnapshotIfChanged()
     }
 
@@ -957,6 +1009,9 @@ final class AppModel {
         await stack?.broadcaster.shutdown()
         broadcasterEventTask?.cancel()
         broadcasterEventTask = nil
+        // people.json is deliberately not in this list: the address book is
+        // the user's, not one wallet's view of the chain, and holds only
+        // public keys.
         if let dir = storageDirectory() {
             for name in ["filters.json", "broadcast.json", "vaults.json"] {
                 try? FileManager.default.removeItem(at: dir.appending(path: name))
@@ -967,9 +1022,11 @@ final class AppModel {
         {
             throw AppError.storageDamaged(message)
         }
+        await configurePeople()
         self.wallet = wallet
         walletID = await wallet.id
         walletDescriptor = await wallet.descriptor
+        recomputeSharedSavings()
         if let existingStack = stack {
             // The old stack is unusable after shutdown. Clear the property
             // before any throwing rebuild step so a failure cannot strand a
@@ -1092,6 +1149,7 @@ final class AppModel {
         // Same per-wallet set `adopt(wallet:)` clears when taking a wallet on,
         // plus the wallet file itself. Keep the two lists together: anything
         // that is one wallet's view must not survive into the next one.
+        // people.json stays, on purpose: see `adopt(wallet:)`.
         if let dir = storageDirectory() {
             for name in ["wallet.json", "filters.json", "broadcast.json", "vaults.json"] {
                 try? FileManager.default.removeItem(at: dir.appending(path: name))
@@ -1111,6 +1169,7 @@ final class AppModel {
             throw AppError.storageDamaged(message)
         }
         vaults = await vaultStore.all
+        await configurePeople()
         stage = .onboarding
         e2e?.journal("wallet.destroyed", fields: ["walletID": walletID])
 
@@ -1229,6 +1288,19 @@ final class AppModel {
         /// review screen so the disclosure is informed; defaulted so direct
         /// constructions in tests describe an ordinary synced send.
         var locktimeLagsTip: Bool = false
+        /// The person this pays, for the review label only. `destination`
+        /// stays the address: the authorization boundary is unchanged.
+        var recipient: Recipient?
+
+        struct Recipient: Equatable {
+            var personID: String
+            var name: String
+            /// The receive-chain index the address was derived at; nil for a
+            /// person who gave one fixed address.
+            var paymentIndex: UInt32?
+
+            var derivesFreshAddresses: Bool { paymentIndex != nil }
+        }
 
         /// The total leaving the wallet as payment, excluding change and fee.
         var amountSent: Int64 {
@@ -1312,6 +1384,19 @@ final class AppModel {
                            locktimeLagsTip: syncPhase.headerTipMayLagNetwork)
     }
 
+    /// A payment to a person in the address book: the next fresh address is
+    /// peeked here and the counter moves only when the send commits.
+    func previewSend(to person: PersonRecord, amount: Int64, priority: FeePolicy.Priority,
+                     override: Double?) async throws -> SendPreview {
+        let (address, index) = try nextPaymentAddress(for: person)
+        var preview = try await previewSend(destination: address, amount: amount,
+                                            priority: priority, override: override)
+        preview.recipient = SendPreview.Recipient(
+            personID: person.id, name: person.name,
+            paymentIndex: person.derivesFreshAddresses ? index : nil)
+        return preview
+    }
+
     /// Builds, signs and broadcasts the previewed send. Returns the txid
     /// (internal byte order).
     /// Operations that move money and must never interleave.
@@ -1356,6 +1441,16 @@ final class AppModel {
         let txid = try await broadcast(prepared.built.transaction,
                                        feeRateSatPerVByte: preview.feeRateSatPerVByte)
         try await wallet.commit(prepared)
+        if let recipient = preview.recipient {
+            if let index = recipient.paymentIndex {
+                await advancePersonPaymentIndex(id: recipient.personID, past: index)
+            }
+            e2e?.journal("person.paid", fields: [
+                "name": recipient.name,
+                "paymentIndex": recipient.paymentIndex.map(String.init) ?? "fixed",
+                "txid": txid.displayHex,
+            ])
+        }
         await refresh()
         e2e?.journal("transaction.sent", fields: [
             "txid": txid.displayHex,
@@ -1421,6 +1516,39 @@ final class AppModel {
         return txid
     }
 
+    /// What a fresh install runs on.
+    static let defaultNetwork: BitcoinNetwork = .mainnet
+
+    /// Whether the network picker is shown. Signet is an Advanced-mode
+    /// concern, but a wallet that is already on signet must always be able
+    /// to get back: hiding the picker behind a flag the user just turned off
+    /// would strand it there.
+    var showsNetworkPicker: Bool {
+        advancedMode || network != Self.defaultNetwork || e2e?.forcedNetwork != nil
+    }
+
+    /// The same rule for every control that owns persisted state: shown in
+    /// Advanced mode, and shown while that state is non-default, so turning
+    /// the flag off hides a control but never strands what it set.
+    var showsManualPeers: Bool { advancedMode || !manualPeers.isEmpty }
+    var showsChainVerification: Bool { advancedMode || verifyFromGenesis }
+    var showsExplorerSettings: Bool { advancedMode || !esploraURLString.isEmpty }
+
+    /// "0.6.0 (123)", from the bundle the app shipped in.
+    static let appVersionText: String = {
+        let info = Bundle.main.infoDictionary ?? [:]
+        let version = info["CFBundleShortVersionString"] as? String ?? "?"
+        let build = info["CFBundleVersion"] as? String ?? "?"
+        return "\(version) (\(build))"
+    }()
+
+    func setAdvancedMode(_ enabled: Bool) {
+        guard enabled != advancedMode else { return }
+        advancedMode = enabled
+        defaults.set(enabled, forKey: DefaultsKey.advancedMode)
+        e2e?.journal("setting.advancedMode", fields: ["enabled": String(enabled)])
+    }
+
     // MARK: - Vaults
 
     /// This wallet's cosigner key expression for vault creation:
@@ -1459,6 +1587,265 @@ final class AppModel {
     func removeVault(id: String) async {
         try? await vaultStore.remove(id: id)
         vaults = await vaultStore.all
+    }
+
+    // MARK: - People and shared savings
+
+    /// A vault read as savings shared with people: who co-owns it, judged by
+    /// derived signer keys, never by a stored mapping.
+    struct SharedSavings: Equatable, Identifiable {
+        var record: VaultRecord
+        var coOwners: [PersonRecord]
+        var includesYou: Bool
+        var unknownSignerCount: Int
+        var threshold: Int
+        var signerCount: Int
+
+        var id: String { record.id }
+        var name: String { record.name }
+        var balance: Int64 { record.balance }
+    }
+
+    /// Reads the address book file for the current network. Damage is a
+    /// notice, not a stage: the wallet must keep working without its people.
+    private func configurePeople() async {
+        switch await peopleStore.configure(storageURL: peopleURL(), network: network) {
+        case let .damaged(message):
+            peopleStorageNotice = message
+        case .missing, .loaded:
+            peopleStorageNotice = nil
+        }
+        people = await peopleStore.all
+        vaults = await vaultStore.all
+        recomputeSharedSavings()
+    }
+
+    /// Pairs every script-path vault with the people whose signer keys it
+    /// carries. Order-independent (`sortedmulti_a`), self-healing for vaults
+    /// made from pasted keys, and impossible to leave dangling when a person
+    /// is removed.
+    func recomputeSharedSavings() {
+        var identities: [(person: PersonRecord, key: Data)] = []
+        for person in people {
+            guard let signerKey = person.signerKey,
+                  let key = try? PersonKeys.signerIdentity(signerKey, network: network)
+            else { continue }
+            identities.append((person, key))
+        }
+        let ownKey = try? ownSignerIdentity()
+        sharedSavings = vaults.compactMap { record in
+            guard let vault = try? Vault(record.descriptor, network: network), vault.isScriptPath,
+                  let signerKeys = try? vault.signerKeys()
+            else { return nil }
+            let coOwners = identities.filter { signerKeys.contains($0.key) }.map(\.person)
+            let includesYou = ownKey.map { signerKeys.contains($0) } ?? false
+            return SharedSavings(record: record, coOwners: coOwners, includesYou: includesYou,
+                                 unknownSignerCount: signerKeys.count - coOwners.count - (includesYou ? 1 : 0),
+                                 threshold: vault.threshold, signerCount: vault.signerCount)
+        }
+    }
+
+    func ownSignerIdentity() throws -> Data {
+        try PersonKeys.signerIdentity(try ownKeyExpression(multipathSuffix: true), network: network)
+    }
+
+    var ownDisplayName: String {
+        defaults.string(forKey: DefaultsKey.ownDisplayName) ?? ""
+    }
+
+    func setOwnDisplayName(_ name: String) {
+        defaults.set(name.trimmingCharacters(in: .whitespacesAndNewlines), forKey: DefaultsKey.ownDisplayName)
+    }
+
+    /// The card this wallet shares: its own account key as both pay-to key
+    /// and signer key. Public material only.
+    func ownPersonCard(name: String) throws -> PersonCard {
+        let signer = try ownKeyExpression(multipathSuffix: true)
+        let payTo = try PersonPayTo.descriptor("tr(\(signer))", network: network)
+        return PersonCard(network: network, name: name, payTo: payTo.text, signerKey: signer)
+    }
+
+    func journalCardShared() {
+        e2e?.journal("card.shared", fields: ["hasSignerKey": "true"])
+    }
+
+    func journalApproval(_ name: String, vaultID: String, fields: [String: String]) {
+        e2e?.journal(name, fields: fields.merging(["vaultID": vaultID]) { current, _ in current })
+    }
+
+    /// Moves a person's payment counter past `index` once an address at that
+    /// index has left this phone: a committed send, or a request shared with
+    /// co-owners. Never for a preview that was cancelled.
+    func advancePersonPaymentIndex(id: String, past index: UInt32) async {
+        try? await peopleStore.advancePaymentIndex(id: id, past: index)
+        people = await peopleStore.all
+    }
+
+    @discardableResult
+    func addPerson(name: String, payTo: PersonPayTo?, signerKey: String?) async throws -> PersonRecord {
+        let record = try await peopleStore.add(name: name, payTo: payTo, signerKey: signerKey)
+        people = await peopleStore.all
+        recomputeSharedSavings()
+        e2e?.journal("person.added", fields: [
+            "name": record.name,
+            "payToKind": record.payTo.map { $0.derivesFreshAddresses ? "descriptor" : "address" } ?? "none",
+            "hasSignerKey": String(record.canCoOwnSavings),
+        ])
+        return record
+    }
+
+    func removePerson(id: String) async throws {
+        try await peopleStore.remove(id: id)
+        people = await peopleStore.all
+        recomputeSharedSavings()
+    }
+
+    /// The address the next payment to `person` derives, peeked without
+    /// advancing anything: the counter moves only when a send commits.
+    func nextPaymentAddress(for person: PersonRecord) throws -> (address: String, index: UInt32) {
+        guard let payTo = person.payTo else { throw AppError.personCannotBePaid }
+        return (try payTo.address(index: person.nextPaymentIndex, network: network), person.nextPaymentIndex)
+    }
+
+    /// Every script a person could have been paid at so far, for labelling
+    /// the outputs of a shared-savings spend.
+    func personScripts() -> [Data: String] {
+        var scripts: [Data: String] = [:]
+        for person in people {
+            guard let payTo = person.payTo,
+                  let list = try? payTo.scripts(upTo: person.nextPaymentIndex + Wallet.gapLimit, network: network)
+            else { continue }
+            for script in list where scripts[script] == nil { scripts[script] = person.name }
+        }
+        return scripts
+    }
+
+    /// Builds the k-of-n vault behind "Savings with Alice, Bob": the chosen
+    /// people's signer keys plus this wallet's own, and files it as a vault.
+    @discardableResult
+    func createSharedSavings(name: String, coOwners: [PersonRecord], threshold: Int) async throws -> VaultRecord {
+        let keys = try coOwners.map { person -> String in
+            guard let key = person.signerKey else { throw AppError.personCannotCoOwn(person.name) }
+            return key
+        }
+        let descriptor = try Vault.multiADescriptor(threshold: threshold,
+                                                    cosigners: [try ownKeyExpression(multipathSuffix: true)] + keys)
+        let record = try await addVault(name: name, descriptor: descriptor)
+        e2e?.journal("savings.created", fields: [
+            "name": name,
+            "descriptor": descriptor.serialized(),
+            "coOwners": coOwners.map(\.name).joined(separator: ","),
+        ])
+        return record
+    }
+
+    /// Adds savings someone else created, from their card. Validated as a
+    /// vault for this network before it is filed.
+    @discardableResult
+    func addSharedSavings(card text: String) async throws -> VaultRecord {
+        let (card, vault) = try SharedSavingsCard.decode(text, network: network)
+        let record = try await addVault(name: card.name, descriptor: vault.descriptor)
+        e2e?.journal("savings.added", fields: ["name": card.name, "descriptor": vault.descriptor.serialized()])
+        return record
+    }
+
+    func sharedSavingsCard(for record: VaultRecord) -> SharedSavingsCard {
+        SharedSavingsCard(network: network, name: record.name, descriptor: record.descriptor)
+    }
+
+    func approvalRequest(for record: VaultRecord, psbt: PSBT) -> ApprovalRequest {
+        ApprovalRequest(network: network, vault: record.id, name: record.name, psbt: psbt)
+    }
+
+    // MARK: - Vault spends (shared by the expert and the savings screens)
+
+    enum VaultSpendError: LocalizedError {
+        case unknownVault
+        case silentPaymentDestination
+        case notAvailableCoins
+
+        var errorDescription: String? {
+            switch self {
+            case .unknownVault: "This vault is no longer on this phone."
+            case .silentPaymentDestination:
+                "Silent payments from vaults are not supported — the vault has no single input key to derive the output from."
+            case .notAvailableCoins: "An input of this PSBT is not a known UTXO of the vault."
+            }
+        }
+    }
+
+    /// The descriptor coordinates a spend may legitimately pay back into:
+    /// every coin's own, plus the next receive and change slots. Rebuilt from
+    /// trusted local state every time; PSBT metadata never decides ownership.
+    func vaultAuthorizationCoordinates(for record: VaultRecord) -> [Vault.OutputCoordinate] {
+        var coordinates = record.utxos.map { Vault.OutputCoordinate(choice: $0.chain.rawValue, index: $0.index) }
+        coordinates.append(Vault.OutputCoordinate(choice: AddressChain.receive.rawValue, index: record.nextReceiveIndex))
+        coordinates.append(Vault.OutputCoordinate(choice: AddressChain.change.rawValue, index: record.nextChangeIndex))
+        return coordinates
+    }
+
+    func vault(for record: VaultRecord) throws -> Vault {
+        try Vault(record.descriptor, network: network)
+    }
+
+    /// Proves a proposal is an exact, safe spend of the vault's known coins.
+    func reviewVaultSpend(_ psbt: PSBT, record: VaultRecord) throws -> Vault.SpendReview {
+        try vault(for: record).reviewSpend(psbt, knownUTXOs: record.utxos,
+                                           ownedOutputCoordinates: vaultAuthorizationCoordinates(for: record))
+    }
+
+    /// Builds the spend PSBT (creator role). `lagsTip` says the locktime came
+    /// from a header tip still catching up (#151), as the ordinary send path
+    /// discloses.
+    func createVaultSpend(record: VaultRecord, payment: Payment,
+                          feeRateSatPerVByte: Double) throws -> (psbt: PSBT, lagsTip: Bool) {
+        let vault = try vault(for: record)
+        let psbt = try vault.createSpend(utxos: record.utxos, payments: [payment],
+                                         changeIndex: record.nextChangeIndex,
+                                         feeRateSatPerVByte: feeRateSatPerVByte,
+                                         chainTip: status.tipHeight)
+        journalPSBT(stage: "vault-spend-created", psbt: psbt)
+        return (psbt, syncPhase.headerTipMayLagNetwork)
+    }
+
+    /// Resolves a destination for a vault spend: silent-payment codes are
+    /// refused with their own message.
+    func vaultPayment(amount: Int64, address: String) throws -> Payment {
+        let trimmed = address.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !trimmed.lowercased().hasPrefix("sp1"), !trimmed.lowercased().hasPrefix("tsp1") else {
+            throw VaultSpendError.silentPaymentDestination
+        }
+        return try Payment(amount: amount, address: trimmed, network: network)
+    }
+
+    /// Adds this device's script-path signature to every input, after the
+    /// review that decides what the signature authorizes.
+    func partialSignVaultSpend(_ psbt: PSBT, record: VaultRecord, reason: String) async throws -> PSBT {
+        let vault = try vault(for: record)
+        let coordinates = vaultAuthorizationCoordinates(for: record)
+        let signed = try await withMasterKey(reason: reason) { master in
+            var candidate = psbt
+            try vault.partialSign(&candidate, master: master, knownUTXOs: record.utxos,
+                                  ownedOutputCoordinates: coordinates)
+            return candidate
+        }
+        journalPSBT(stage: "multi-a-partial-signed", psbt: signed)
+        return signed
+    }
+
+    /// Finalizes a fully-signed spend, broadcasts it, and commits it to the
+    /// vault's coins (inputs out, change in pending — the `Wallet.send` rule).
+    func finalizeAndBroadcastVaultSpend(_ psbt: PSBT, record: VaultRecord) async throws -> Data {
+        let vault = try vault(for: record)
+        var working = psbt
+        let transaction = try vault.finalizeSpend(&working, knownUTXOs: record.utxos,
+                                                  ownedOutputCoordinates: vaultAuthorizationCoordinates(for: record))
+        let txid = try await broadcast(transaction)
+        let changeIndex = record.nextChangeIndex
+        let changeScript = try? vault.scriptPubKey(index: changeIndex, choice: AddressChain.change.rawValue)
+        _ = await recordVaultSpend(id: record.id, transaction: transaction,
+                                   changeScriptPubKey: changeScript, changeIndex: changeIndex)
+        return txid
     }
 
     func advanceVaultReceiveIndex(id: String) async {
@@ -1621,6 +2008,7 @@ final class AppModel {
             stage = .storageDamaged(message)
             return
         }
+        await configurePeople()
         guard let walletURL = walletURL() else {
             stage = .storageDamaged(
                 "Winnow could not access its protected local storage. No wallet files or keys were changed.")
@@ -1631,6 +2019,7 @@ final class AppModel {
             self.wallet = wallet
             walletID = await wallet.id
             walletDescriptor = await wallet.descriptor
+            recomputeSharedSavings()
             // A wallet whose backup was never confirmed re-enters onboarding:
             // the backup sheet resumes from the Keychain (#5).
             stage = hasPendingBackup ? .onboarding : .ready
@@ -1756,6 +2145,10 @@ final class AppModel {
 
     private func vaultsURL() -> URL? {
         storageDirectory()?.appending(path: "vaults.json")
+    }
+
+    private func peopleURL() -> URL? {
+        storageDirectory()?.appending(path: "people.json")
     }
 
     private func parsedManualPeers() -> [PeerEndpoint] {
