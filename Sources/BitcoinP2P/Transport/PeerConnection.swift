@@ -90,6 +90,11 @@ public actor PeerConnection {
     /// Value of the BIP37 relay flag sent in our version handshake
     /// (fRelayTransactions): true asks the peer to inv every relayed tx.
     public let relayPreference: Bool
+    /// A SOCKS5 proxy to dial through — Tor's 9050, an I2P router's 4447.
+    /// The destination name is handed to the proxy unresolved (SOCKS5
+    /// address type 3), which is the only way a `.onion` or `.b32.i2p` peer
+    /// is reachable at all. nil dials the endpoint directly.
+    public let socksProxy: PeerEndpoint?
 
     public private(set) var peerServices: UInt64 = 0
     public private(set) var peerUserAgent = ""
@@ -127,12 +132,13 @@ public actor PeerConnection {
 
     public init(endpoint: PeerEndpoint, params: NetworkParams,
                 localServices: UInt64 = 0, localStartHeight: Int32 = 0,
-                relayPreference: Bool = false) {
+                relayPreference: Bool = false, socksProxy: PeerEndpoint? = nil) {
         self.endpoint = endpoint
         self.params = params
         self.localServices = localServices
         self.localStartHeight = localStartHeight
         self.relayPreference = relayPreference
+        self.socksProxy = socksProxy
         framer = MessageFramer(magic: params.magic)
     }
 
@@ -142,10 +148,13 @@ public actor PeerConnection {
     /// the peer cannot serve BIP157 filters.
     public func connect(timeout: Duration = .seconds(20)) async throws {
         guard connection == nil else { return }
-        guard let port = NWEndpoint.Port(rawValue: endpoint.port) else {
-            throw PeerError.handshakeFailed("invalid port \(endpoint.port)")
+        // Through a proxy, the TCP connection is to the proxy; the peer's
+        // name travels inside the SOCKS request.
+        let dial = socksProxy ?? endpoint
+        guard let port = NWEndpoint.Port(rawValue: dial.port) else {
+            throw PeerError.handshakeFailed("invalid port \(dial.port)")
         }
-        let connection = NWConnection(host: NWEndpoint.Host(endpoint.host),
+        let connection = NWConnection(host: NWEndpoint.Host(dial.host),
                                       port: port,
                                       using: .tcp)
         self.connection = connection
@@ -155,6 +164,9 @@ public actor PeerConnection {
         connection.start(queue: DispatchQueue(label: "org.winnow.peer.\(endpoint.description)"))
         do {
             try await waitForReady(timeout: timeout)
+            if socksProxy != nil {
+                try await Self.negotiateSOCKS5(connection, to: endpoint, timeout: timeout)
+            }
         } catch {
             teardown(error: error)
             throw error
@@ -205,6 +217,126 @@ public actor PeerConnection {
     /// Cleanly closes the connection and finishes all event streams.
     public func disconnect() {
         teardown(error: nil)
+    }
+
+    // MARK: - SOCKS5 (RFC 1928)
+
+    /// Asks the proxy for a TCP circuit to `destination` by name. Runs before
+    /// the Bitcoin framer sees a byte: everything here is the proxy talking,
+    /// and the peer's first `version` arrives only after the reply.
+    ///
+    /// The timeout cancels the connection rather than racing a task group:
+    /// a proxy that never answers would otherwise pin a cancelled child, the
+    /// same trap `waitForReady` documents.
+    private static func negotiateSOCKS5(_ connection: NWConnection, to destination: PeerEndpoint,
+                                        timeout: Duration) async throws {
+        let timedOut = TimeoutFlag()
+        let timer = Task {
+            try? await Task.sleep(for: timeout)
+            guard !Task.isCancelled else { return }
+            timedOut.set()
+            connection.cancel()
+        }
+        defer { timer.cancel() }
+        do {
+            // Greeting: version 5, one method, no authentication.
+            try await rawSend(connection, Data([0x05, 0x01, 0x00]))
+            let chosen = try await rawReceive(connection, exactly: 2)
+            guard chosen == Data([0x05, 0x00]) else {
+                throw PeerError.handshakeFailed("SOCKS5 proxy refused an unauthenticated connection")
+            }
+            // CONNECT, address type 3: the name goes through unresolved.
+            let name = Data(destination.host.utf8)
+            guard !name.isEmpty, name.count <= 255 else {
+                throw PeerError.handshakeFailed("SOCKS5 destination name too long")
+            }
+            var request = Data([0x05, 0x01, 0x00, 0x03, UInt8(name.count)])
+            request.append(name)
+            request.append(UInt8(destination.port >> 8))
+            request.append(UInt8(destination.port & 0xFF))
+            try await rawSend(connection, request)
+            // Reply: VER REP RSV ATYP BND.ADDR BND.PORT.
+            let head = try await rawReceive(connection, exactly: 4)
+            guard head[head.startIndex] == 0x05 else {
+                throw PeerError.handshakeFailed("SOCKS5 proxy answered with version \(head[head.startIndex])")
+            }
+            let reply = head[head.startIndex + 1]
+            guard reply == 0x00 else {
+                // The proxy could not reach the peer. That is the peer being
+                // unreachable, not a protocol fault, so it is a transport error.
+                throw PeerError.disconnected("SOCKS5 proxy: \(socksReplyDescription(reply))")
+            }
+            switch head[head.startIndex + 3] {
+            case 0x01: _ = try await rawReceive(connection, exactly: 4 + 2)
+            case 0x04: _ = try await rawReceive(connection, exactly: 16 + 2)
+            case 0x03:
+                let length = try await rawReceive(connection, exactly: 1)
+                _ = try await rawReceive(connection, exactly: Int(length[length.startIndex]) + 2)
+            default:
+                throw PeerError.handshakeFailed("SOCKS5 proxy answered with an unknown address type")
+            }
+        } catch {
+            if timedOut.isSet { throw PeerError.timeout }
+            throw error
+        }
+    }
+
+    private static func socksReplyDescription(_ code: UInt8) -> String {
+        switch code {
+        case 0x01: "general failure"
+        case 0x02: "connection not allowed by ruleset"
+        case 0x03: "network unreachable"
+        case 0x04: "host unreachable"
+        case 0x05: "connection refused"
+        case 0x06: "TTL expired"
+        case 0x07: "command not supported"
+        case 0x08: "address type not supported"
+        default: "reply code \(code)"
+        }
+    }
+
+    private static func rawSend(_ connection: NWConnection, _ data: Data) async throws {
+        try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Void, Error>) in
+            connection.send(content: data, completion: .contentProcessed { error in
+                if let error {
+                    continuation.resume(throwing: PeerError.disconnected(error.localizedDescription))
+                } else {
+                    continuation.resume()
+                }
+            })
+        }
+    }
+
+    /// Reads exactly `count` bytes, or throws if the stream ends first.
+    private static func rawReceive(_ connection: NWConnection, exactly count: Int) async throws -> Data {
+        var collected = Data()
+        while collected.count < count {
+            let remaining = count - collected.count
+            let chunk: Data = try await withCheckedThrowingContinuation { continuation in
+                connection.receive(minimumIncompleteLength: 1, maximumLength: remaining) { data, _, isComplete, error in
+                    if let error {
+                        continuation.resume(throwing: PeerError.disconnected(error.localizedDescription))
+                    } else if let data, !data.isEmpty {
+                        continuation.resume(returning: data)
+                    } else if isComplete {
+                        continuation.resume(throwing: PeerError.disconnected("proxy closed the connection"))
+                    } else {
+                        continuation.resume(throwing: PeerError.disconnected("empty read from proxy"))
+                    }
+                }
+            }
+            collected.append(chunk)
+        }
+        return collected
+    }
+
+    /// A flag the SOCKS timeout task sets so the caller can tell a timeout
+    /// from the cancellation error it produces.
+    private final class TimeoutFlag: @unchecked Sendable {
+        private let lock = NSLock()
+        private var value = false
+        func set() { lock.withLock { value = true } }
+        var isSet: Bool { lock.withLock { value } }
     }
 
     // MARK: - Sending / requests
