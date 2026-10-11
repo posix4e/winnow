@@ -624,14 +624,12 @@ struct RangeScanTests {
     /// given a second would spend as long as the matches take, which on a
     /// restore against a full watch set is minutes to hours.
     ///
-    /// The budget is eight seconds against a ten-second hold in the first
-    /// match, and both numbers are margin rather than taste. The suite runs
-    /// its cases concurrently, and the peer round trips before the first
-    /// filter is judged share the loopback with every other socket-backed
-    /// case: alone they take a fifth of a second, beside the filter-sync
-    /// suites over three, and on a contended runner more. A budget spent on
-    /// that setup times the run out with nothing delivered, and the case
-    /// then fails for a reason that is not the one it tests.
+    /// The run's clock stays fixed while the real loopback peers prepare the
+    /// first match, then advances ten seconds inside its callback against the
+    /// same eight-second budget. Concurrent socket-backed cases can delay
+    /// setup without spending the time this case must spend between matches.
+    /// Removing the per-filter deadline check would deliver the other five
+    /// matches and persist the batch, so both failures remain observable.
     @Test("the run deadline stops a chunk between its matches")
     func deadlineStopsAChunkBetweenItsMatches() async throws {
         let fixture = try await Self.fixture(chainLength: 6, watchHeight: 3)
@@ -640,13 +638,14 @@ struct RangeScanTests {
 
         let everyBlock = [Data([0x51])]
         let collector = MatchCollector()
+        let clock = TestClock()
         await #expect(throws: RangeScanError.runTimedOut(limit: .seconds(8))) {
             try await fixture.sync.scanRange(
                 from: 1, to: 6, watchScripts: everyBlock,
                 limits: RangeScanLimits(maxDuration: .seconds(8)),
-                storageURL: fixture.rangeFile) { match in
+                storageURL: fixture.rangeFile, now: { clock.now }) { match in
                     collector.add(match)
-                    try await Task.sleep(for: .seconds(10))
+                    clock.advance(by: .seconds(10))
                 }
         }
         #expect(collector.matches.count == 1,

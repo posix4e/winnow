@@ -416,6 +416,7 @@ struct RangeScanRun: Sendable {
     let deadline: ContinuousClock.Instant
     let maxDuration: Duration
     let maxFilterBytes: Int
+    private let now: @Sendable () -> ContinuousClock.Instant
     private(set) var filterBytesRead = 0
     private(set) var blockBytesRead = 0
     private(set) var matchedHeights: [UInt32] = []
@@ -423,14 +424,16 @@ struct RangeScanRun: Sendable {
     /// What the byte cap is spent against: the filters and the blocks together.
     var bytesRead: Int { filterBytesRead + blockBytesRead }
 
-    init(limits: RangeScanLimits, now: ContinuousClock.Instant = .now) {
-        deadline = now.advanced(by: limits.maxDuration)
+    init(limits: RangeScanLimits,
+         now: @escaping @Sendable () -> ContinuousClock.Instant = { .now }) {
+        self.now = now
+        deadline = now().advanced(by: limits.maxDuration)
         maxDuration = limits.maxDuration
         maxFilterBytes = limits.maxFilterBytes
     }
 
-    func checkDeadline(now: ContinuousClock.Instant = .now) throws {
-        guard now < deadline else { throw RangeScanError.runTimedOut(limit: maxDuration) }
+    func checkDeadline() throws {
+        guard now() < deadline else { throw RangeScanError.runTimedOut(limit: maxDuration) }
     }
 
     /// Charges a chunk's filter bytes and refuses if that took the run past
@@ -601,6 +604,24 @@ extension FilterSync {
                           onMatch: @Sendable (BlockMatch) async throws -> Void) async throws
         -> RangeScanOutcome
     {
+        try await scanRange(from: from, to: to, watchScripts: watchScripts,
+                            limits: limits, storageURL: storageURL,
+                            now: { .now }, onMatch: onMatch)
+    }
+
+    /// The clock belongs to one run, so every deadline check uses the same
+    /// source as its start. Tests can advance it at a match boundary without
+    /// making peer setup race a real-time budget. Public callers always use
+    /// ContinuousClock.now through the entry point above.
+    @discardableResult
+    func scanRange(from: UInt32, to: UInt32,
+                   watchScripts: [Data],
+                   limits: RangeScanLimits = RangeScanLimits(),
+                   storageURL: URL? = nil,
+                   now: @escaping @Sendable () -> ContinuousClock.Instant,
+                   onMatch: @Sendable (BlockMatch) async throws -> Void) async throws
+        -> RangeScanOutcome
+    {
         guard !isSyncing else { throw FilterSyncError.syncAlreadyRunning }
         isSyncing = true
         defer {
@@ -626,7 +647,7 @@ extension FilterSync {
         // `checkShape` because whether the blocks left to scan need a boundary
         // depends on what the record already holds below them.
         try Self.checkCheckpointAnchor(of: record, to: to, tip: tip)
-        rangeRun = RangeScanRun(limits: limits)
+        rangeRun = RangeScanRun(limits: limits, now: now)
         if !record.isComplete {
             record = try await runRange(record, tip: tip, watchScripts: watchScripts,
                                         storageURL: storageURL, onMatch: onMatch)
