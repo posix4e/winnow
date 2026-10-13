@@ -1,5 +1,4 @@
 import WalletCore
-import CryptoKit
 import Foundation
 
 /// The parsing surfaces the harness mutates inputs for. The raw values are
@@ -20,16 +19,11 @@ public enum FuzzTarget: String, CaseIterable, Sendable {
     // internal to WalletCore; those are covered by AppTests and the package
     // suite with hand-written hostile inputs instead.
     case census
-    case censusSignature = "census-signature"
     case dnsJSON = "dns-json"
     case fundingSources = "funding-sources"
     case controlBlock = "control-block"
     case personPaste = "person-paste"
 }
-
-/// One key for the signature target: verification under a real key is the
-/// path the wallet takes, and generating a key per case would dominate the run.
-private let signatureKey = Curve25519.Signing.PrivateKey()
 
 /// The harness's generator. `exercise` draws from it too, to vary how the
 /// framing target feeds bytes in, so it lives beside the invariants.
@@ -153,16 +147,10 @@ public func exercise(_ target: FuzzTarget, data: Data, rng: inout SplitMix64) th
     case .census:
         // Freshness is a matter of the clock, not of parsing, so any
         // observation date is admitted here.
-        if let catalog = try? CensusCatalog.decode(data, requireFresh: false) {
+        if let catalog = try? CensusCatalog.decode(data) {
             let encoded = try JSONEncoder().encode(catalog)
-            try require(try CensusCatalog.decode(encoded, requireFresh: false) == catalog,
+            try require(try CensusCatalog.decode(encoded) == catalog,
                         "census catalog canonical round trip changed semantics")
-        }
-    case .censusSignature:
-        if let signature = try? CensusSignature.decode(data) {
-            try require(try CensusSignature.decode(signature.encoded()) == signature,
-                        "census signature canonical round trip changed semantics")
-            _ = try? signature.verify(data, trusting: [signatureKey.publicKey])
         }
     case .dnsJSON:
         _ = try? DNSJSON.hosts(from: data)

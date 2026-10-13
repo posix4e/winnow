@@ -83,6 +83,7 @@ asset catalogs are documented by their owner, outside the bundle.
 ```sh
 swift test
 swift run winnow-debug inspect tx <hex>
+scripts/import-census
 xcodegen
 scripts/ci-app-tests /tmp/winnow-app-tests
 scripts/ci-debug

@@ -1,16 +1,15 @@
 #!/bin/bash
 # Live check of the tailnet peer gateways (docs/peer-gateways.md), by hand from
 # a Mac on the tailnet that runs them; CI has no tailnet, so it never runs this.
-# Discovers both named gateways, fetches the census from its I2P mirror through
-# the I2P gateway and verifies the signature. With a signed census file
-# (peers.json.sig beside it), also completes Bitcoin handshakes through each
-# gateway. Sends no wallet addresses or transactions.
+# Fetches the census list a build would ship (scripts/import-census), discovers
+# both named gateways and completes a Bitcoin handshake through each with peers
+# from that list. Sends no wallet addresses or transactions.
 set -euo pipefail
 cd "$(git rev-parse --show-toplevel)"
-if [ $# -gt 1 ]; then
-  echo 'usage: scripts/check-live-gateways [peers.json]' >&2
+if [ $# -gt 0 ]; then
+  echo 'usage: scripts/check-live-gateways' >&2
   exit 64
 fi
-export WINNOW_LIVE_GATEWAYS=1
-if [ $# -eq 1 ]; then export WINNOW_LIVE_CENSUS="$1"; fi
-exec swift test --filter TailnetGatewayDiscoveryTests.deployedMagicDNSGateways
+scripts/import-census
+export WINNOW_LIVE_GATEWAYS=1 WINNOW_LIVE_CENSUS=build/census/peers.json
+exec swift test --filter LiveOverlayTests.deployedMagicDNSGateways

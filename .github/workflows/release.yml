@@ -58,8 +58,10 @@ jobs:
       - name: Install pinned XcodeGen
         run: scripts/install-xcodegen
 
-      - name: Generate Xcode project
-        run: xcodegen
+      - name: Fetch the census list and generate the Xcode project
+        run: |
+          scripts/import-census
+          xcodegen
 
       - name: Prepare signing credentials
         env:

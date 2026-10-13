@@ -8,15 +8,14 @@ here so discovery and admission follow one policy.
 
 [FilterSync](../Filters/README.md) and
 [AppModel](../../../WinnowApp/AppModel.swift) consume the pool.
-The pool tries manual peers, previously connected peers, a fresh signed census,
-and DNS seeds. Mainnet automatically downloads the census when its cache is
-missing or expired. Advanced → Refresh peer list remains available.
-Under I2P-only routing the census comes from its I2P mirror
-(`CensusCatalog.i2pMirror`) through the I2P gateway; the signature check is
-unchanged.
-There is no bundled list. Fresh installs start DNS discovery independently of
-the automatic download. Invalid or expired census caches do not prevent DNS
-bootstrap. DNS uses DoH first, with system DNS when DoH yields no usable
+The pool tries manual peers, previously connected peers, the census list the
+app was built with, and DNS seeds. `scripts/import-census` fetches the census
+repository's `peers.json` into `build/census/` (with the census commit in
+`peers-source.txt`) before XcodeGen runs, and project.yml bundles it into the
+app (`CensusCatalog.bundled`); the app downloads no list. Tor- and I2P-only
+routing draw their onion and I2P peers from the same list, so they need no
+HTTP. A list that fails validation is not used, and DNS bootstrap starts
+regardless. DNS uses DoH first, with system DNS when DoH yields no usable
 addresses. The source ceiling remains: DNS alone can occupy two of the
 three default slots; a manual peer or census provides another source.
 Tor and I2P names have no netblock, so while clearnet is selected automatic

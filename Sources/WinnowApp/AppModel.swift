@@ -1,5 +1,4 @@
 import WalletCore
-import CryptoKit
 import Foundation
 import LocalAuthentication
 import SwiftUI
@@ -346,7 +345,7 @@ final class AppModel {
     private var attemptedCloudPreparation: Set<String> = []
     private(set) var cloudRestoreNotice: String?
     private let defaults: UserDefaults
-    /// The HTTP client behind census refresh, seed lookups and the consented
+    /// The HTTP client behind seed lookups and the consented
     /// explorer lookup. Suspending networking cancels it, so a request that
     /// was in flight fails rather than finishing in the background; the next
     /// activation makes a new one.
@@ -367,12 +366,6 @@ final class AppModel {
     var torRemovedNotice = false
     private var changingNetwork = false
     private var peersToAvoid: Set<PeerEndpoint> = []
-    private(set) var refreshingCatalog = false
-    private var automaticCatalogTask: Task<Void, Never>?
-    private var nextAutomaticCatalogAttempt = Date.distantPast
-    private(set) var catalogBytes = 0
-    private(set) var catalogNotice: String?
-    private(set) var catalogError: String?
     private let deviceAuthenticator: any DeviceAuthenticating
 
     /// Non-nil only when launched with WINNOW_E2E=1 (XCUITest runs).
@@ -671,7 +664,6 @@ final class AppModel {
         resumeHTTPClient()
         await buildStackIfNeeded()
         guard epoch == networkGeneration, isActive else { return }
-        schedulePeerCatalogRefresh()
         startPhasePolling()
         await stack?.pool.start()
         guard epoch == networkGeneration, isActive else { return }
@@ -685,8 +677,6 @@ final class AppModel {
         gatewayDiscoveryTask?.cancel()
         gatewayDiscoveryTask = nil
         discoveringGateways = false
-        automaticCatalogTask?.cancel()
-        automaticCatalogTask = nil
         networkGeneration &+= 1
         httpClient.cancel()
     }
@@ -758,12 +748,9 @@ final class AppModel {
     /// Retry button). Rebuilds the stack when it never came up.
     func retryPeerDiscovery() async {
         if gatewaySettings.mode == .automatic {
-            nextAutomaticCatalogAttempt = .distantPast
             await reconnect()
             return
         }
-        nextAutomaticCatalogAttempt = .distantPast
-        schedulePeerCatalogRefresh()
         if let stack {
             await stack.pool.retry()
         } else {
@@ -887,8 +874,7 @@ final class AppModel {
                                 relayPreference: true,
                                 dialTimeout: activePeerGateways.networks == [.clearnet] ? .seconds(5) : .seconds(30),
                                 seedResolver: .routed(client: httpClient),
-                                censusCatalog: network == .mainnet
-                                    ? catalogStore?.load(trusting: censusTrustedKeys)?.catalog : nil,
+                                censusCatalog: network == .mainnet ? CensusCatalog.bundled : nil,
                                 gateways: activePeerGateways,
                                 avoidOnReset: peersToAvoid)
     }
@@ -1265,7 +1251,6 @@ final class AppModel {
         configureReceiveAddressLabels()
         journalSnapshotIfChanged()
         scheduleCloudBackup()
-        schedulePeerCatalogRefresh()
         scheduleAutomaticCloudPreparation()
     }
 
@@ -2828,68 +2813,7 @@ final class AppModel {
         await refresh()
     }
 
-    /// The E2E census is a handful of fixture entries, so it has no floor.
-    var catalogStore: CensusCatalogStore? {
-        storageDirectory().map {
-            CensusCatalogStore(url: $0.deletingLastPathComponent().appending(path: "mainnet/downloaded-census.json"),
-                               minimumEntries: e2e == nil ? CensusCatalog.minimumClearnetEntries : 0)
-        }
-    }
-
-    /// The publisher keys a census must be signed under: the compiled-in set,
-    /// or the test key an E2E launch names.
-    var censusTrustedKeys: [Curve25519.Signing.PublicKey] {
-        e2e?.censusTrustedKeys ?? CensusPublisher.trustedKeys
-    }
-
-    /// The required signature beside the downloaded list.
-    private func censusSignature(nextTo catalog: URL) async throws -> Data {
-        return try await httpClient.get(CensusSignature.endpoint(for: catalog), maximumBytes: CensusSignature.maximumBytes)
-    }
-
-    /// Discovery starts immediately from remembered peers/DNS while a missing
-    /// or expired mainnet catalog downloads. An outage never gates the pool.
-    private func schedulePeerCatalogRefresh() {
-        guard isActive, network == .mainnet, e2e == nil || e2e?.censusURL != nil,
-              automaticCatalogTask == nil, !refreshingCatalog,
-              Date() >= nextAutomaticCatalogAttempt,
-              let store = catalogStore else { return }
-        nextAutomaticCatalogAttempt = Date().addingTimeInterval(60)
-        guard store.load(trusting: censusTrustedKeys) == nil else { return }
-        let epoch = networkGeneration
-        automaticCatalogTask = Task { [weak self] in
-            await self?.refreshPeerCatalog()
-            guard let self, self.networkGeneration == epoch else { return }
-            self.automaticCatalogTask = nil
-        }
-    }
-
-    func refreshPeerCatalog() async {
-        guard !refreshingCatalog, isActive else { return }
-        refreshingCatalog = true
-        catalogBytes = 0
-        catalogError = nil
-        let epoch = networkGeneration
-        defer { refreshingCatalog = false }
-        do {
-            guard let catalogURL = e2e?.censusURL ?? activePeerGateways.censusEndpoint else {
-                throw RoutedHTTPClient.Failure.unavailable
-            }
-            let data = try await httpClient.get(catalogURL, maximumBytes: CensusCatalog.maximumBytes) { [weak self] bytes in
-                Task { @MainActor in if self?.networkGeneration == epoch { self?.catalogBytes = bytes } }
-            }
-            let signature = try await censusSignature(nextTo: catalogURL)
-            guard epoch == networkGeneration, isActive, let store = catalogStore else { throw CancellationError() }
-            let download = try store.replace(with: data, signature: signature, trusting: censusTrustedKeys)
-            if network == .mainnet { try await stack?.pool.updateCensusCatalog(download.catalog) }
-            catalogNotice = "Observed \(download.catalog.date): \(Self.candidateCount(download.catalog, networks: activePeerGateways.networks)). Active peers unchanged."
-            e2e?.journal("peers.catalogRefreshed", fields: ["date": download.catalog.date, "sha256": download.sha256])
-        } catch {
-            catalogError = error is CancellationError ? "Refresh cancelled; previous peer list retained." : error.localizedDescription
-        }
-    }
-
-    /// "977 candidates", for the peer-list notices: the entries on the
+    /// "977 candidates", for the peer-list notice: the entries on the
     /// networks the current routing may dial.
     static func candidateCount(_ catalog: CensusCatalog,
                                networks: Set<PeerNetwork> = [.clearnet]) -> String {
@@ -2897,7 +2821,7 @@ final class AppModel {
         return "\(count) \(count == 1 ? "candidate" : "candidates")"
     }
 
-    /// Reset learned peers while preserving the downloaded catalog and settings.
+    /// Reset learned peers while preserving the shipped list and settings.
     func resetPeers() async {
         let pool = stack?.pool
         peersToAvoid = []

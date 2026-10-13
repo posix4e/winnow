@@ -1,0 +1,49 @@
+#!/usr/bin/env python3
+"""Fetch the census's peers.json into build/census/ for the app to ship.
+
+The census repository commits census/peers.json after every accepted daily
+run. This takes it at one census commit (default: the census's main), checks
+that it is a schema-1 list, and writes it beside the commit it came from.
+project.yml bundles build/census/peers.json into the app, so run this before
+XcodeGen; CI and release do. The app tests hold the bundled list to
+CensusCatalog's rules.
+
+Usage: scripts/import-census [census commit]
+"""
+import json
+from pathlib import Path
+import re
+import subprocess
+import sys
+import urllib.request
+
+ROOT = Path(__file__).resolve().parent.parent
+CENSUS = 'https://github.com/winnowwallet/census'
+DESTINATION = ROOT / 'build/census'
+LIMIT = 4 * 1_024 * 1_024
+
+
+def main():
+    if len(sys.argv) > 1:
+        commit = sys.argv[1]
+    else:
+        commit = subprocess.check_output(['git', 'ls-remote', CENSUS, 'refs/heads/main'], text=True).split()[0]
+    if len(sys.argv) > 2 or not re.fullmatch(r'[0-9a-f]{40}', commit):
+        sys.exit('usage: scripts/import-census [40-character census commit]')
+    url = f'https://raw.githubusercontent.com/winnowwallet/census/{commit}/census/peers.json'
+    with urllib.request.urlopen(url, timeout=60) as response:
+        data = response.read(LIMIT + 1)
+    if len(data) > LIMIT:
+        sys.exit('census peers.json is over 4 MiB')
+    catalog = json.loads(data)
+    if catalog.get('schemaVersion') != 1 or 'clearnet' not in catalog.get('networks', {}):
+        sys.exit('census peers.json is not a schema-1 list')
+    DESTINATION.mkdir(parents=True, exist_ok=True)
+    (DESTINATION / 'peers.json').write_bytes(data)
+    (DESTINATION / 'peers-source.txt').write_text(
+        f'{CENSUS}/blob/{commit}/census/peers.json\n{catalog["date"]}, tip {catalog["tip"]}\n')
+    counts = ', '.join(f'{len(entries)} {network}' for network, entries in sorted(catalog['networks'].items()))
+    print(f'census {commit[:7]} of {catalog["date"]}: {counts}')
+
+
+main()

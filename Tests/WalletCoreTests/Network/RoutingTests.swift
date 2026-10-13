@@ -34,14 +34,15 @@ struct RoutingTests {
         client.cancel(); await server.stop()
     }
 
-    /// An I2P-only client never asks its gateway for a public host, so the
-    /// listener is never reached; only an I2P site is eligible.
+    /// I2P alone makes no HTTP request at all: its gateway is never asked
+    /// for a public host, which an outproxy could carry, so the listener is
+    /// never reached.
     @Test func i2pOnlyClientRefusesPublicHosts() async throws {
         let server = LoopbackHTTPServer(response: ok("OK"))
         try await server.start()
         let i2pOnly = PeerGatewayConfiguration(networks: [.i2p], i2pProxy: .init(host: "100.74.30.8", port: 4447))
         let client = RoutedHTTPClient(gateways: i2pOnly)
-        #expect(client.enabled && client.network == .i2p && client.proxy == i2pOnly.i2pProxy)
+        #expect(!client.enabled)
         await #expect(throws: RoutedHTTPClient.Failure.unavailable) {
             try await client.get(await server.url("/census/peers.json"), maximumBytes: 8)
         }

@@ -154,6 +154,7 @@ scripts/signet-fixture up
 mkdir -p "$WINNOW_SCREENSHOT_DIR"
 env | grep '^WINNOW_' > "$HOME/.winnow-node.env"
 trap 'rm -f "$HOME/.winnow-node.env"; scripts/signet-fixture down' EXIT
+scripts/import-census
 xcodegen
 SIMULATOR_ID=$(scripts/ios-simulator iPhone) \
   scripts/ci-ui-journey "$RESULTS_DIR"

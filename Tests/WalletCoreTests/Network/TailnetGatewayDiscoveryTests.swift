@@ -100,43 +100,46 @@ struct TailnetGatewayDiscoveryTests {
             }
         }
     }
+}
 
+/// A read-only check over live Tor and I2P through the deployed gateways, by
+/// hand from the tailnet (`scripts/check-live-gateways`). A hidden-service dial
+/// gets the app's 30-second gateway timeout, so this needs more than a minute.
+@Suite(.timeLimit(.minutes(5)))
+struct LiveOverlayTests {
     @Test(.enabled(if: ProcessInfo.processInfo.environment["WINNOW_LIVE_GATEWAYS"] == "1"))
     func deployedMagicDNSGateways() async throws {
         let config = await TailnetGatewayDiscovery().discover()
-        #expect(config.networks == [.clearnet, .tor, .i2p])
+        #expect(config.networks == [.tor, .i2p])
         _ = try #require(config.torProxy)
         _ = try #require(config.i2pProxy)
         print("Discovered gateways: \(config.torProxy?.description ?? "none"), \(config.i2pProxy?.description ?? "none")")
-        // I2P alone reaches the census only through its I2P mirror, and the
-        // signed download must verify exactly as the public copy does.
-        let i2pOnly = PeerGatewayConfiguration(networks: [.i2p], i2pProxy: config.i2pProxy)
-        let mirror = try #require(i2pOnly.censusEndpoint)
-        let client = RoutedHTTPClient(gateways: i2pOnly)
-        defer { client.cancel() }
-        let data = try await client.get(mirror, maximumBytes: CensusCatalog.maximumBytes)
-        let signature = try await client.get(CensusSignature.endpoint(for: mirror), maximumBytes: CensusSignature.maximumBytes)
-        try CensusPublisher.verify(data, signature: signature, trusting: CensusPublisher.trustedKeys)
-        print("Live I2P census mirror: \(data.count) bytes, signature verified")
-        if let path = ProcessInfo.processInfo.environment["WINNOW_LIVE_CENSUS"] {
-            let catalog = try #require(CensusCatalogStore(url: URL(filePath: path)).load()?.catalog)
-            await withTaskGroup(of: Void.self) { group in
-                for network in [PeerNetwork.tor, .i2p] {
-                    group.addTask {
-                        for entry in catalog.networks[network.rawValue, default: []].prefix(2) {
-                            let peer = PeerConnection(endpoint: entry.endpoint, params: .mainnet,
-                                                      socksProxy: config.proxy(for: entry.endpoint))
-                            do {
-                                try await peer.connect(timeout: .seconds(5))
-                                print("Live \(network.rawValue) Bitcoin handshake: \(await peer.peerUserAgent)")
-                                await peer.disconnect()
-                                return
-                            } catch {
-                                await peer.disconnect()
-                            }
+        // The census list a build would ship, which the script fetches first.
+        let path = try #require(ProcessInfo.processInfo.environment["WINNOW_LIVE_CENSUS"])
+        let catalog = try CensusCatalog.decode(Data(contentsOf: URL(filePath: path)),
+                                               minimumEntries: CensusCatalog.minimumClearnetEntries)
+        await handshake(catalog, through: config)
+    }
+
+    /// Up to five listed peers per overlay, in a fresh order each run, so a
+    /// few dead entries at the top of the list cannot fail every check.
+    private func handshake(_ catalog: CensusCatalog, through config: PeerGatewayConfiguration) async {
+        await withTaskGroup(of: Void.self) { group in
+            for network in [PeerNetwork.tor, .i2p] {
+                group.addTask {
+                    for entry in catalog.networks[network.rawValue, default: []].shuffled().prefix(5) {
+                        let peer = PeerConnection(endpoint: entry.endpoint, params: .mainnet,
+                                                  socksProxy: config.proxy(for: entry.endpoint))
+                        do {
+                            try await peer.connect(timeout: .seconds(30))
+                            print("Live \(network.rawValue) Bitcoin handshake: \(await peer.peerUserAgent)")
+                            await peer.disconnect()
+                            return
+                        } catch {
+                            await peer.disconnect()
                         }
-                        Issue.record("No live \(network.rawValue) peer answered through its discovered gateway")
                     }
+                    Issue.record("No live \(network.rawValue) peer answered through its gateway")
                 }
             }
         }

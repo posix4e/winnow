@@ -387,8 +387,8 @@ struct PeerPolicyTests {
         await pool.stop()
     }
 
-    @Test("fresh and expired-census installs bootstrap through DNS", arguments: [false, true])
-    func poolUsesResolver(expiredCensus: Bool) async throws {
+    @Test("an install without a census list bootstraps through DNS")
+    func poolUsesResolver() async throws {
         #expect(await PeerPool(params: .mainnet).candidateEndpointsForTest().isEmpty)
         let params = seededCustomParams(dnsSeeds: ["seed.example.test"])
         let nodes = (0..<3).map { _ in LoopbackNode(params: params) }
@@ -400,11 +400,8 @@ struct PeerPolicyTests {
         defer { for node in nodes { Task { await node.stop() } } }
         let seedEndpoints = endpoints
         let resolver = SeedResolver { _, _, _ in seedEndpoints }
-        let fixture = CensusCatalogTests()
         let pool = PeerPool(params: params,
-                            dialTimeout: .milliseconds(500), seedResolver: resolver,
-                            censusCatalog: expiredCensus ? fixture.catalog() : nil,
-                            catalogNow: { fixture.now.addingTimeInterval(8 * 86_400) })
+                            dialTimeout: .milliseconds(500), seedResolver: resolver)
         #expect(await pool.candidateEndpointsForTest().isEmpty)
         await pool.start()
         let status = await pool.connectionStatus

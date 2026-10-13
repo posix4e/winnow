@@ -2,7 +2,7 @@ import Darwin
 import Foundation
 
 /// Untrusted discovery input, never a replacement for peer/header/filter checks.
-/// Shared by release generation, refresh, and the census publisher.
+/// Shared by the list each release ships and by the census publisher.
 ///
 /// The published list carries `clearnet`, `tor` and `i2p` arrays. The wallet
 /// uses overlay entries only when a gateway is configured. Every retained
@@ -25,13 +25,8 @@ public struct CensusCatalog: Codable, Equatable, Sendable {
     public init(schemaVersion: Int = 1, date: String, tip: Int32, networks: [String: [Entry]]) {
         self.schemaVersion = schemaVersion; self.date = date; self.tip = tip; self.networks = networks
     }
-    public static let endpoint = URL(string: "https://census.winnowwallet.com/census/peers.json")!
-    /// The same signed files served as an I2P site, for I2P-only routing.
-    /// The signature, not the mirror, is what the wallet trusts.
-    public static let i2pMirror: URL? = URL(string: "http://yts2d2oyrsz2eytnofuutgnsixymdkj2nmcmmpfv3aofzsnjt4eq.b32.i2p/census/peers.json")
     public static let maximumBytes = 4 * 1_024 * 1_024
     public static let maximumEntries = 65_536
-    public static let maximumAgeDays = 7
     /// Below this many clearnet entries a list is thin. The publisher never
     /// makes one this small — a daily census lists hundreds of clearnet
     /// nodes — so a list that arrives this small was cut down somewhere in
@@ -39,7 +34,7 @@ public struct CensusCatalog: Codable, Equatable, Sendable {
     public static let minimumClearnetEntries = 50
 
     public enum Invalid: String, Error, LocalizedError {
-        case schema, date, expired, future, size, endpoint, height, duplicate, diversity, thin
+        case schema, date, size, endpoint, height, duplicate, diversity, thin
         public var errorDescription: String? { "Invalid census peer list: \(rawValue)." }
     }
 
@@ -55,22 +50,25 @@ public struct CensusCatalog: Codable, Equatable, Sendable {
         return Int(floor(date.timeIntervalSince1970 / 86_400))
     }
 
-    public static func decode(_ data: Data, now: Date = Date(), requireFresh: Bool = true,
-                              minimumEntries: Int = 0) throws -> Self {
+    /// The census the app was built with: `scripts/import-census` fetches the
+    /// census repository's `peers.json` into `build/census/` before XcodeGen
+    /// runs, and project.yml bundles it into the app. Nil outside the app.
+    /// Peer churn, not a clock, ages it; the next build brings a newer one.
+    public static let bundled: Self? = Bundle.main.url(forResource: "peers", withExtension: "json")
+        .flatMap { try? Data(contentsOf: $0) }
+        .flatMap { try? decode($0, minimumEntries: minimumClearnetEntries) }
+
+    public static func decode(_ data: Data, minimumEntries: Int = 0) throws -> Self {
         guard data.count <= maximumBytes else { throw Invalid.size }
-        return try JSONDecoder().decode(Self.self, from: data)
-            .validated(now: now, requireFresh: requireFresh, minimumEntries: minimumEntries)
+        return try JSONDecoder().decode(Self.self, from: data).validated(minimumEntries: minimumEntries)
     }
 
     /// `minimumEntries` is the floor the wallet applies to a list it will
     /// use (`minimumClearnetEntries`); the publisher and the tests validate
     /// shape alone.
-    public func validated(now: Date = Date(), requireFresh: Bool = true, minimumEntries: Int = 0) throws -> Self {
+    public func validated(minimumEntries: Int = 0) throws -> Self {
         guard schemaVersion == 1, let entries = networks["clearnet"] else { throw Invalid.schema }
-        guard let observed = Self.day(date) else { throw Invalid.date }
-        let age = Int(floor(now.timeIntervalSince1970 / 86_400)) - observed
-        guard age >= 0 else { throw Invalid.future }
-        guard !requireFresh || age <= Self.maximumAgeDays else { throw Invalid.expired }
+        guard Self.day(date) != nil else { throw Invalid.date }
         guard tip > 0 else { throw Invalid.height }
         var result = self
         result.networks = ["clearnet": try validatedEntries(entries, minimum: minimumEntries)]

@@ -31,5 +31,5 @@ CI run. Deriving the chainwork itself still needs the full file, so that part
 remains release-time only.
 
 Offline checkpoint tests live in `Tests/ToolsTests/GenerateTests.swift`.
-Peer discovery uses manual peers, saved peers, a valid signed downloaded
-census, and DNS seeds. No peer list is generated or bundled with the app.
+Peer discovery uses manual peers, saved peers, the census list each release
+ships (`scripts/import-census`), and DNS seeds. No peer list is generated.

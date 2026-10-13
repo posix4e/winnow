@@ -1,8 +1,8 @@
 #!/bin/bash
 # Live gateway journey on a paired iPhone or a simulator, whose network must be
 # on the tailnet that runs both gateways (docs/peer-gateways.md): Automatic
-# discovery, I2P-only census from the I2P mirror with an I2P Bitcoin peer, and
-# Tor-only with an onion peer. A disposable mainnet wallet; nothing is sent.
+# discovery, I2P-only with an I2P Bitcoin peer, and Tor-only with an onion
+# peer. A disposable mainnet wallet; nothing is sent.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 destination="${1:?usage: check-live-gateways-ui <Xcode destination> <new evidence directory>}"

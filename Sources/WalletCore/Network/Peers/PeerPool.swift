@@ -20,8 +20,8 @@ public enum PeerPoolHeaderSyncError: LocalizedError, Equatable {
 }
 
 /// A small pool of outbound peers (default 3). Candidates come from manually
-/// supplied endpoints, a persisted good-peers JSON file, a fresh
-/// signed downloaded census, and DNS seeds resolved over DoH (dns-json)
+/// supplied endpoints, a persisted good-peers JSON file, the census list
+/// the release ships, and DNS seeds resolved over DoH (dns-json)
 /// with getaddrinfo as fallback. Dials race a batch of candidates at once
 /// (short per-attempt timeout);
 /// a round that runs out of candidates below target is reported as
@@ -48,8 +48,7 @@ public actor PeerPool {
     /// DNS-seed resolver (DoH, then getaddrinfo). Injectable for tests.
     private let seedResolver: SeedResolver
     public let gateways: PeerGatewayConfiguration
-    private var censusCatalog: CensusCatalog?
-    private let catalogNow: @Sendable () -> Date
+    private let censusCatalog: CensusCatalog?
     private var inFlight: [PeerEndpoint: PeerConnection] = [:]
     private var avoidOnReset: Set<PeerEndpoint> = []
     /// Clock for cooldown expiry. Injectable so a test can advance time
@@ -67,7 +66,6 @@ public actor PeerPool {
     private var monitorTask: Task<Void, Never>?
     private var started = false
     private var replenishing = false
-    private var catalogChangedDuringRound = false
     private var attemptsThisRound = 0
     private var exhausted = false
     /// Set for a round that follows one which could not fill the pool, so a
@@ -133,7 +131,6 @@ public actor PeerPool {
                 seedResolver: SeedResolver? = nil,
                 censusCatalog: CensusCatalog? = nil,
                 gateways: PeerGatewayConfiguration = .init(),
-                catalogNow: @Sendable @escaping () -> Date = { Date() },
                 avoidOnReset: Set<PeerEndpoint> = [],
                 now: @Sendable @escaping () -> ContinuousClock.Instant = { ContinuousClock.now }) {
         self.gateways = gateways
@@ -145,8 +142,7 @@ public actor PeerPool {
         self.dialTimeout = dialTimeout
         self.maxParallelDials = maxParallelDials
         self.maxDialAttempts = maxDialAttempts
-        self.catalogNow = catalogNow
-        self.censusCatalog = try? censusCatalog?.validated(now: catalogNow())
+        self.censusCatalog = try? censusCatalog?.validated()
         self.avoidOnReset = avoidOnReset
         self.seedResolver = seedResolver ?? .routed(client: RoutedHTTPClient())
         self.now = now
@@ -705,10 +701,6 @@ public actor PeerPool {
 
     private func finishReplenish() {
         replenishing = false
-        if catalogChangedDuringRound {
-            catalogChangedDuringRound = false
-            Task { await self.replenish() }
-        }
     }
 
     /// The diversity rules this pool enforces, sized to its slot count.
@@ -759,7 +751,7 @@ public actor PeerPool {
         }
     }
 
-    /// Manual peers, then persisted good peers, then a fresh downloaded census.
+    /// Manual peers, then persisted good peers, then the shipped census.
     ///
     /// A persisted peer keeps the class it was first found under, so a peer
     /// originally discovered through a DNS seed still counts as one for
@@ -773,12 +765,7 @@ public actor PeerPool {
         for endpoint in knownGood.subtracting(manualPeers) {
             ordered.append(PeerCandidate(endpoint: endpoint, source: rememberedSource(endpoint)))
         }
-        let freshCatalog = censusCatalog.flatMap { catalog -> CensusCatalog? in
-            guard let day = CensusCatalog.day(catalog.date),
-                  (0...CensusCatalog.maximumAgeDays).contains(Int(floor(catalogNow().timeIntervalSince1970 / 86_400)) - day) else { return nil }
-            return catalog
-        }
-        let automatic = interleavedCatalogEndpoints(freshCatalog)
+        let automatic = interleavedCatalogEndpoints(censusCatalog)
         let preferred = automatic.filter { !avoidOnReset.contains($0) }
         let previous = automatic.filter { avoidOnReset.contains($0) }
         ordered += (preferred + previous).map { PeerCandidate(endpoint: $0, source: .census) }
@@ -796,15 +783,6 @@ public actor PeerPool {
         return (0..<(lists.map(\.count).max() ?? 0)).flatMap { index in
             lists.compactMap { index < $0.count ? $0[index] : nil }
         }
-    }
-
-    /// Refresh only changes future discovery. Existing peers stay connected.
-    public func updateCensusCatalog(_ catalog: CensusCatalog) throws {
-        censusCatalog = try catalog.validated(now: catalogNow())
-        // A startup download may arrive after this round captured its queue.
-        // Refill empty seats promptly without disconnecting healthy peers.
-        if replenishing { catalogChangedDuringRound = true }
-        else { Task { await self.replenish() } }
     }
 
     /// The most a peers file may weigh: the writer keeps 100 entries, so a

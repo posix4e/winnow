@@ -142,10 +142,8 @@ final class E2EEntropyPinningTests: XCTestCase {
         XCTAssertNil(mode.control(), "the file does not exist yet")
         try Data(#"{"clipboard":"first"}"#.utf8).write(to: file)
         XCTAssertEqual(mode.control()?.clipboard, "first")
-        XCTAssertNil(mode.censusURL)
-        try Data(#"{"clipboard":"second","censusURL":"http://127.0.0.1:1/peers.json"}"#.utf8).write(to: file)
+        try Data(#"{"clipboard":"second"}"#.utf8).write(to: file)
         XCTAssertEqual(mode.control()?.clipboard, "second")
-        XCTAssertEqual(mode.censusURL?.absoluteString, "http://127.0.0.1:1/peers.json")
         try Data("not json".utf8).write(to: file)
         XCTAssertNil(mode.control())
     }

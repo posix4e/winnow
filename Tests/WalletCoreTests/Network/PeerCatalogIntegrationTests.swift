@@ -3,57 +3,15 @@ import Testing
 import TestSupport
 @testable import WalletCore
 
-private final class CatalogClock: @unchecked Sendable {
-    private let lock = NSLock()
-    private var value = CensusCatalogTests().now
-    func read() -> Date { lock.lock(); defer { lock.unlock() }; return value }
-    func advance() { lock.lock(); defer { lock.unlock() }; value += 8 * 86400 }
-}
-
-private actor CatalogSeedGate {
-    private(set) var requests = 0
-    private var released = false
-    func release() { released = true }
-    func resolve() async -> [PeerEndpoint] {
-        requests += 1
-        while !released { try? await Task.sleep(for: .milliseconds(10)) }
-        return []
-    }
-}
-
 struct PeerCatalogIntegrationTests {
-    @Test func catalogArrivingDuringDiscoveryTriggersAnotherRoundWithoutWaitingForMonitor() async throws {
-        let gate = CatalogSeedGate()
-        let pool = PeerPool(params: .mainnet, maxDialAttempts: 0,
-                            seedResolver: SeedResolver { _, _, _ in await gate.resolve() },
-                            catalogNow: { CensusCatalogTests().now })
-        let startup = Task { await pool.start() }
-        #expect(await pollUntil { await gate.requests == NetworkParams.mainnet.dnsSeeds.count })
-        // No endpoints are needed to exercise the scheduling race; this test
-        // never dials public nodes or changes the production catalog floor.
-        var updated = CensusCatalogTests().catalog()
-        updated.networks["clearnet"] = []
-        try await pool.updateCensusCatalog(updated)
-        let firstRoundRequests = await gate.requests
-        await gate.release()
-        await startup.value
-        #expect(await pollUntil(.seconds(5)) { await gate.requests > firstRoundRequests })
-        await pool.stop()
-    }
-
-    @Test func refreshPreservesTheActiveConnectionAndResetPreservesCatalogAndManualPeers() async throws {
+    @Test func resetPreservesTheShippedListAndManualPeers() async throws {
         let chain = makeSyntheticChain(length: 4, watchHeight: 2)
         let node = LoopbackNode(params: chain.params, chain: chain.blocks)
         try await node.start()
         let manual = await node.endpoint
         let pool = PeerPool(params: chain.params, peerCount: 1, manualPeers: [manual],
-                            catalogNow: { CensusCatalogTests().now })
+                            censusCatalog: CensusCatalogTests().catalog())
         await pool.start()
-        let before = try #require(await pool.connectedPeers().first)
-        try await pool.updateCensusCatalog(CensusCatalogTests().catalog())
-        let after = try #require(await pool.connectedPeers().first)
-        #expect(before === after)
-        #expect(await before.isConnected)
         #expect(await pool.candidateSourcesForTest()[.init(host: "8.8.8.8", port: 8333)] == .census)
         await pool.stop()
         try await pool.forgetKnownGood()
@@ -63,27 +21,23 @@ struct PeerCatalogIntegrationTests {
         await node.stop()
     }
 
-    @Test func expirationDropsCatalogAndFailedRefreshKeepsGoodCatalog() async throws {
-        let clock = CatalogClock()
-        let downloaded = CensusCatalogTests().catalog()
-        let pool = PeerPool(params: .mainnet, censusCatalog: downloaded, catalogNow: { clock.read() })
-        let peer = PeerEndpoint(host: "8.8.8.8", port: 8333)
-        #expect(await pool.candidateEndpointsForTest() == [peer])
-        var invalid = downloaded; invalid.schemaVersion = 2
-        await #expect(throws: CensusCatalog.Invalid.schema) { try await pool.updateCensusCatalog(invalid) }
-        #expect(await pool.candidateEndpointsForTest() == [peer])
-        clock.advance()
-        #expect(await pool.candidateEndpointsForTest().isEmpty)
+    /// A shipped list is used at any age; one that fails validation is not
+    /// used at all, and the pool still has its other sources.
+    @Test func anOldListIsUsedAndAnInvalidOneIsIgnored() async {
+        let old = CensusCatalogTests().catalog("2026-01-01")
+        #expect(await PeerPool(params: .mainnet, censusCatalog: old).candidateEndpointsForTest()
+                == [PeerEndpoint(host: "8.8.8.8", port: 8333)])
+        var invalid = old; invalid.schemaVersion = 2
+        #expect(await PeerPool(params: .mainnet, censusCatalog: invalid).candidateEndpointsForTest().isEmpty)
     }
 
     @Test func reshuffleAvoidsPreviousPeersAndCensusPeersAreOneSource() async {
-        let fixture = CensusCatalogTests()
-        var catalog = fixture.catalog()
+        var catalog = CensusCatalogTests().catalog()
         catalog.networks["clearnet"]!.append(.init(host: "9.9.9.9", port: 8333, userAgent: "", startHeight: 900_000))
         let previous = PeerEndpoint(host: "8.8.8.8", port: 8333)
-        let pool = PeerPool(params: .mainnet, censusCatalog: catalog, catalogNow: { fixture.now }, avoidOnReset: [previous])
+        let pool = PeerPool(params: .mainnet, censusCatalog: catalog, avoidOnReset: [previous])
         #expect(await pool.candidateEndpointsForTest().first == .init(host: "9.9.9.9", port: 8333))
         let sources = await pool.candidateSourcesForTest()
-        #expect(Set(sources.values) == [.census], "downloaded census peers are one trust source")
+        #expect(Set(sources.values) == [.census], "census peers are one trust source")
     }
 }

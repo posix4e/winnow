@@ -6,7 +6,7 @@ import XCTest
 /// A disposable mainnet wallet with no funds; nothing is sent.
 @MainActor
 final class LiveGatewayDeviceTests: XCTestCase {
-    func testRealGatewaysDiscoverRouteAndRefresh() throws {
+    func testRealGatewaysDiscoverAndRoute() throws {
         guard ProcessInfo.processInfo.environment["WINNOW_LIVE_GATEWAYS_UI"] == "1" else {
             throw XCTSkip("Run scripts/check-live-gateways-ui on the tailnet for the live gateway journey")
         }
@@ -33,16 +33,8 @@ final class LiveGatewayDeviceTests: XCTestCase {
         }
         capture(app, "device-gateways-automatic")
 
-        // I2P alone: the census comes from its I2P mirror, and a peer is an I2P destination.
+        // I2P alone: a peer from the shipped list is an I2P destination.
         choose(app, networks: [.i2p], gateway: ("i2pGatewayAddress", "winnow-i2p-gateway:4447"))
-        let refresh = app.buttons["refreshPeerCatalogButton"]
-        XCTAssertTrue(scrollUntilExists(app, refresh, maxSwipes: 14))
-        refresh.tap()
-        let notice = app.staticTexts["peerCatalogNotice"]
-        let error = app.staticTexts["peerCatalogError"]
-        XCTAssertTrue(poll(timeout: 240, interval: 2, "the I2P mirror census response") { notice.exists || error.exists })
-        capture(app, "device-i2p-census-mirror")
-        XCTAssertFalse(error.exists, error.exists ? error.label : "")
         waitForPeer(app, suffix: ".b32.i2p:", "a real I2P Bitcoin handshake")
         capture(app, "device-i2p-bitcoin")
 

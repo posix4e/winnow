@@ -146,7 +146,7 @@ public key are configured in [census#18](https://github.com/winnowwallet/census/
 The wallet now requires signed refreshes and caches, rejects an empty trust
 configuration, and loads signatures on every census generator path. Bundled
 peers are regenerated from a signed pinned commit. This supersedes the
-empty-key setup note above; [the signing guide](../census-signing.md) records
+empty-key setup note above; [the signing guide](https://github.com/winnowwallet/winnow/blob/557032a2b3e882e18a689c74cc8ce7d273cea799/docs/census-signing.md) records
 the key and rotation procedure.
 
 **Bundled-list removal, 2026-09-18** — the app no longer ships a peer snapshot,

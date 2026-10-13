@@ -91,6 +91,7 @@ case "$lane" in
  build)
   scripts/install-xcodegen
   export PATH="$RUNNER_TEMP/winnow-xcodegen-2.46.0/xcodegen/bin:$PATH"
+  scripts/import-census
   xcodegen
   export SIMULATOR_ID=$(scripts/ios-simulator iPhone)
   phase compilation-start

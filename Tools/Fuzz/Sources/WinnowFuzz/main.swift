@@ -108,9 +108,6 @@ private func binaryCorpus(for target: FuzzTarget) -> [Data] {
         return [Data(), Data(("{\"schemaVersion\":1,\"date\":\"2026-09-13\",\"tip\":900000,\"networks\":{\"clearnet\":"
                 + "[{\"host\":\"8.8.8.8\",\"port\":8333,\"userAgent\":\"/Satoshi:30/\",\"startHeight\":900000}],"
                 + "\"tor\":[],\"i2p\":[]}}").utf8)]
-    case .censusSignature:
-        return [Data(), Data(("{\"algorithm\":\"ed25519\",\"publicKey\":\"\(String(repeating: "ab", count: 32))\","
-                + "\"signature\":\"\(String(repeating: "cd", count: 64))\"}").utf8)]
     case .dnsJSON:
         return [Data(), Data("{\"Status\":0,\"Answer\":[{\"name\":\"seed.example.\",\"type\":1,\"TTL\":60,\"data\":\"8.8.8.8\"}]}".utf8)]
     case .fundingSources:

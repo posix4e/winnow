@@ -141,7 +141,7 @@ jobs:
 
       # The development harness exercises the local Bitcoin modules.
       # Deliberately a FIXED seed, unlike the sustained lane. This is the
-      # regression evidence: every pull request fuzzes the identical 15,000
+      # regression evidence: every pull request fuzzes the identical 14,000
       # cases, so a newly-introduced parser bug shows up as this job turning
       # red rather than as a corpus that happened to wander somewhere new.
       # Rotation belongs in the scheduled lane; do not "fix" this one too.
@@ -174,6 +174,7 @@ jobs:
       - name: Generate project and choose the shared iPhone simulator
         if: steps.validate_media.outcome != 'success'
         run: |
+          scripts/import-census
           xcodegen
           echo "SIMULATOR_ID=$(scripts/ios-simulator iPhone)" >> "$GITHUB_ENV"
 

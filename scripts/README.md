@@ -74,7 +74,7 @@ and [native fixture](../Tools/Fixture/README.md) are the three Swift executables
 | Entry point | Inputs and purpose | Effects / caller |
 | --- | --- | --- |
 | [check-dependencies](check-dependencies) | Optional `--xcode DERIVED_DATA`; compare package and Xcode resolutions with the root lockfile. | Reads manifests/build state; CI and release. |
-| [check-live-gateways](check-live-gateways) | `[peers.json]`; live discovery, I2P census mirror and optional Bitcoin handshakes through the tailnet gateways. | Manual, from a Mac on that tailnet; CI has no tailnet. Sends no wallet data. See [peer gateways](../docs/peer-gateways.md). |
+| [check-live-gateways](check-live-gateways) | No arguments; live discovery and Bitcoin handshakes through the tailnet gateways with peers from the shipped census list. | Manual, from a Mac on that tailnet; CI has no tailnet. Sends no wallet data. See [peer gateways](../docs/peer-gateways.md). |
 | [check-live-gateways-ui](check-live-gateways-ui) | `<Xcode destination> <new evidence directory>`; live gateway journey on a device or simulator on the tailnet. | Manual; records `LiveGateways.xcresult` screenshots. Disposable mainnet wallet, nothing sent. |
 | [check-test-gates](check-test-gates) | No arguments; check environment gates, deliberate skips, and retired flags. | Source check in CI’s build job; does not execute tests. |
 | [check-swift-warnings](check-swift-warnings) | `BUILD_LOG`; reject compiler warnings under `Sources/` and `SoakCommand.swift`. | Reads a log; it does not compile or prove a build succeeded. |
@@ -104,6 +104,7 @@ publishing. The helper names below are not additional release pipelines.
 
 | Entry point | Inputs and purpose | Effects / caller |
 | --- | --- | --- |
+| [import-census](import-census) | Optional census commit (default: the census's `main`); fetch its `census/peers.json` with the commit beside it. | Network fetch; writes `build/census/`, which project.yml bundles. Run before XcodeGen; CI and release do. |
 | [check-release-policy](check-release-policy) | `RELEASE_TAG=vMAJOR.MINOR.PATCH`; validate stable tag syntax. An unset value supports manual validation. | No network or source generation; release workflow. |
 | [generate-supply-chain-metadata](generate-supply-chain-metadata) | `--output-dir DIR`, optional `--subject PATH`, `--subject-name NAME`, `--builder-id ID`. | Writes SPDX/provenance JSON for a Git tree or built artifact; no upload or signing. CI and release retain it as artifacts. |
 | [ci-sign.sh](ci-sign.sh) | `ASC_PRIVATE_KEY`; write the API key file under runner/temp storage. | Writes sensitive signing material; release/recovery workflows provide and clean it up. Certificate import is a separate release step. |

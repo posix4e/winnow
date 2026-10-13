@@ -65,18 +65,11 @@ struct SettingsView: View {
                 if model.advancedMode {
                     PeerGatewaysSection()
                     Section {
-                        Button(model.refreshingCatalog ? "Refreshing… \(model.catalogBytes) bytes" : "Refresh peer list") {
-                            Task { await model.refreshPeerCatalog() }
-                        }
-                        .disabled(model.refreshingCatalog)
-                        .accessibilityIdentifier("refreshPeerCatalogButton")
-                        if let notice = model.catalogNotice { Text(notice).accessibilityIdentifier("peerCatalogNotice") }
-                        else if let downloaded = model.catalogStore?.load() {
-                            Text("Observed \(downloaded.catalog.date): \(AppModel.candidateCount(downloaded.catalog, networks: model.activePeerGateways.networks)).").accessibilityIdentifier("peerCatalogNotice")
-                        } else { Text("No peer list downloaded yet. Until one arrives, Winnow uses saved peers and, when clearnet is allowed, DNS seeds. Downloaded lists expire after seven days.") }
-                        if let error = model.catalogError { Text(error).foregroundStyle(.red).accessibilityIdentifier("peerCatalogError") }
+                        if let shipped = CensusCatalog.bundled {
+                            Text("Observed \(shipped.date): \(AppModel.candidateCount(shipped, networks: model.activePeerGateways.networks)).").accessibilityIdentifier("peerCatalogNotice")
+                        } else { Text("This build carries no peer list. Winnow uses saved peers and, when clearnet is allowed, DNS seeds.") }
                     } header: { Text("Mainnet peer list") } footer: {
-                        Text("Mainnet downloads a signed list automatically when needed. Refresh checks census.winnowwallet.com now, or its I2P mirror when I2P is the only network, and keeps active connections. Every selected peer still undergoes Winnow's normal checks.")
+                        Text("Each release carries the census of its day, the list it starts from. Every selected peer still undergoes Winnow's normal checks.")
                     }
                 }
 

@@ -19,21 +19,17 @@ struct PeerGatewayTests {
             defer { try? FileManager.default.removeItem(at: file) }
             try JSONEncoder().encode([onion, i2p, direct]).write(to: file)
             let pool = PeerPool(params: .mainnet, manualPeers: [direct, onion, i2p], peersFileURL: file,
-                                censusCatalog: fixture.catalog(), gateways: config, catalogNow: { fixture.now })
+                                censusCatalog: fixture.catalog(), gateways: config)
             let candidates = await pool.candidateEndpointsForTest()
             #expect(!candidates.isEmpty)
             #expect(candidates.allSatisfy { networks.contains(PeerNetwork(host: $0.host)) })
             #expect(config.httpProxy == (networks.contains(.clearnet) ? nil : proxy))
-            #expect(config.permitsPublicHTTP == !networks.isDisjoint(with: [.clearnet, .tor]))
-            #expect(config.permitsHTTP)
-            #expect(config.httpNetwork == (config.permitsPublicHTTP ? nil : .i2p))
-            #expect(config.censusEndpoint == (config.permitsPublicHTTP ? CensusCatalog.endpoint : CensusCatalog.i2pMirror))
+            #expect(config.permitsHTTP == !networks.isDisjoint(with: [.clearnet, .tor]))
         }
         for config in [PeerGatewayConfiguration(networks: []), .init(networks: [.tor]), .init(networks: [.i2p])] {
             #expect(!config.isValid)
             #expect(!config.permits(direct))
             #expect(!config.permits(onion))
-            #expect(!config.permitsPublicHTTP)
             #expect(!config.permitsHTTP)
         }
         #expect(!PeerGatewayConfiguration().permits(onion))
@@ -45,7 +41,7 @@ struct PeerGatewayTests {
         var catalog = fixture.catalog()
         catalog.networks["i2p"] = [.init(host: i2p.host, port: i2p.port, userAgent: "/Satoshi:30/", startHeight: 900_000)]
         let config = PeerGatewayConfiguration(networks: [.clearnet, .tor, .i2p], torProxy: proxy, i2pProxy: proxy)
-        let pool = PeerPool(params: .mainnet, censusCatalog: catalog, gateways: config, catalogNow: { fixture.now })
+        let pool = PeerPool(params: .mainnet, censusCatalog: catalog, gateways: config)
         let candidates = await pool.candidateEndpointsForTest()
         #expect(candidates.prefix(3).map { PeerNetwork(host: $0.host) } == [.clearnet, .tor, .i2p])
     }

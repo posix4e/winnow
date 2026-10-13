@@ -41,6 +41,12 @@ expired, not only on request. Egress added since the frozen table below:
 | Routed HTTP | `RoutedHTTPClient` through the Tor gateway | Census and explorer requests | When clearnet is off and Tor is on |
 | Census I2P mirror | `RoutedHTTPClient` through the I2P gateway to `CensusCatalog.i2pMirror` | The same census GETs | I2P-only routing; public hosts and explorer lookups are refused |
 
+Scope note (2026-10-13): the app no longer downloads the census. Each release
+bundles the census list current when it was built (`scripts/import-census`), so the
+census refresh egress in the frozen table below and the census I2P mirror row
+above are gone, routed HTTP carries explorer requests only, and I2P-only
+routing makes no HTTP request at all.
+
 ## Frozen target, 2026-09-14
 
 | Item | Value |
@@ -245,9 +251,10 @@ README and lockfile; the census publisher (winnowwallet/census) consumes
   observed to be requested and recorded, never to be honoured — the
   simulator releases the secret to a read that forbids interaction; that is
   Apple's contract and needs real hardware.
-- Census signing (IR-003): the September 18 activation configures the publisher
-  key and requires signatures; see `docs/census-signing.md` for current trust
-  and rotation. Earlier frozen observations above describe the pre-activation tree.
+- Census signing (IR-003): the September 18 activation configured the publisher
+  key and required signatures. From October 13 releases ship the census list
+  instead and verify no signature. Earlier frozen observations above describe
+  the pre-activation tree.
   On 2026-09-18 the owner chose public GitHub issues for bug and vulnerability
   reports (IR-009); enabling private vulnerability reporting is not pending.
   IR-023 (an access-control class on the Keychain item) was fixed on
