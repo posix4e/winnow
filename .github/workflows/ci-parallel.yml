@@ -1,4 +1,4 @@
-name: Parallel tdx validation
+name: Parallel validation
 on:
   workflow_call:
     inputs:
@@ -8,12 +8,6 @@ on:
 permissions:
   contents: read
   actions: read
-concurrency:
-  # Matching main/tag evidence needs no worker and can bypass the fresh-run queue.
-  # Cache misses still queue at the host controller, with run-specific labels.
-  group: ${{ (github.ref_type == 'tag' || github.ref == 'refs/heads/main') && format('winnow-tdx-evidence-{0}', github.run_id) || 'winnow-tdx-pool' }}
-  cancel-in-progress: false
-  queue: max
 jobs:
   evidence:
     runs-on: ubuntu-24.04
@@ -39,7 +33,7 @@ jobs:
   package:
     needs: evidence
     if: needs.evidence.outputs.reuse != 'true'
-    runs-on: [self-hosted, winnow-tdx-package, "winnow-run-${{ github.run_id }}-${{ github.run_attempt }}"]
+    runs-on: warp-macos-26-arm64-12x
     timeout-minutes: 45
     env:
       GH_TOKEN: ${{ github.token }}
@@ -48,34 +42,37 @@ jobs:
         with:
           persist-credentials: false
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.12'
       - name: Restore compatible compilation products
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             .build
-            /Users/macdev/winnow-ci/results/production-build
-          key: tdx-v1-17F113-x86_64-package-${{ needs.evidence.outputs.fingerprint }}
+            ${{ runner.temp }}/winnow-ci/results/production-build
+          key: v2-17F113-arm64-package-${{ needs.evidence.outputs.fingerprint }}
       - name: package validation
-        run: scripts/ci-tdx-lane package
+        run: scripts/ci-lane package
       - name: Preserve package evidence
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: tdx-package-${{ github.run_id }}-${{ github.run_attempt }}
+          name: lane-package-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
-            /Users/macdev/winnow-ci/results/lanes/
-            /Users/macdev/winnow-ci/results/*.log
-            /Users/macdev/winnow-ci/results/app/
-            /Users/macdev/winnow-ci/results/media/
-            /Users/macdev/winnow-ci/results/fuzz/
-            /Users/macdev/winnow-ci/results/supply-chain/
-            !/Users/macdev/winnow-ci/results/app/signet/
+            ${{ runner.temp }}/winnow-ci/results/lanes/
+            ${{ runner.temp }}/winnow-ci/results/*.log
+            ${{ runner.temp }}/winnow-ci/results/app/
+            ${{ runner.temp }}/winnow-ci/results/media/
+            ${{ runner.temp }}/winnow-ci/results/fuzz/
+            ${{ runner.temp }}/winnow-ci/results/supply-chain/
+            !${{ runner.temp }}/winnow-ci/results/app/signet/
           if-no-files-found: error
           retention-days: 14
   build:
     needs: evidence
     if: needs.evidence.outputs.reuse != 'true'
-    runs-on: [self-hosted, winnow-tdx-build, "winnow-run-${{ github.run_id }}-${{ github.run_attempt }}"]
+    runs-on: warp-macos-26-arm64-12x
     timeout-minutes: 45
     env:
       GH_TOKEN: ${{ github.token }}
@@ -84,49 +81,52 @@ jobs:
         with:
           persist-credentials: false
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.12'
       - name: Restore compatible compilation products
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
-            /Users/macdev/winnow-ci/build
-          key: tdx-v1-17F113-x86_64-build-${{ needs.evidence.outputs.fingerprint }}
+            ${{ runner.temp }}/winnow-ci/build
+          key: v2-17F113-arm64-build-${{ needs.evidence.outputs.fingerprint }}
       - name: build validation
-        run: scripts/ci-tdx-lane build
+        run: scripts/ci-lane build
       - name: Publish shared Debug products immediately
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: tdx-debug-${{ github.run_id }}-${{ github.run_attempt }}
-          path: /Users/macdev/winnow-ci/results/debug-transfer/
+          name: lane-debug-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/winnow-ci/results/debug-transfer/
           compression-level: 0
           retention-days: 1
       - name: Compile and inspect ARM64 Release
         shell: bash --noprofile --norc -e -o pipefail {0}
         run: |
-          result=/Users/macdev/winnow-ci/results
+          result="$RUNNER_TEMP/winnow-ci/results"
           xcodebuild -project WinnowApp.xcodeproj -scheme WinnowApp -configuration Release -destination 'generic/platform=iOS Simulator' -derivedDataPath "$result/release" -skipPackagePluginValidation -skipMacroValidation ARCHS=arm64 CODE_SIGNING_ALLOWED=NO build 2>&1 | tee "$result/app/release-build.log"
           scripts/check-dependencies --xcode "$result/release"
           scripts/check-swift-warnings "$result/app/release-build.log"
           scripts/verify-release-e2e-exclusion "$result/release/Build/Products/Release-iphonesimulator/WinnowApp.app"
-          python3 -c 'import json,pathlib; p=pathlib.Path("/Users/macdev/winnow-ci/results/lanes/build.json"); r=json.loads(p.read_text()); r["release_inspected"]=True; p.write_text(json.dumps(r))'
+          python3 -c 'import json,os,pathlib; p=pathlib.Path(os.environ["RUNNER_TEMP"])/"winnow-ci/results/lanes/build.json"; r=json.loads(p.read_text()); r["release_inspected"]=True; p.write_text(json.dumps(r))'
       - name: Preserve build evidence
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: tdx-build-${{ github.run_id }}-${{ github.run_attempt }}
+          name: lane-build-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
-            /Users/macdev/winnow-ci/results/lanes/
-            /Users/macdev/winnow-ci/results/*.log
-            /Users/macdev/winnow-ci/results/app/
-            /Users/macdev/winnow-ci/results/media/
-            /Users/macdev/winnow-ci/results/fuzz/
-            /Users/macdev/winnow-ci/results/supply-chain/
-            !/Users/macdev/winnow-ci/results/app/signet/
+            ${{ runner.temp }}/winnow-ci/results/lanes/
+            ${{ runner.temp }}/winnow-ci/results/*.log
+            ${{ runner.temp }}/winnow-ci/results/app/
+            ${{ runner.temp }}/winnow-ci/results/media/
+            ${{ runner.temp }}/winnow-ci/results/fuzz/
+            ${{ runner.temp }}/winnow-ci/results/supply-chain/
+            !${{ runner.temp }}/winnow-ci/results/app/signet/
           if-no-files-found: error
           retention-days: 14
   units:
     needs: evidence
     if: needs.evidence.outputs.reuse != 'true'
-    runs-on: [self-hosted, winnow-tdx-units, "winnow-run-${{ github.run_id }}-${{ github.run_attempt }}"]
+    runs-on: warp-macos-26-arm64-12x
     timeout-minutes: 45
     env:
       GH_TOKEN: ${{ github.token }}
@@ -135,27 +135,30 @@ jobs:
         with:
           persist-credentials: false
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.12'
       - name: units validation
-        run: scripts/ci-tdx-lane units
+        run: scripts/ci-lane units
       - name: Preserve units evidence
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: tdx-units-${{ github.run_id }}-${{ github.run_attempt }}
+          name: lane-units-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
-            /Users/macdev/winnow-ci/results/lanes/
-            /Users/macdev/winnow-ci/results/*.log
-            /Users/macdev/winnow-ci/results/app/
-            /Users/macdev/winnow-ci/results/media/
-            /Users/macdev/winnow-ci/results/fuzz/
-            /Users/macdev/winnow-ci/results/supply-chain/
-            !/Users/macdev/winnow-ci/results/app/signet/
+            ${{ runner.temp }}/winnow-ci/results/lanes/
+            ${{ runner.temp }}/winnow-ci/results/*.log
+            ${{ runner.temp }}/winnow-ci/results/app/
+            ${{ runner.temp }}/winnow-ci/results/media/
+            ${{ runner.temp }}/winnow-ci/results/fuzz/
+            ${{ runner.temp }}/winnow-ci/results/supply-chain/
+            !${{ runner.temp }}/winnow-ci/results/app/signet/
           if-no-files-found: error
           retention-days: 14
   journey:
     needs: evidence
     if: needs.evidence.outputs.reuse != 'true'
-    runs-on: [self-hosted, winnow-tdx-journey, "winnow-run-${{ github.run_id }}-${{ github.run_attempt }}"]
+    runs-on: warp-macos-26-arm64-12x
     timeout-minutes: 45
     env:
       GH_TOKEN: ${{ github.token }}
@@ -164,27 +167,30 @@ jobs:
         with:
           persist-credentials: false
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1 # v6
+        with:
+          python-version: '3.12'
       - name: Restore compatible compilation products
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: |
             .build
-          key: tdx-v1-17F113-x86_64-journey-${{ needs.evidence.outputs.fingerprint }}
+          key: v2-17F113-arm64-journey-${{ needs.evidence.outputs.fingerprint }}
       - name: journey validation
-        run: scripts/ci-tdx-lane journey
+        run: scripts/ci-lane journey
       - name: Preserve journey evidence
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
         with:
-          name: tdx-journey-${{ github.run_id }}-${{ github.run_attempt }}
+          name: lane-journey-${{ github.run_id }}-${{ github.run_attempt }}
           path: |
-            /Users/macdev/winnow-ci/results/lanes/
-            /Users/macdev/winnow-ci/results/*.log
-            /Users/macdev/winnow-ci/results/app/
-            /Users/macdev/winnow-ci/results/media/
-            /Users/macdev/winnow-ci/results/fuzz/
-            /Users/macdev/winnow-ci/results/supply-chain/
-            !/Users/macdev/winnow-ci/results/app/signet/
+            ${{ runner.temp }}/winnow-ci/results/lanes/
+            ${{ runner.temp }}/winnow-ci/results/*.log
+            ${{ runner.temp }}/winnow-ci/results/app/
+            ${{ runner.temp }}/winnow-ci/results/media/
+            ${{ runner.temp }}/winnow-ci/results/fuzz/
+            ${{ runner.temp }}/winnow-ci/results/supply-chain/
+            !${{ runner.temp }}/winnow-ci/results/app/signet/
           if-no-files-found: error
           retention-days: 14
   validation:
@@ -216,7 +222,7 @@ jobs:
       - if: needs.evidence.outputs.reuse != 'true'
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
         with:
-          pattern: tdx-@(package|build|units|journey)-${{ github.run_id }}-${{ github.run_attempt }}
+          pattern: lane-@(package|build|units|journey)-${{ github.run_id }}-${{ github.run_attempt }}
           path: incoming
       - if: needs.evidence.outputs.reuse == 'true'
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
@@ -230,9 +236,9 @@ jobs:
         run: |
           mkdir -p evidence/lanes
           for lane in package build units journey; do
-            cp "incoming/tdx-$lane-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT/lanes/$lane.json" evidence/lanes/
+            cp "incoming/lane-$lane-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT/lanes/$lane.json" evidence/lanes/
           done
-          cp -R "incoming/tdx-journey-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT/media" evidence/media
+          cp -R "incoming/lane-journey-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT/media" evidence/media
           scripts/prepare-site-artifact --validate-media evidence/media
           gh api "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/jobs?per_page=100" > evidence/timing-jobs.json
           gh api "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID" > evidence/timing-run.json

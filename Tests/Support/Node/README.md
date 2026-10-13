@@ -22,4 +22,4 @@ subprocess behavior, and [CoreSigner tests](../../WalletCoreTests/CoreSignerTest
 cover descriptor parsing without a node. The required [CI workflow](../../../.github/workflows/ci.yml)
 exercises the RPC/miner path through host bank preparation and the UI journey
 against its temporary node. This directory does not
-provision TDX machines or register runners.
+register runners.

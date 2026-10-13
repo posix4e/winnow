@@ -1,15 +1,20 @@
 #!/bin/bash
-# Runs only inside a disposable tdx macOS guest; never on a developer machine.
+# Runs one validation lane on a disposable WarpBuild macOS runner; never on a developer machine.
 set -euo pipefail
 lane=${1:?package|build|units|journey}
-[[ $(uname -m) == x86_64 && -f /etc/winnow-ci-image ]]
-grep -qx tdx-macos15.7.9-xcode26.6-17F113-v1 /etc/winnow-ci-image
+[[ $(uname -m) == arm64 && -n ${RUNNER_TEMP:-} ]]
 xcodebuild -version | grep -q 'Build version 17F113'
-xcrun simctl list runtimes | grep -q 'iOS 26.5 (26.5 - 23F77)'
-export PATH=/usr/local/opt/python@3.12/libexec/bin:/usr/local/bin:$PATH
+# The image also carries newer runtimes; every simulator here is chosen on this
+# one, so the runtime the evidence records is the one the tests ran on.
+export IOS_SIMULATOR_RUNTIME=26.5
+runtime_build=$(xcrun simctl list runtimes | sed -nE 's/^iOS 26\.5 \(26\.5 - ([A-Z0-9]+)\).*/\1/p' | head -1)
+[[ -n $runtime_build ]]
+export WINNOW_RUNTIME="iOS $IOS_SIMULATOR_RUNTIME ($runtime_build)"
+export WINNOW_IMAGE="${ImageOS:-macos}-${ImageVersion:-$(sw_vers -productVersion)}"
 ROOT=$PWD
-export CI_RESULTS=/Users/macdev/winnow-ci/results
-export DERIVED_DATA=/Users/macdev/winnow-ci/build
+WINNOW_CI=$RUNNER_TEMP/winnow-ci
+export CI_RESULTS=$WINNOW_CI/results
+export DERIVED_DATA=$WINNOW_CI/build
 export APP_RESULTS=$CI_RESULTS/app
 export WINNOW_NODE_HOST=127.0.0.1 WINNOW_RPC_PORT=38600 WINNOW_P2P_PORT=38601
 mkdir -p "$APP_RESULTS" "$CI_RESULTS/lanes"
@@ -26,7 +31,7 @@ finish() {
   fi
   if [[ $lane == units || $lane == journey ]]; then xcrun simctl shutdown all || true; fi
   python3 - "$lane" "$result" "$((SECONDS-start))" "$CI_RESULTS" <<'PY'
-import json,pathlib,re,subprocess,sys
+import json,os,pathlib,re,subprocess,sys
 lane,code,elapsed,root=sys.argv[1:];root=pathlib.Path(root)
 logs='\n'.join(p.read_text(errors='replace') for p in root.rglob('*.log'))
 patterns={'package':r'Test run with (\d+) tests', 'units':r'Executed (\d+) tests', 'journey':r"test01CreateReceiveSendConfirm\]' passed"}
@@ -38,21 +43,21 @@ inventory=sorted(set(re.findall(r"Test Case '([^']+)' passed",logs)+re.findall(r
 checksum=root/'debug-transfer/debug.tar.sha256'
 build_hash=checksum.read_text().split()[0] if checksum.is_file() else None
 source=subprocess.check_output(['git','rev-parse','HEAD'],text=True).strip()
-(root/'lanes'/f'{lane}.json').write_text(json.dumps({'source_sha':source,'debug_sha256':build_hash,'result':'success' if code=='0' else 'failure','tests':count,'elapsed_seconds':int(elapsed),'phases':[json.loads(line) for line in (root/f'{lane}-timings.log').read_text().splitlines()],'inventory':inventory,'runtime':'iOS 26.5 (23F77)','architecture':'x86_64','image':pathlib.Path('/etc/winnow-ci-image').read_text().strip()}))
+(root/'lanes'/f'{lane}.json').write_text(json.dumps({'source_sha':source,'debug_sha256':build_hash,'result':'success' if code=='0' else 'failure','tests':count,'elapsed_seconds':int(elapsed),'phases':[json.loads(line) for line in (root/f'{lane}-timings.log').read_text().splitlines()],'inventory':inventory,'runtime':os.environ['WINNOW_RUNTIME'],'architecture':os.uname().machine,'image':os.environ['WINNOW_IMAGE']}))
 PY
   exit "$result"
 }
 trap finish EXIT
 wait_build() {
   deadline=$((SECONDS+900))
-  name="tdx-debug-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
+  name="lane-debug-$GITHUB_RUN_ID-$GITHUB_RUN_ATTEMPT"
   while (( SECONDS < deadline )); do
     id=$(gh api "repos/$GITHUB_REPOSITORY/actions/runs/$GITHUB_RUN_ID/artifacts" --jq ".artifacts[] | select(.name == \"$name\" and .expired == false) | .id")
     if [[ -n $id ]]; then
       mkdir -p "$CI_RESULTS/debug-transfer"
       gh run download "$GITHUB_RUN_ID" -R "$GITHUB_REPOSITORY" -n "$name" -D "$CI_RESULTS/debug-transfer"
       (cd "$CI_RESULTS/debug-transfer" && shasum -a 256 -c debug.tar.sha256)
-      tar -xf "$CI_RESULTS/debug-transfer/debug.tar" -C /Users/macdev/winnow-ci
+      tar -xf "$CI_RESULTS/debug-transfer/debug.tar" -C "$WINNOW_CI"
       return
     fi
     sleep 5
@@ -67,6 +72,7 @@ boot_simulator() {
 }
 case "$lane" in
  package)
+  command -v swiftlint >/dev/null || brew install swiftlint
   swiftlint lint --quiet
   scripts/check-test-gates
   scripts/check-dependencies
@@ -78,7 +84,7 @@ case "$lane" in
   for command in inspect generate soak; do "$CI_RESULTS/production-build/release/winnow-debug" "$command" --help; done
   swift run --scratch-path "$CI_RESULTS/production-build" -c release WinnowFuzz --iterations 1000 --seed 0x57494e4e4f575055 --max-input 16384 --artifact-dir "$CI_RESULTS/fuzz" 2>&1 | tee "$CI_RESULTS/fuzz.log"
   for dir in supply-chain supply-chain-replay; do
-    scripts/generate-supply-chain-metadata --output-dir "$CI_RESULTS/$dir" --subject "$CI_RESULTS/production-build/release/winnow-debug" --subject-name winnow-debug --builder-id "https://github.com/$GITHUB_REPOSITORY/.github/workflows/ci-tdx.yml@$GITHUB_SHA"
+    scripts/generate-supply-chain-metadata --output-dir "$CI_RESULTS/$dir" --subject "$CI_RESULTS/production-build/release/winnow-debug" --subject-name winnow-debug --builder-id "https://github.com/$GITHUB_REPOSITORY/.github/workflows/ci-parallel.yml@$GITHUB_SHA"
   done
   diff -ru "$CI_RESULTS/supply-chain" "$CI_RESULTS/supply-chain-replay"
  ;;
@@ -92,7 +98,7 @@ case "$lane" in
   phase compilation-finished
   scripts/check-dependencies --xcode "$DERIVED_DATA"
   mkdir -p "$CI_RESULTS/debug-transfer"
-  tar -cf "$CI_RESULTS/debug-transfer/debug.tar" -C /Users/macdev/winnow-ci build/Build/Products
+  tar -cf "$CI_RESULTS/debug-transfer/debug.tar" -C "$WINNOW_CI" build/Build/Products
   (cd "$CI_RESULTS/debug-transfer" && shasum -a 256 debug.tar > debug.tar.sha256)
  ;;
  units)
@@ -111,6 +117,8 @@ case "$lane" in
   export WINNOW_DATADIR="$APP_RESULTS/signet"
   [[ ! -e $WINNOW_DATADIR ]]
   phase fixture-start
+  command -v bitcoind >/dev/null || brew install bitcoin
+  command -v ffmpeg >/dev/null || brew install ffmpeg
   scripts/signet-fixture up
   swift build --product winnow-fixture
   export WINNOW_FIXTURE_EXECUTABLE="$ROOT/.build/debug/winnow-fixture"

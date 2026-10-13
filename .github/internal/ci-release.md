@@ -9,7 +9,7 @@ is swift-secp256k1. Xcode resolution must match that root lockfile.
 
 | Workflow | When | Responsibility |
 | --- | --- | --- |
-| CI | PR, main push, nightly, manual, release caller | One validation lane (tdx guests or one hosted build job) owns lint/test gates, package and debugging tests, app/Keychain tests and signet UI journey, release warning and E2E exclusion gates, inspection smoke, provenance, fixed fuzz corpus, and journey evidence normalization |
+| CI | PR, main push, nightly, manual, release caller | One validation lane (four WarpBuild jobs or one hosted build job) owns lint/test gates, package and debugging tests, app/Keychain tests and signet UI journey, release warning and E2E exclusion gates, inspection smoke, provenance, fixed fuzz corpus, and journey evidence normalization |
 | Fuzz sanitizers | Weekly or manual seed replay | Sustained address/thread sanitizer coverage; does not repeat normal suites |
 | Release | New stable version tag or manual validation | Calls CI, then signs/uploads and publishes only for tag pushes |
 | TestFlight recovery | Manual, exact version and build number | Finish notes/group assignment for an existing upload |
@@ -17,8 +17,8 @@ is swift-secp256k1. Xcode resolution must match that root lockfile.
 | TestFlight feedback | Manual, with an age recipient | Pull tester comments, screenshots and crash logs encrypted to that recipient; the log shows counts only |
 
 CI runs one validation lane; there are no separate selector,
-complexity, architecture or size-report jobs. With `TDX_CI_ENABLED`, same-repository
-runs use four self-hosted tdx guests ([tdx runbook](../../docs/engineering/tdx-ci.md));
+complexity, architecture or size-report jobs. Same-repository runs use four
+parallel WarpBuild jobs ([ci-parallel.yml](../workflows/ci-parallel.yml));
 the rest of this section describes the hosted `build` job, which fork PRs and
 the manual `hosted` input use. The build job checks out the PR
 head explicitly. `scripts/ci-journey-cache` hashes the test/build inputs,

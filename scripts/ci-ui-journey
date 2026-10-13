@@ -153,6 +153,7 @@ xcodebuild test-without-building -xctestrun "${UI_TEST_RUNS[0]}" \
   -destination "platform=iOS Simulator,id=$UI_SIMULATOR_ID" \
   -only-testing:WinnowAppUITests \
   -test-timeouts-enabled YES -maximum-test-execution-time-allowance 600 \
+  -collect-test-diagnostics never \
   -resultBundlePath "$UI_RESULTS/NodeUI.xcresult" \
   2>&1 | tee "$UI_RESULTS/node-ui.log"
 phase tests-finished

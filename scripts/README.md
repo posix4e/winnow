@@ -83,7 +83,7 @@ and [native fixture](../Tools/Fixture/README.md) are the three Swift executables
 | [ci-app-tests](ci-app-tests) | `FRESH_RESULTS_DIR [--skip-build]`; app tests in the iOS host. | Builds/uses a simulator; see shared-build setup above. |
 | [ci-ui-journey](ci-ui-journey) | `FRESH_RESULTS_DIR [--skip-build]`; the one recorded payment journey. | Uses the fixture and simulator, mines blocks, and writes test/media artifacts. |
 | [install-xcodegen](install-xcodegen) | No arguments; fetch checksum-pinned XcodeGen. | Installs under runner/temp storage; sets CI’s path or prints the local executable path. |
-| [ios-simulator](ios-simulator) | Optional `iPhone` or `iPad`; print an available device ID from the newest installed iOS runtime. | Selection only; does not boot, create, or erase a simulator. |
+| [ios-simulator](ios-simulator) | Optional `iPhone` or `iPad`; print an available device ID from the newest installed iOS runtime, or from `IOS_SIMULATOR_RUNTIME` when set. | Selection only; does not boot, create, or erase a simulator. |
 | [verify-release-e2e-exclusion](verify-release-e2e-exclusion) | `APP_BUNDLE_OR_EXECUTABLE`; reject known test-activation markers. | Inspects an already-built binary; CI and release. |
 
 ### Website and local development

@@ -29,4 +29,5 @@ xcodebuild "$APP_TEST_ACTION" "${args[@]}" \
   -destination "platform=iOS Simulator,id=$APP_SIMULATOR_ID" \
   -resultBundlePath "$APP_RESULTS/AppTests.xcresult" \
   -only-testing:WinnowAppTests \
+  -collect-test-diagnostics never \
   2>&1 | tee "$APP_RESULTS/app-tests.log"

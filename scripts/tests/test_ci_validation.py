@@ -15,7 +15,7 @@ class ValidationTests(unittest.TestCase):
         self.record={'identity':copy.deepcopy(self.identity),'repository':'winnowwallet/winnow',
                      'result':'success','fresh':True,'source_sha':'c'*40,
                      'created_at':self.now.isoformat(),
-                     'lanes':{x:{'result':'success','tests':M['POLICY']['minimum_tests'].get(x,0),'architecture':'x86_64','image':M['POLICY']['image'],'runtime':M['POLICY']['runtime'],'release_inspected':True,'source_sha':'c'*40,'debug_sha256':'f'*64} for x in M['LANES']},
+                     'lanes':{x:{'result':'success','tests':M['POLICY']['minimum_tests'].get(x,0),'architecture':'arm64','image':'macos26-20261012.1','runtime':'iOS 26.5 (23F77)','release_inspected':True,'source_sha':'c'*40,'debug_sha256':'f'*64} for x in M['LANES']},
                      'files':{**{'lanes/'+x+'.json':'d'*64 for x in M['LANES']},'media/journey-provenance.json':'d'*64}}
     def valid(self):
         return M['validate'](self.record,self.identity,'winnowwallet/winnow',self.now)
@@ -72,9 +72,12 @@ class ValidationTests(unittest.TestCase):
 
     def test_wrong_lane_toolchain_and_missing_release_inspection_rejected(self):
         for lane in M['LANES']:
-            self.record['lanes'][lane]['image']='other'
-            self.assertFalse(self.valid())
-            self.record['lanes'][lane]['image']=M['POLICY']['image']
+            for field,value in [('architecture','x86_64'),('runtime','iOS 26.4 (23E244)'),('runtime','iOS 26.5'),('image','')]:
+                old=self.record['lanes'][lane][field]; self.record['lanes'][lane][field]=value
+                self.assertFalse(self.valid()); self.record['lanes'][lane][field]=old
+            # A newer runner image is recorded, not refused.
+            self.record['lanes'][lane]['image']='macos26-20261101.1'
+            self.assertTrue(self.valid())
         self.record['lanes']['build']['release_inspected']=False
         self.assertFalse(self.valid())
 
@@ -87,7 +90,7 @@ class CompleteFingerprintTests(unittest.TestCase):
                 return subprocess.check_output(['git','-C',d,*args],stderr=subprocess.DEVNULL)
             git('init');git('config','user.name','Test');git('config','user.email','test@example.invalid')
             paths=['Sources/a.swift','Tests/a.swift','AppTests/a.swift','UITests/a.swift',
-                   'docs/site.css','.github/workflows/ci-tdx.yml','.github/workflows/site.yml',
+                   'docs/site.css','.github/workflows/ci-parallel.yml','.github/workflows/site.yml',
                    'scripts/prepare-site-artifact','scripts/tests/test_prepare_site_artifact.py','Package.resolved','project.yml']
             for path in paths:
                 p=root/path;p.parent.mkdir(parents=True,exist_ok=True);p.write_text('original')

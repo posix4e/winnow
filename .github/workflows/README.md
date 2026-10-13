@@ -10,12 +10,14 @@ the code makes the checks and release inputs reviewable at the same revision.
 The [testing policy](../../docs/testing.md) explains each suite's scope and
 evidence requirements. Release workflows reuse the ordinary checks.
 
-The [CI workflow](ci.yml) picks one validation lane. With the repository
-variable `TDX_CI_ENABLED`, same-repository runs use [ci-tdx.yml](ci-tdx.yml):
-four disposable self-hosted macOS guests on the tdx host
-([runbook](../../docs/engineering/tdx-ci.md)). Fork PRs, the manual `hosted`
-input and repositories without the variable use [ci-hosted.yml](ci-hosted.yml):
-one GitHub-hosted Apple silicon (`macos-26`) `build` job. Each job gets its own runner, per-run build directory,
+The [CI workflow](ci.yml) picks one validation lane. Same-repository runs use
+[ci-parallel.yml](ci-parallel.yml): package, build, units and journey jobs at once
+on WarpBuild `warp-macos-26-arm64-12x` runners, each first checking for Xcode 26.6
+(17F113) and the iOS 26.5 runtime. The build job publishes its Debug products once;
+units and journey boot their simulators while they wait for them. Fork PRs and the
+manual `hosted` input use [ci-hosted.yml](ci-hosted.yml):
+one GitHub-hosted Apple silicon (`macos-26`) `build` job, so a fork never runs on
+the paid runners. Each job gets its own runner, per-run build directory,
 and disposable signet fixture.
 
 The hosted build job owns lint and test gates, package and debugging tests, fixed fuzz

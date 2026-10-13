@@ -15,14 +15,14 @@ def jobs(text):
 
 class SecretBoundaryTests(unittest.TestCase):
     def test_workers_have_no_repository_secret_channel(self):
-        for name in ('ci-hosted.yml', 'ci-tdx.yml'):
+        for name in ('ci-hosted.yml', 'ci-parallel.yml'):
             with self.subTest(workflow=name):
                 text = (ROOT/name).read_text()
                 self.assertNotRegex(text, r'\bsecrets\s*[:.]')
                 self.assertNotRegex(text, r'(?m)^\s+environment:', 'An environment could inject signing secrets')
-        for name in ('ci.yml', 'tdx-trial.yml', 'release.yml'):
+        for name in ('ci.yml', 'release.yml'):
             for job, body in jobs((ROOT/name).read_text()).items():
-                if re.search(r'uses: \./\.github/workflows/(ci|ci-hosted|ci-tdx)\.yml', body):
+                if re.search(r'uses: \./\.github/workflows/(ci|ci-hosted|ci-parallel)\.yml', body):
                     with self.subTest(workflow=name, job=job):
                         self.assertNotRegex(body, r'\bsecrets\s*[:.]')
 
@@ -41,9 +41,9 @@ class AggregateGateTests(unittest.TestCase):
         import textwrap
         script = textwrap.dedent(jobs((ROOT/'ci.yml').read_text())['validation'].split('run: |\n', 1)[1])
         statuses = ('success', 'skipped', 'failure', 'cancelled')
-        for hosted, tdx in itertools.product(statuses, statuses):
-            expected = (hosted, tdx) in [('success', 'skipped'), ('skipped', 'success')]
-            with self.subTest(hosted=hosted, tdx=tdx):
+        for hosted, parallel in itertools.product(statuses, statuses):
+            expected = (hosted, parallel) in [('success', 'skipped'), ('skipped', 'success')]
+            with self.subTest(hosted=hosted, parallel=parallel):
                 result = subprocess.run(['bash', '-e', '-c', script],
-                                        env={**os.environ, 'HOSTED': hosted, 'TDX': tdx}, capture_output=True)
+                                        env={**os.environ, 'HOSTED': hosted, 'PARALLEL': parallel}, capture_output=True)
                 self.assertEqual(result.returncode == 0, expected)

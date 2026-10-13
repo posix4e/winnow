@@ -100,8 +100,8 @@ package and its committed third-party dependency revision.
 
 [CI and release operations](.github/internal/ci-release.md) describes the shared
 validation gates, node fixture, TestFlight recovery and website deployment.
-Same-repository CI runs on four disposable macOS guests on the self-hosted
-[tdx lane](docs/engineering/tdx-ci.md) when the repository enables it; fork PRs
+Same-repository CI runs four parallel jobs on WarpBuild Apple silicon runners
+([parallel lane](.github/workflows/ci-parallel.yml)); fork PRs
 and the manual `hosted` input use one GitHub-hosted Apple silicon (`macos-26`)
 `build` job for package, app, fuzz, lint, and release checks. Either lane is
 followed by a `website` job that deploys its ready artifact. Fresh runs use per-run build products and a new signet

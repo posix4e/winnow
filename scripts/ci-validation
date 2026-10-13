@@ -14,9 +14,10 @@ import sys
 ROOT = Path(__file__).resolve().parent.parent
 CACHE = runpy.run_path(str(ROOT / 'scripts/ci-journey-cache'))
 LANES = {'package', 'build', 'units', 'journey'}
-POLICY = {'schema': 1, 'image': 'tdx-macos15.7.9-xcode26.6-17F113-v1',
-          'boot_image_sha256': '7368770e6d387e7b993cc8eceb6641ca6d9ea3c00a847034646aebea24748e02',
-          'xcode': '17F113', 'runtime': 'iOS 26.5 (23F77)', 'architecture': 'x86_64', 'max_age_days': 7,
+# The runner image is recorded in each lane but not pinned: WarpBuild updates
+# it regularly, and the Xcode build, iOS runtime and architecture are what the
+# evidence depends on.
+POLICY = {'schema': 2, 'xcode': '17F113', 'runtime': 'iOS 26.5', 'architecture': 'arm64', 'max_age_days': 7,
           'minimum_tests': {'package': 647, 'units': 232, 'journey': 1}}
 
 
@@ -38,7 +39,7 @@ def fingerprint(ref='HEAD', cwd=None):
 def identity():
     return {'fingerprint': fingerprint(), 'policy': POLICY,
             'workflow_revision': subprocess.check_output(
-                ['git', 'rev-parse', 'HEAD:.github/workflows/ci-tdx.yml'], text=True).strip()}
+                ['git', 'rev-parse', 'HEAD:.github/workflows/ci-parallel.yml'], text=True).strip()}
 
 
 def validate(record, expected, repository, now=None):
@@ -50,8 +51,8 @@ def validate(record, expected, repository, now=None):
                 and set(record['lanes']) == LANES
                 and all(v['result'] == 'success' and v['tests'] >= 0
                         and v['architecture'] == POLICY['architecture']
-                        and v['image'] == POLICY['image']
-                        and v['runtime'] == POLICY['runtime']
+                        and isinstance(v['image'], str) and v['image']
+                        and v['runtime'].startswith(POLICY['runtime'] + ' (')
                         and v['source_sha'] == record['source_sha'] for v in record['lanes'].values())
                 and record['lanes']['build']['release_inspected'] is True
                 and re.fullmatch(r'[0-9a-f]{64}', record['lanes']['build']['debug_sha256']) is not None
@@ -94,7 +95,7 @@ def lookup(destination):
         if (run['conclusion'] != 'success' or run['status'] != 'completed'
                 or run['repository']['full_name'] != repo or run['head_repository']['full_name'] != repo
                 or run['head_sha'] != artifact['workflow_run']['head_sha']
-                or run['path'].split('@')[0] not in {'.github/workflows/ci.yml', '.github/workflows/tdx-trial.yml'}
+                or run['path'].split('@')[0] != '.github/workflows/ci.yml'
                 or run['event'] not in {'pull_request', 'push', 'workflow_dispatch', 'schedule'}
                 or now - datetime.fromisoformat(run['created_at'].replace('Z', '+00:00')) > timedelta(days=7)):
             continue
