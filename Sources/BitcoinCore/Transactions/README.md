@@ -9,7 +9,7 @@ by ordinary sends, fee replacement, and vault spending.
 transaction's inputs from the data those inputs reveal, for the app's
 received-payment labeling.
 
-[Wallet state](../Wallet/README.md) supplies coins and policy;
+[Wallet state](../../WalletCore/Wallet/README.md) supplies coins and policy;
 [the app](../../WinnowApp/README.md) owns review and authorization.
 [PSBTs](../PSBT/README.md) carry work that needs another signer.
 

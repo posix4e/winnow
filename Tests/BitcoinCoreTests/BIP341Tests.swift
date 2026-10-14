@@ -2,6 +2,7 @@ import Foundation
 import P256K
 import Testing
 import TestSupport
+@testable import BitcoinCore
 @testable import WalletCore
 
 /// BIP341 wallet test vectors (bip341-wallet-test-vectors.json, referenced from

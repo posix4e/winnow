@@ -1,6 +1,7 @@
 import Foundation
 import Testing
 import TestSupport
+@testable import BitcoinCore
 @testable import WalletCore
 
 /// Bounds on hostile descriptor text (epic #100, invariants S7 and S10).

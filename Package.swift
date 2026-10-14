@@ -5,6 +5,7 @@ let package = Package(
     name: "Winnow",
     platforms: [.iOS(.v17), .macOS(.v14)],
     products: [
+        .library(name: "BitcoinCore", targets: ["BitcoinCore"]),
         .library(name: "WalletCore", targets: ["WalletCore"]),
         // Test fixtures shared by every test target, SwiftPM and Xcode alike.
         .library(name: "TestSupport", targets: ["TestSupport"]),
@@ -17,12 +18,16 @@ let package = Package(
     ],
     targets: [
         .target(
-            name: "WalletCore",
+            name: "BitcoinCore",
             dependencies: [.product(name: "P256K", package: "swift-secp256k1")],
+            exclude: ["README.md", "Keys/README.md", "Serialization/README.md", "Wallet/README.md",
+                      "Crypto/README.md", "Descriptors/README.md", "Script/README.md",
+                      "PSBT/README.md", "Transactions/README.md"]
+        ),
+        .target(
+            name: "WalletCore",
+            dependencies: ["BitcoinCore", .product(name: "P256K", package: "swift-secp256k1")],
             exclude: [
-                "Crypto/README.md",
-                "Descriptors/README.md",
-                "Script/README.md",
                 "Keys/README.md",
                 "Network/Broadcast/README.md",
                 "Network/Filters/README.md",
@@ -31,8 +36,6 @@ let package = Package(
                 "Network/Peers/README.md",
                 "Network/Protocol/README.md",
                 "Network/Transport/README.md",
-                "PSBT/README.md",
-                "Transactions/README.md",
                 "Wallet/README.md",
             ]
         ),
@@ -72,13 +75,13 @@ let package = Package(
         ),
         .testTarget(
             name: "BitcoinCoreTests",
-            dependencies: ["WalletCore", "TestSupport"],
+            dependencies: ["BitcoinCore", "WalletCore", "TestSupport"],
             exclude: ["README.md"],
             resources: [.copy("Vectors")]
         ),
         .testTarget(
             name: "WalletCoreTests",
-            dependencies: ["WalletCore", "TestSupport"],
+            dependencies: ["BitcoinCore", "WalletCore", "TestSupport"],
             exclude: ["Network/README.md", "README.md"],
             resources: [.copy("Vectors")]
         ),

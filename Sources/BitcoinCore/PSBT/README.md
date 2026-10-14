@@ -10,7 +10,7 @@ The app exports v0 for Core. MuSig2 participant lists identify the root key,
 while nonces and partial signatures identify the derived output key.
 
 [Transaction construction](../Transactions/README.md),
-[vault policy](../Wallet/README.md), and
+[vault policy](../../WalletCore/Wallet/README.md), and
 [app signing screens](../../WinnowApp/README.md) consume these types.
 
 [PSBT tests](../../../Tests/WalletCoreTests/PSBTTests.swift) cover parsing, combination,

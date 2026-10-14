@@ -1,6 +1,7 @@
 import Foundation
 import Testing
 import TestSupport
+@testable import BitcoinCore
 @testable import WalletCore
 
 /// BIP380 checksum and key expression vectors parsed from bip-0380.mediawiki.

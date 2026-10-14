@@ -34,13 +34,14 @@ public roadmap owns future work; it is not evidence that a feature ships.
 
 ## Architecture follows the app
 
-WalletCore now owns wallet state, transaction construction, peer connections,
-headers, filters, and relay in one package target. The app directly orchestrates
-those parts; there is no extra wallet/network facade or parallel library-only
-send/scan workflow. Cryptography, descriptors, and wallet networking now share
-WalletCore too, including their byte encoders. Actors retain their existing
-ownership and lifetimes. Offline inspection is part of winnow-debug; there is no
-separate CLI or demo signing path.
+BitcoinCore owns offline encodings, keys, descriptors, scripts, PSBTs, coin
+selection, and transaction construction/signing. WalletCore adds secret storage,
+wallet state, peers, headers, filters, and relay. It re-exports BitcoinCore so
+existing source imports continue to work. Actors retain their existing ownership
+and lifetimes. The wallet's send, persistence, and network behavior is unchanged.
+The separate consumer in `Examples/OfflineWallet` depends only on BitcoinCore and
+checks the public import boundary without TestSupport or wallet/network runtime.
+Offline inspection remains part of winnow-debug.
 
 InMemoryKeyStore belongs to TestSupport, not the shipping wallet. The module
 version placeholders and duplicate binary serializers are removed. There is one

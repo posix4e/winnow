@@ -2,6 +2,7 @@ import Foundation
 import P256K
 import Testing
 import TestSupport
+@testable import BitcoinCore
 @testable import WalletCore
 
 /// BIP86 test vectors parsed from bip-0086.mediawiki.

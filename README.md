@@ -23,9 +23,11 @@ The app, Bitcoin implementation, CLI, fuzz harness, debugging tools and website
 live in this repository. The app and all development tools use one root
 Swift package and dependency lockfile. There is one release version and one source revision.
 
-The app owns the user flows. WalletCore contains Bitcoin primitives, wallet
-state, and P2P networking in one target. The winnow-debug tool and fuzz harness
-use that same implementation. Explorer links open an external website after a warning.
+The app owns the user flows. BitcoinCore contains offline Bitcoin primitives,
+transaction construction and signing. WalletCore adds wallet state, secret storage
+and P2P networking, and re-exports BitcoinCore for existing source imports. The
+winnow-debug tool and fuzz harness use that same implementation. See the
+[BitcoinCore guide](Sources/BitcoinCore/README.md) for the standalone product. Explorer links open an external website after a warning.
 
 The [testing and feature policy](docs/testing.md) keeps one iPhone integration
 journey: an ordinary receive/send, MuSig2 receive/send with one Core cosigner,
@@ -53,8 +55,10 @@ asset catalogs are documented by their owner, outside the bundle.
 ### App and Bitcoin rules
 
 - App and inspection: [iPhone app](Sources/WinnowApp/README.md), [debugging and offline inspection](Tools/Debug/README.md).
-- WalletCore primitives: [crypto/encodings](Sources/WalletCore/Crypto/README.md), [descriptors](Sources/WalletCore/Descriptors/README.md), [scripts](Sources/WalletCore/Script/README.md).
-- WalletCore: [keys and secret storage](Sources/WalletCore/Keys/README.md), [PSBTs](Sources/WalletCore/PSBT/README.md), [transactions](Sources/WalletCore/Transactions/README.md), [wallet policy](Sources/WalletCore/Wallet/README.md).
+- Bitcoin library: [offline API and embedding](Sources/BitcoinCore/README.md), [derivation](Sources/BitcoinCore/Keys/README.md), [serialization](Sources/BitcoinCore/Serialization/README.md), [selection and fees](Sources/BitcoinCore/Wallet/README.md).
+- BitcoinCore primitives: [crypto/encodings](Sources/BitcoinCore/Crypto/README.md), [descriptors](Sources/BitcoinCore/Descriptors/README.md), [scripts](Sources/BitcoinCore/Script/README.md).
+- Transaction policy: [PSBTs](Sources/BitcoinCore/PSBT/README.md), [transactions](Sources/BitcoinCore/Transactions/README.md).
+- WalletCore: [keys and secret storage](Sources/WalletCore/Keys/README.md), [wallet policy](Sources/WalletCore/Wallet/README.md).
 - Network synchronization: [filters](Sources/WalletCore/Network/Filters/README.md), [headers](Sources/WalletCore/Network/Headers/README.md), [peer selection](Sources/WalletCore/Network/Peers/README.md).
 - Network communication: [relay](Sources/WalletCore/Network/Broadcast/README.md), [mempool](Sources/WalletCore/Network/Mempool/README.md), [wire formats](Sources/WalletCore/Network/Protocol/README.md), [transport](Sources/WalletCore/Network/Transport/README.md).
 
