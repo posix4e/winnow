@@ -124,9 +124,8 @@ extension XCTestCase {
         guard let appFrame = usableFrame(app) else { return false }
         // Each AX frame read resolves the element again. Reuse this geometry
         // within the reveal; the moving row is still reread after every drag.
-        guard let band = clearBand(app, in: appFrame) else { return false }
+        guard let band = openBand(app, in: appFrame, margin: margin) else { return false }
         let reach = band.upperBound - band.lowerBound - 2 * margin
-        guard reach.isFinite, reach > 0 else { return false }
         for attempt in 0 ... 3 {
             guard let frame = usableFrame(element, within: 1.5) else { return false }
             let shift = revealShift(frame, in: band, margin: margin, reach: reach)
@@ -144,6 +143,21 @@ extension XCTestCase {
                         withVelocity: .default, thenHoldForDuration: 0.25)
         }
         return false
+    }
+
+    /// The clear band once it has room for a row. A sheet that is still
+    /// closing keeps the lowest navigation bar on screen and leaves no room
+    /// below it for a moment; wait for it to go rather than give up.
+    @MainActor
+    private func openBand(_ app: XCUIApplication, in appFrame: CGRect, margin: CGFloat) -> ClosedRange<CGFloat>? {
+        let deadline = Date().addingTimeInterval(5)
+        while true {
+            guard let band = clearBand(app, in: appFrame) else { return nil }
+            let reach = band.upperBound - band.lowerBound - 2 * margin
+            if reach.isFinite, reach > 0 { return band }
+            guard Date() < deadline else { return nil }
+            Thread.sleep(forTimeInterval: 0.2)
+        }
     }
 
     @MainActor
