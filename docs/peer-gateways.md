@@ -65,6 +65,13 @@ The app tests cover persistence, corrupt preferences and stale discovery after
 backgrounding or a settings change. `PeerGatewaySettingsUITests` exercises the
 Advanced controls and relaunch persistence with a disposable wallet.
 
+Every CI run also builds a private tailnet on its runner (`scripts/ci-tailnet`):
+Headscale, a client tailscaled whose `100.100.100.100` answers as on a phone,
+and two gateway nodes under the conventional names. `TailnetSimulationTests`
+discovers them through Quad100 and completes Bitcoin handshakes through each
+with local nodes behind fake SOCKS proxies. Live Tor and I2P are not involved;
+the census's daily crawl dials onion and I2P peers with the same code.
+
 To opt into a read-only check of the two named gateways on the connected tailnet:
 
 ```sh
@@ -73,7 +80,7 @@ scripts/check-live-gateways
 
 It discovers both gateways, then performs a Bitcoin handshake through each
 with peers from the census list the build ships. The check sends no wallet
-addresses or transactions. CI has no tailnet, so this check is manual; the
+addresses or transactions. CI has no tailnet of real gateways, so this check is manual; the
 [2026-09-29 run](security/evidence/live-gateways-2026-09-29.md) is recorded.
 
 A successful greeting is not proof of Tor/I2P reachability. A physical iPhone

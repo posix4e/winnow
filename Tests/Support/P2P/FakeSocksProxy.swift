@@ -16,20 +16,24 @@ public actor FakeSocksProxy {
     private var connections: [NWConnection] = []
 
     /// `upstreamPort` nil with `refuseWith` set answers every CONNECT with
-    /// that reply code and closes.
-    public init(upstreamPort: UInt16?, refuseWith: UInt8? = nil, stall: Bool = false, reserved: UInt8 = 0) {
+    /// that reply code and closes. `listenPort` 0 takes any free port; the
+    /// tailnet simulation fixes it so its gateway nodes can forward to it.
+    public init(upstreamPort: UInt16?, refuseWith: UInt8? = nil, stall: Bool = false, reserved: UInt8 = 0,
+                listenPort: UInt16 = 0) {
         self.upstreamPort = upstreamPort
         self.refuseWith = refuseWith
         self.stall = stall
         self.reserved = reserved
+        self.listenPort = listenPort
     }
     private let stall: Bool
     private let reserved: UInt8
+    private let listenPort: UInt16
 
     public var endpoint: PeerEndpoint { PeerEndpoint(host: "127.0.0.1", port: port) }
 
     public func start() async throws {
-        let listener = try NWListener(using: .tcp, on: .any)
+        let listener = try NWListener(using: .tcp, on: NWEndpoint.Port(rawValue: listenPort) ?? .any)
         self.listener = listener
         listener.newConnectionHandler = { connection in
             Task { await self.serve(connection) }

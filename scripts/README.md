@@ -79,6 +79,7 @@ and [native fixture](../Tools/Fixture/README.md) are the three Swift executables
 | [check-test-gates](check-test-gates) | No arguments; check environment gates, deliberate skips, and retired flags. | Source check in CI’s build job; does not execute tests. |
 | [check-swift-warnings](check-swift-warnings) | `BUILD_LOG`; reject compiler warnings under `Sources/` and `SoakCommand.swift`. | Reads a log; it does not compile or prove a build succeeded. |
 | [ci-production-warnings](ci-production-warnings) | Optional `SCRATCH_PATH [LOG_PATH]`; Release-build `winnow-debug`, check warnings and lockfile drift. | Compiles package code. Use a fresh scratch path for meaningful warning evidence. |
+| [ci-tailnet](ci-tailnet) | No arguments; builds a private tailnet (Headscale, a TUN client, two userspace gateway nodes) and runs `TailnetSimulationTests` against it. | Needs Go and sudo; the parallel CI's `tailnet` lane on a disposable macOS runner. Disturbs Tailscale on a developer Mac. |
 | [ci-debug](ci-debug) | No arguments; exercise wrapper help and environment checks from outside the checkout. | Builds/runs the debug CLI; lists simulators without launching one. |
 | [ci-app-tests](ci-app-tests) | `FRESH_RESULTS_DIR [--skip-build]`; app tests in the iOS host. | Builds/uses a simulator; see shared-build setup above. |
 | [ci-ui-journey](ci-ui-journey) | `FRESH_RESULTS_DIR [--skip-build]`; the one recorded payment journey. | Uses the fixture and simulator, mines blocks, and writes test/media artifacts. |

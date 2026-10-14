@@ -145,3 +145,35 @@ struct LiveOverlayTests {
         }
     }
 }
+
+/// Discovery and routing against a real tailnet that scripts/ci-tailnet builds
+/// on the runner: Headscale, a client tailscaled whose 100.100.100.100 answers
+/// as on a phone, and two gateway nodes under the conventional names that
+/// forward 9050 and 4447 to this test's fake SOCKS proxies in front of loopback
+/// nodes. No Tor or I2P: the census's daily crawl dials those with this code.
+@Suite(.timeLimit(.minutes(2)))
+struct TailnetSimulationTests {
+    @Test(.enabled(if: ProcessInfo.processInfo.environment["WINNOW_TAILNET_SIMULATION"] == "1"))
+    func discoversAndRoutesThroughSimulatedGateways() async throws {
+        let torNode = LoopbackNode(params: .signet)
+        let i2pNode = LoopbackNode(params: .signet)
+        try await torNode.start(); try await i2pNode.start()
+        let tor = FakeSocksProxy(upstreamPort: await torNode.endpoint.port, listenPort: 19050)
+        let i2p = FakeSocksProxy(upstreamPort: await i2pNode.endpoint.port, listenPort: 14447)
+        try await tor.start(); try await i2p.start()
+        let config = await TailnetGatewayDiscovery().discover()
+        #expect(config.networks == [.tor, .i2p])
+        let torProxy = try #require(config.torProxy), i2pProxy = try #require(config.i2pProxy)
+        #expect(TailnetGatewayDiscovery.isTailnetIPv4(torProxy.host) && torProxy.port == 9050)
+        #expect(TailnetGatewayDiscovery.isTailnetIPv4(i2pProxy.host) && i2pProxy.port == 4447)
+        let onion = PeerEndpoint(host: String(repeating: "a", count: 56) + ".onion", port: 8333)
+        let destination = PeerEndpoint(host: String(repeating: "b", count: 52) + ".b32.i2p", port: 8333)
+        let pool = PeerPool(params: .signet, peerCount: 2, manualPeers: [onion, destination],
+                            dialTimeout: .seconds(30), seedResolver: SeedResolver { _, _, _ in [] }, gateways: config)
+        await pool.start()
+        #expect(await pool.connectedPeers().count == 2)
+        #expect(await tor.requestedHosts.contains(onion.host))
+        #expect(await i2p.requestedHosts.contains(destination.host))
+        await pool.stop(); await tor.stop(); await i2p.stop(); await torNode.stop(); await i2pNode.stop()
+    }
+}

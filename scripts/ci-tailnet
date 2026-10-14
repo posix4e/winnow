@@ -1,0 +1,105 @@
+#!/bin/bash
+# The tailnet simulation (TailnetSimulationTests). Builds a private tailnet on
+# this machine and runs Winnow's real gateway discovery and routing against it:
+# Headscale on loopback; a client tailscaled in TUN mode, so 100.100.100.100
+# answers as it does on a phone; and two userspace gateway nodes named
+# winnow-tor-gateway and winnow-i2p-gateway that forward 9050 and 4447 to the
+# test's fake SOCKS proxies on 19050 and 14447. No Tor, no I2P, no secrets.
+# Needs Go and sudo (for the client's TUN device), so CI runs it on a
+# disposable macOS runner; on a developer Mac it would disturb Tailscale.
+set -euo pipefail
+cd "$(dirname "$0")/.."
+
+HEADSCALE_VERSION=0.29.4
+HEADSCALE_SHA256=b5cfd0f81caaa1e8f71f830fd89fdf86a8719bb6e9f9a2ec5b47d9426c96986e # darwin_arm64
+TAILSCALE_VERSION=1.102.5
+
+work=$(mktemp -d "${RUNNER_TEMP:-${TMPDIR:-/tmp}}/winnow-tailnet.XXXXXX")
+pids=()
+cleanup() {
+  status=$?
+  [ "$status" -eq 0 ] || tail -n 40 "$work"/*.log >&2 || true
+  [ -S "$work/client.sock" ] && sudo "$work/bin/tailscale" --socket="$work/client.sock" down >/dev/null 2>&1 || true
+  sudo pkill -f "tailscaled --statedir=$work/client" >/dev/null 2>&1 || true
+  for pid in "${pids[@]}"; do kill "$pid" >/dev/null 2>&1 || true; done
+  exit "$status"
+}
+trap cleanup EXIT
+
+wait_for() {
+  for _ in $(seq 1 60); do eval "$1" >/dev/null 2>&1 && return 0; sleep 1; done
+  echo "timed out waiting for: $1" >&2; return 1
+}
+
+# Pinned inputs: Headscale by release hash, Tailscale by Go module version.
+mkdir -p "$work/bin"
+curl -fsSL -o "$work/bin/headscale" \
+  "https://github.com/juanfont/headscale/releases/download/v$HEADSCALE_VERSION/headscale_${HEADSCALE_VERSION}_darwin_arm64"
+echo "$HEADSCALE_SHA256  $work/bin/headscale" | shasum -a 256 -c -
+chmod +x "$work/bin/headscale"
+GOBIN="$work/bin" go install "tailscale.com/cmd/tailscale@v$TAILSCALE_VERSION" "tailscale.com/cmd/tailscaled@v$TAILSCALE_VERSION"
+
+cat > "$work/headscale.yaml" <<EOF
+server_url: http://127.0.0.1:8080
+listen_addr: 127.0.0.1:8080
+metrics_listen_addr: 127.0.0.1:9090
+grpc_listen_addr: 127.0.0.1:50443
+noise:
+  private_key_path: $work/noise_private.key
+prefixes:
+  v4: 100.64.0.0/10
+  v6: fd7a:115c:a1e0::/48
+  allocation: sequential
+derp:
+  server:
+    enabled: false
+  urls:
+    - https://controlplane.tailscale.com/derpmap/default
+  paths: []
+  auto_update_enabled: false
+disable_check_updates: true
+database:
+  type: sqlite
+  sqlite:
+    path: $work/headscale.sqlite
+dns:
+  magic_dns: true
+  base_domain: tailnet.test
+  override_local_dns: false
+  nameservers:
+    global: []
+unix_socket: $work/headscale.sock
+unix_socket_permission: "0770"
+EOF
+headscale() { "$work/bin/headscale" -c "$work/headscale.yaml" "$@"; }
+"$work/bin/headscale" -c "$work/headscale.yaml" serve > "$work/headscale.log" 2>&1 &
+pids+=($!)
+wait_for 'curl -sf http://127.0.0.1:8080/health'
+headscale users create ci > /dev/null
+user=$(headscale users list -o json | python3 -c 'import json, sys; print(json.load(sys.stdin)[0]["id"])')
+key=$(headscale preauthkeys create --user "$user" --reusable --expiration 1h -o json \
+  | python3 -c 'import json, sys; print(json.load(sys.stdin)["key"])')
+
+# The gateways: userspace nodes that serve their SOCKS port from the test.
+for gateway in tor:9050:19050 i2p:4447:14447; do
+  IFS=: read -r name port local <<< "$gateway"
+  socket="$work/$name.sock"
+  "$work/bin/tailscaled" --statedir="$work/$name" --socket="$socket" --tun=userspace-networking --port=0 \
+    > "$work/$name.log" 2>&1 &
+  pids+=($!)
+  wait_for "test -S '$socket'"
+  "$work/bin/tailscale" --socket="$socket" up --login-server=http://127.0.0.1:8080 --auth-key="$key" \
+    --hostname="winnow-$name-gateway" --accept-dns=false
+  "$work/bin/tailscale" --socket="$socket" serve --bg --tcp="$port" "tcp://127.0.0.1:$local"
+done
+
+# The client: a TUN node, as the Tailscale app is on a phone.
+sudo "$work/bin/tailscaled" --statedir="$work/client" --socket="$work/client.sock" > "$work/client.log" 2>&1 &
+wait_for "test -S '$work/client.sock'"
+sudo "$work/bin/tailscale" --socket="$work/client.sock" up --login-server=http://127.0.0.1:8080 \
+  --auth-key="$key" --hostname=winnow-ci --accept-dns=false
+for name in winnow-tor-gateway winnow-i2p-gateway; do
+  wait_for "dig +short +time=1 +tries=1 @100.100.100.100 $name | grep -q '^100\\.'"
+done
+
+GIT_LFS_SKIP_SMUDGE=1 WINNOW_TAILNET_SIMULATION=1 swift test --filter TailnetSimulationTests

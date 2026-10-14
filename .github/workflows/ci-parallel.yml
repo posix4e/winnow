@@ -193,9 +193,27 @@ jobs:
             !${{ runner.temp }}/winnow-ci/results/app/signet/
           if-no-files-found: error
           retention-days: 14
+  # Tor and I2P gateway discovery and routing against a private tailnet the
+  # lane builds itself (scripts/ci-tailnet). It is not part of the evidence.
+  tailnet:
+    needs: evidence
+    if: needs.evidence.outputs.reuse != 'true'
+    runs-on: warp-macos-26-arm64-12x
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version: '1.26.6'
+          cache: false
+      - name: tailnet validation
+        run: scripts/ci-tailnet
   validation:
     if: always()
-    needs: [evidence, package, build, units, journey]
+    needs: [evidence, package, build, units, journey, tailnet]
     runs-on: ubuntu-24.04
     steps:
       - name: Require every selected lane
@@ -206,12 +224,13 @@ jobs:
           BUILD: ${{ needs.build.result }}
           UNITS: ${{ needs.units.result }}
           JOURNEY: ${{ needs.journey.result }}
+          TAILNET: ${{ needs.tailnet.result }}
         run: |
           [[ "$PLAN" == success ]]
           if [[ "$REUSE" == true ]]; then
-            [[ "$PACKAGE:$BUILD:$UNITS:$JOURNEY" == skipped:skipped:skipped:skipped ]]
+            [[ "$PACKAGE:$BUILD:$UNITS:$JOURNEY:$TAILNET" == skipped:skipped:skipped:skipped:skipped ]]
           else
-            [[ "$PACKAGE:$BUILD:$UNITS:$JOURNEY" == success:success:success:success ]]
+            [[ "$PACKAGE:$BUILD:$UNITS:$JOURNEY:$TAILNET" == success:success:success:success:success ]]
           fi
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:

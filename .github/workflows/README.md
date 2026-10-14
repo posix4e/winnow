@@ -18,7 +18,9 @@ units and journey boot their simulators while they wait for them. Fork PRs and t
 manual `hosted` input use [ci-hosted.yml](ci-hosted.yml):
 one GitHub-hosted Apple silicon (`macos-26`) `build` job, so a fork never runs on
 the paid runners. Each job gets its own runner, per-run build directory,
-and disposable signet fixture.
+and disposable signet fixture. A fifth parallel lane, `tailnet`, runs
+[ci-tailnet](../../scripts/ci-tailnet): it builds a private tailnet with Headscale
+and runs Tor and I2P gateway discovery and routing against it.
 
 The hosted build job owns lint and test gates, package and debugging tests, fixed fuzz
 smoke, dependency and provenance checks, and the app's Debug and Release checks.

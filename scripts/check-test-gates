@@ -34,9 +34,11 @@ done
 # 2. File-protection attributes are measured
 # where the OS records them; the same suite is included in iOS AppTests.
 # The live gateway check needs the tailnet that runs them; scripts/check-live-gateways sets its gate.
+# The tailnet simulation needs Headscale and tailscaled running; scripts/ci-tailnet sets its gate.
 if grep -rn 'enabled(if:' "${TEST_DIRS[@]}" | sed -E 's/^([^:]+):[0-9]+:/\1:/' \
   | grep -vF 'Tests/WalletCoreTests/FileProtectionTests.swift:@Suite("Persisted file protection", .enabled(if: fileProtectionRecorded))' \
-  | grep -vF 'Tests/WalletCoreTests/Network/TailnetGatewayDiscoveryTests.swift:    @Test(.enabled(if: ProcessInfo.processInfo.environment["WINNOW_LIVE_GATEWAYS"] == "1"))'; then
+  | grep -vF 'Tests/WalletCoreTests/Network/TailnetGatewayDiscoveryTests.swift:    @Test(.enabled(if: ProcessInfo.processInfo.environment["WINNOW_LIVE_GATEWAYS"] == "1"))' \
+  | grep -vF 'Tests/WalletCoreTests/Network/TailnetGatewayDiscoveryTests.swift:    @Test(.enabled(if: ProcessInfo.processInfo.environment["WINNOW_TAILNET_SIMULATION"] == "1"))'; then
   echo "::error::an undocumented conditional test suite was found"
   status=1
 fi
