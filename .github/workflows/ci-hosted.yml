@@ -97,6 +97,7 @@ jobs:
         run: |
           scripts/check-dependencies
           swift test
+          swift test --package-path Examples/OfflineWallet
           scripts/ci-debug
 
       - name: Release-build production package and reject first-party warnings

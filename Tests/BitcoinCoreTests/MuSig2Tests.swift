@@ -2,6 +2,7 @@ import Foundation
 import P256K
 import Testing
 import TestSupport
+@testable import BitcoinCore
 @testable import WalletCore
 
 /// Official BIP327 MuSig2 test vectors (bitcoin/bips bip-0327/vectors):

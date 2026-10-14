@@ -111,24 +111,24 @@ public struct ByteReader: Sendable {
 }
 
 extension Data {
-    mutating func appendUInt8(_ value: UInt8) { append(value) }
+    package mutating func appendUInt8(_ value: UInt8) { append(value) }
 
-    mutating func appendUInt16(_ value: UInt16) {
+    package mutating func appendUInt16(_ value: UInt16) {
         Swift.withUnsafeBytes(of: value.littleEndian) { append(contentsOf: $0) }
     }
 
-    mutating func appendUInt32(_ value: UInt32) {
+    package mutating func appendUInt32(_ value: UInt32) {
         Swift.withUnsafeBytes(of: value.littleEndian) { append(contentsOf: $0) }
     }
 
-    mutating func appendUInt64(_ value: UInt64) {
+    package mutating func appendUInt64(_ value: UInt64) {
         Swift.withUnsafeBytes(of: value.littleEndian) { append(contentsOf: $0) }
     }
 
-    mutating func appendInt32(_ value: Int32) { appendUInt32(UInt32(bitPattern: value)) }
-    mutating func appendInt64(_ value: Int64) { appendUInt64(UInt64(bitPattern: value)) }
+    package mutating func appendInt32(_ value: Int32) { appendUInt32(UInt32(bitPattern: value)) }
+    package mutating func appendInt64(_ value: Int64) { appendUInt64(UInt64(bitPattern: value)) }
 
-    mutating func appendCompactSize(_ value: UInt64) {
+    package mutating func appendCompactSize(_ value: UInt64) {
         switch value {
         case ..<0xFD:
             append(UInt8(value))
@@ -144,12 +144,12 @@ extension Data {
         }
     }
 
-    mutating func appendVarData(_ bytes: Data) {
+    package mutating func appendVarData(_ bytes: Data) {
         appendCompactSize(UInt64(bytes.count))
         append(bytes)
     }
 
-    mutating func appendVarString(_ string: String) {
+    package mutating func appendVarString(_ string: String) {
         appendVarData(Data(string.utf8))
     }
 }

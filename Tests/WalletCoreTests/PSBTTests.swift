@@ -2,6 +2,7 @@ import Foundation
 import P256K
 import Testing
 import TestSupport
+@testable import BitcoinCore
 @testable import WalletCore
 
 /// PSBTv2 (BIP370) + BIP371 Taproot fields: creator → signer → finalizer →

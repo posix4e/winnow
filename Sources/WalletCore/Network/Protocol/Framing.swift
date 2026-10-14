@@ -1,13 +1,6 @@
 import CryptoKit
 import Foundation
 
-/// SHA256d — the double-SHA256 used for P2P checksums, txids and block hashes.
-enum SHA256d {
-    static func hash(_ data: Data) -> Data {
-        Data(SHA256.hash(data: Data(SHA256.hash(data: data))))
-    }
-}
-
 /// Errors in P2P message framing (24-byte header + payload).
 public enum FramingError: Error, Equatable {
     case badMagic

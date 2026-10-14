@@ -2,8 +2,9 @@
 
 # Wallet keys and secret storage
 
-BIP39 recovery words, BIP32 derivation, BIP86 addresses, and the Apple Keychain
-implementation live together. Receiving, recovery, and signing use the same
+The Apple Keychain implementation and wallet secret formats live here. BIP39
+recovery words, BIP32 derivation, and BIP86 addresses live in
+[BitcoinCore](../../BitcoinCore/Keys/README.md). Receiving, recovery, and signing use the same
 keys; durable secrets retain access rules distinct from ordinary wallet metadata:
 this device only, never synchronized, and behind the Keychain's own
 user-presence check, which reuses the device-owner check the app just ran so
@@ -14,7 +15,7 @@ sentence separated by U+3000 IDEOGRAPHIC SPACE, or a passphrase carrying a
 ligature or a fullwidth character, derives a different seed under NFD, one no
 other wallet agrees with, and nothing about the phrase itself would look wrong.
 
-The [wallet](../Wallet/README.md), [signer](../Transactions/README.md), and
+The [wallet](../Wallet/README.md), [signer](../../BitcoinCore/Transactions/README.md), and
 [app](../../WinnowApp/README.md) use this code. The in-memory keystore stays in
 [TestSupport](../../../Tests/Support/README.md), outside production sources.
 

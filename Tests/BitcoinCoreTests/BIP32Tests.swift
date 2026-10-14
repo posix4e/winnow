@@ -1,6 +1,7 @@
 import Foundation
 import Testing
 import TestSupport
+@testable import BitcoinCore
 @testable import WalletCore
 
 /// BIP32 test vectors parsed from bip-0032.mediawiki.

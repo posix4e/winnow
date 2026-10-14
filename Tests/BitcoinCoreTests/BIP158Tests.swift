@@ -1,6 +1,7 @@
 import Foundation
 import Testing
 import TestSupport
+@testable import BitcoinCore
 @testable import WalletCore
 
 /// BIP158 test vectors (bip-0158/testnet-19.json): reconstruct basic filters
