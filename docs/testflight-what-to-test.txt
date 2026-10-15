@@ -1,13 +1,7 @@
-Winnow 0.8.3: the peer list ships with the app
+Winnow 0.8.4: vaults, contact cards and recovery checks
 
-Winnow no longer downloads its peer list. Each release carries the census of the day it was built, and the wallet starts from it. Nothing reaches census.winnowwallet.com or its I2P mirror any more, so Tor-only and I2P-only wallets need no web request to find peers.
+This build reorganizes the internal vault and cloud-backup code. No changes to signing rules, account access or the backup format are intended.
 
-Peer list
+After updating, check that existing vaults, contact cards, balances and transaction history are still available. Check payment approvals and automatic cloud-backup updates. Use a separate test wallet to check recovery, and use test-network funds for send tests.
 
-In Advanced → Settings → Mainnet peer list, the list's date and peer counts should show, and Refresh peer list is gone. A fresh mainnet install should find peers and sync, including with only Tor or only I2P allowed.
-
-Upgrading from an older version
-
-Check that your accounts, transaction history, backups, routing and saved settings remain available after the update.
-
-Report bugs publicly at https://github.com/winnowwallet/winnow/issues. Include the app version, device, network, routing mode and steps to reproduce. Never include recovery words, private keys, or wallet backup files.
+Report bugs at https://github.com/winnowwallet/winnow/issues. Include the app version, device, network, routing mode and steps to reproduce. Never include recovery words, private keys or wallet backup files.
