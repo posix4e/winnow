@@ -321,25 +321,6 @@ struct TransactionBuilderTests {
         #expect(replacement.built.transaction.locktime == 839_958,
                 "a replacement must not pick a new locktime")
     }
-
-    /// The vault is the second build site. Fixing only the wallet would move
-    /// the fingerprint onto vault spends rather than remove it.
-    @Test("a vault spend is stamped too")
-    func vaultSpendStampsALocktime() throws {
-        let masters = try (0 ..< 3).map { try HDKey(seed: Data(repeating: UInt8($0 + 1), count: 32)) }
-        let descriptor = try Vault.multiADescriptor(
-            threshold: 2, cosigners: masters.map { try TestVaults.keyExpression(master: $0) })
-        let vault = try Vault(descriptor: descriptor, network: .signet)
-        let utxo = try TestVaults.funding(vault: vault, amount: 100_000)
-
-        let psbt = try vault.createSpend(
-            utxos: [utxo], payments: [Payment(amount: 50_000, scriptPubKey: destination)],
-            changeIndex: 0, feeRateSatPerVByte: 2, chainTip: 840_000,
-            randomness: DrawSequence(0.5).next)
-        // PSBT v2 carries it as the fallback locktime global, which is what the
-        // finalizer rebuilds the transaction from.
-        #expect(psbt.fallbackLocktime == 840_000)
-    }
 }
 
 /// A draw sequence the test controls, so both randomness branches can be

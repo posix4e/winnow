@@ -1,5 +1,6 @@
 import Foundation
 import TestSupport
+import VaultKit
 import WalletCore
 import XCTest
 

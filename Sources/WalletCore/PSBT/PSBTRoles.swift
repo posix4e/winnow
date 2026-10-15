@@ -540,8 +540,8 @@ extension PSBT {
     /// the recomputed sighash — the finalizer's own test, exposed so a
     /// progress display can count approvals the way the finalizer will,
     /// rather than by the presence of a signature entry.
-    func verifiedScriptPathSigners(input index: Int, tx: Transaction,
-                                   spentOutputs: [SighashBIP341.SpentOutput]) throws -> Set<Data> {
+    public func verifiedScriptPathSigners(input index: Int, tx: Transaction,
+                                          spentOutputs: [SighashBIP341.SpentOutput]) throws -> Set<Data> {
         let (leaf, leafKeys, _) = try leafSigningContext(input: index)
         return Set(validScriptPathSignatures(input: index, leaf: leaf, tx: tx,
                                              spentOutputs: spentOutputs, leafKeys: leafKeys).keys)

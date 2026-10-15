@@ -1,5 +1,6 @@
 import SwiftUI
 import UIKit
+import VaultKit
 import WalletCore
 
 /// Builds a vault descriptor from cosigner key expressions (pasted, or this

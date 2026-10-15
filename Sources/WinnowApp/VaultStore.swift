@@ -1,3 +1,4 @@
+import VaultKit
 import WalletCore
 import Foundation
 

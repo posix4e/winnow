@@ -1,6 +1,7 @@
 import Foundation
 import Testing
 import TestSupport
+@testable import VaultKit
 @testable import WalletCore
 
 /// Who may join a vault: cosigner identity, origin consistency, network

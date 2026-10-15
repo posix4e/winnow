@@ -1241,7 +1241,7 @@ public actor Wallet {
     /// every selected coin spent, so a transaction nothing will relay strands
     /// those coins in a locally-spent, on-chain-unspent limbo that
     /// forward-only scanning cannot repair.
-    static func checkStandardSize(_ transaction: Transaction) throws {
+    public static func checkStandardSize(_ transaction: Transaction) throws {
         let vsize = TransactionBuilder.vsize(of: transaction)
         guard vsize <= TransactionBuilder.maximumStandardVSize else {
             throw WalletError.transactionTooLarge(

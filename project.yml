@@ -64,6 +64,8 @@ targets:
     dependencies:
       - package: Winnow
         product: WalletCore
+      - package: Winnow
+        product: VaultKit
     settings:
       base:
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
@@ -141,6 +143,8 @@ targets:
         product: TestSupport
       - package: Winnow
         product: WalletCore
+      - package: Winnow
+        product: VaultKit
       - package: swift-secp256k1
         product: P256K
     settings:

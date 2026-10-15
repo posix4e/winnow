@@ -1,4 +1,5 @@
 @testable import WinnowApp
+import VaultKit
 import WalletCore
 import XCTest
 

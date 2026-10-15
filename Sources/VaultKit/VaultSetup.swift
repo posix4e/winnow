@@ -1,4 +1,5 @@
 import Foundation
+import WalletCore
 
 /// The key-expression shape required by each vault policy.
 public enum VaultCosignerRole: Sendable, Hashable {

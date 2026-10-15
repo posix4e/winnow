@@ -2,6 +2,7 @@ import Foundation
 import P256K
 import Testing
 import TestSupport
+@testable import VaultKit
 @testable import WalletCore
 
 /// Building, signing, thresholds and finalization for a vault spend
@@ -873,6 +874,25 @@ struct VaultSpendTests {
         try mismatchedVersion.signScriptPath(input: 0, privateKeys: fixture.secrets,
                                              auxiliaryRand: Data(repeating: 0, count: 32))
         #expect(throws: PSBTError.self) { try mismatchedVersion.finalize() }
+    }
+
+    /// The vault is the second build site of an anti-fee-sniping locktime. Fixing
+    /// only the wallet would move the fingerprint onto vault spends rather than remove it.
+    @Test("a vault spend is stamped too")
+    func vaultSpendStampsALocktime() throws {
+        let masters = try (0 ..< 3).map { try HDKey(seed: Data(repeating: UInt8($0 + 1), count: 32)) }
+        let descriptor = try Vault.multiADescriptor(
+            threshold: 2, cosigners: masters.map { try TestVaults.keyExpression(master: $0) })
+        let vault = try Vault(descriptor: descriptor, network: .signet)
+        let utxo = try TestVaults.funding(vault: vault, amount: 100_000)
+
+        let psbt = try vault.createSpend(
+            utxos: [utxo], payments: [Payment(amount: 50_000, scriptPubKey: TestScripts.p2trDestination)],
+            changeIndex: 0, feeRateSatPerVByte: 2, chainTip: 840_000,
+            randomness: { 0.5 })
+        // PSBT v2 carries it as the fallback locktime global, which is what the
+        // finalizer rebuilds the transaction from.
+        #expect(psbt.fallbackLocktime == 840_000)
     }
 }
 

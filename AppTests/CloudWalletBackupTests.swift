@@ -1,8 +1,9 @@
+@testable import WinnowApp
 import CryptoKit
 import Foundation
 import TestSupport
 import Testing
-@testable import WalletCore
+import WalletCore
 
 @Suite("Encrypted cloud wallet backup")
 struct CloudWalletBackupTests {

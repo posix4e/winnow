@@ -3,7 +3,8 @@
 # Wallet decisions and recovery tests
 
 These tests protect balances, coin selection, fees, key storage, imports,
-transaction signing, people, vaults, and reorg recovery. They exercise the shared
+transaction signing, and reorg recovery. People and vaults are tested in
+[VaultKit tests](../VaultKitTests/README.md). They exercise the shared
 wallet rules used by the GUI instead of reproducing those rules in app tests.
 
 The same target includes [network tests](Network/README.md)

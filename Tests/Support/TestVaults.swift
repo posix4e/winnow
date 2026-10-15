@@ -1,4 +1,5 @@
 import Foundation
+import VaultKit
 import WalletCore
 
 /// Deterministic vault fixtures (signet format, fully offline): cosigner

@@ -1,6 +1,7 @@
 import Foundation
 import Testing
 import TestSupport
+@testable import VaultKit
 @testable import WalletCore
 
 /// People: the pay-to keys a fresh address is derived from, the cards people

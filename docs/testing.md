@@ -40,7 +40,8 @@ those parts; there is no extra wallet/network facade or parallel library-only
 send/scan workflow. Cryptography, descriptors, and wallet networking now share
 WalletCore too, including their byte encoders. Actors retain their existing
 ownership and lifetimes. Offline inspection is part of winnow-debug; there is no
-separate CLI or demo signing path.
+separate CLI or demo signing path. Shared-savings vaults and their contact cards
+live in VaultKit, a second library on WalletCore's public interface.
 
 InMemoryKeyStore belongs to TestSupport, not the shipping wallet. The module
 version placeholders and duplicate binary serializers are removed. There is one
@@ -87,7 +88,7 @@ legacy LOC reporter and its tests were removed.
 The detailed rules stay in smaller suites. `AppTests/PeoplePaymentTests.swift`
 and `AppTests/SenderLabelTests.swift` cover people, payment decisions, and sender
 labels. `AppTests/WalletStartupTests.swift` and `AppTests/VaultBackupTests.swift`
-cover persisted startup and backup state. `Tests/WalletCoreTests/VaultSpendTests.swift`
+cover persisted startup and backup state. `Tests/VaultKitTests/VaultSpendTests.swift`
 checks threshold and missing-signature rules. These focused checks supplement
 the journey without repeating every behavior through screen navigation.
 
@@ -105,6 +106,7 @@ simulator; their unverified integrations belong on the roadmap.
   network separation, people, and OS integration.
 - WalletCoreTests checks wallet/network invariants and hostile peer behavior.
   The former BitcoinP2PTests are grouped under WalletCoreTests/Network.
+- VaultKitTests checks contact cards, vault admission and vault spends.
 - BitcoinCoreTests retains independent vectors and parser/cryptographic bounds.
 - ToolsTests and the fuzz harness cover debugging commands and hostile inputs.
 

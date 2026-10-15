@@ -1,5 +1,6 @@
 import Foundation
 import P256K
+import WalletCore
 
 public enum VaultError: Error, Equatable {
     /// Not a supported vault shape: tr(KEY, multi_a leaf) or tr(musig(...)).

@@ -3,7 +3,7 @@
 # TestSupport
 
 One fixture library for every test target: the SwiftPM suites
-(`BitcoinCoreTests`, `WalletCoreTests`)
+(`BitcoinCoreTests`, `WalletCoreTests`, `VaultKitTests`)
 and the Xcode bundles (`WinnowAppTests`, `WinnowAppUITests`) all link the
 `TestSupport` product declared in `Package.swift`, so a helper is written once
 and imported with `import TestSupport`.
@@ -40,6 +40,6 @@ Helpers that only one target can use stay in that target: `blockOutputScripts`
 in `BitcoinCoreTests/TestHelpers.swift` and anything that
 conforms to an app protocol (`SilentAuthenticator`) in `AppTests/TestSupport.swift`.
 
-These helpers support [wallet tests](../WalletCoreTests/README.md)
-and the [UI journey](../../UITests/README.md).
+These helpers support [wallet tests](../WalletCoreTests/README.md),
+[VaultKit tests](../VaultKitTests/README.md) and the [UI journey](../../UITests/README.md).
 Run their consuming suites to validate changes; fixture code alone makes no assertions.

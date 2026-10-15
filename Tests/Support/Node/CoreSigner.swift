@@ -1,4 +1,5 @@
 import Foundation
+import VaultKit
 import WalletCore
 
 /// A Bitcoin Core signer for disposable node/app tests. Core generates the

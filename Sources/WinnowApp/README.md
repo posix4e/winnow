@@ -4,7 +4,7 @@
 
 SwiftUI screens and AppModel turn wallet and network state into receiving,
 sending, recovery, saved recipients, and shared accounts. The app owns user review,
-authentication, presentation, and lifecycle; WalletCore owns the Bitcoin rules.
+authentication, presentation, and lifecycle; WalletCore and VaultKit own the Bitcoin rules.
 The app supports iPhone, iPad, and Apple silicon Mac (Designed for iPad).
 Simple mode uses one screen; Advanced mode adds Wallet, Send, and Settings tabs.
 The automated UI journey currently covers iPhone only.
@@ -40,3 +40,4 @@ encrypted wallet backup by default and finds it on a replacement device. Beginne
 mode shows status; Advanced holds manual recovery and the persistent opt-out.
 CloudBackupController owns backup preferences, encrypted retries, lifecycle and last-success state;
 ICloudBackupStore owns private CloudKit transport and separate wrapping keys.
+CloudWalletBackup is the encrypted file itself: the phrase and the wallet state, sealed separately.

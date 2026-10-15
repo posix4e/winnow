@@ -1,27 +1,28 @@
 import CryptoKit
 import Foundation
+import WalletCore
 
 /// An encrypted cloud recovery copy, separate from the device-only signing Keychain.
 /// The random wrapping key travels through iCloud Keychain; the cloud file
 /// contains only authenticated ciphertext. Automatic updates reuse the sealed
 /// phrase without reading the local signing key again.
-public struct CloudWalletBackup: Codable, Sendable {
-    public static let maximumBytes = 32 * 1024 * 1024
-    public static let maximumAppStateBytes = 10 * 1024 * 1024
-    public let version: Int
-    public let id: UUID
-    public let network: String
-    public let savedAt: Date
-    public let sealedPhrase: Data
-    public let sealedWallet: Data
+struct CloudWalletBackup: Codable, Sendable {
+    static let maximumBytes = 32 * 1024 * 1024
+    static let maximumAppStateBytes = 10 * 1024 * 1024
+    let version: Int
+    let id: UUID
+    let network: String
+    let savedAt: Date
+    let sealedPhrase: Data
+    let sealedWallet: Data
 
     private struct State: Codable {
         var bundle: ImportBundle
         var appState: Data?
     }
 
-    public static func create(bundle: ImportBundle, appState: Data? = nil, id: UUID = UUID(), key: SymmetricKey,
-                              savedAt: Date = Date()) throws -> Self {
+    static func create(bundle: ImportBundle, appState: Data? = nil, id: UUID = UUID(), key: SymmetricKey,
+                       savedAt: Date = Date()) throws -> Self {
         guard let words = bundle.mnemonic else { throw WalletError.mnemonicUnavailable }
         try BIP39.validate(mnemonic: words)
         _ = try Wallet.importing(bundle, keyStore: ValidationKeys())
@@ -30,8 +31,8 @@ public struct CloudWalletBackup: Codable, Sendable {
         return try make(bundle: bundle, appState: appState, id: id, key: key, savedAt: savedAt, phrase: phrase)
     }
 
-    public func updating(bundle: ImportBundle, appState: Data? = nil,
-                         key: SymmetricKey, savedAt: Date = Date()) throws -> Self {
+    func updating(bundle: ImportBundle, appState: Data? = nil,
+                  key: SymmetricKey, savedAt: Date = Date()) throws -> Self {
         let previous = try state(key: key)
         guard bundle.network == network, bundle.descriptor == previous.bundle.descriptor else {
             throw WalletError.descriptorMismatch
@@ -40,7 +41,7 @@ public struct CloudWalletBackup: Codable, Sendable {
                              id: id, key: key, savedAt: savedAt, phrase: sealedPhrase)
     }
 
-    public func restoredBundle(key: SymmetricKey) throws -> ImportBundle {
+    func restoredBundle(key: SymmetricKey) throws -> ImportBundle {
         var bundle = try state(key: key).bundle
         let words = try AES.GCM.open(AES.GCM.SealedBox(combined: sealedPhrase), using: key,
                                      authenticating: Self.context(id, network, "phrase"))
@@ -57,11 +58,11 @@ public struct CloudWalletBackup: Codable, Sendable {
 
     /// App-owned data is inside the authenticated wallet ciphertext, so it
     /// cannot be stripped from an otherwise valid backup. Older copies lack it.
-    public func restoredAppState(key: SymmetricKey) throws -> Data? {
+    func restoredAppState(key: SymmetricKey) throws -> Data? {
         try state(key: key).appState
     }
 
-    public func encoded() throws -> Data {
+    func encoded() throws -> Data {
         let data = try JSONEncoder().encode(self)
         guard data.count <= Self.maximumBytes else {
             throw WalletError.invalidBundle("cloud backup is too large")
@@ -69,7 +70,7 @@ public struct CloudWalletBackup: Codable, Sendable {
         return data
     }
 
-    public static func decode(_ data: Data) throws -> Self {
+    static func decode(_ data: Data) throws -> Self {
         guard data.count <= maximumBytes else { throw WalletError.invalidBundle("cloud backup is too large") }
         let result = try JSONDecoder().decode(Self.self, from: data)
         guard (1...2).contains(result.version), BitcoinNetwork(rawValue: result.network) != nil,
