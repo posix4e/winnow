@@ -48,7 +48,10 @@ public enum Multisig {
             bytes = bytes.subdata(in: bytes.startIndex + 34 ..< bytes.endIndex)
             if keys.count > maxKeys { return nil }
             // The threshold + OP_NUMEQUAL trailer follows the last key push.
-            if let rest = parseTrailer(bytes) { return (rest, keys) }
+            if let rest = parseTrailer(bytes) {
+                guard rest <= keys.count else { return nil }
+                return (rest, keys)
+            }
         }
         return nil
     }
@@ -63,16 +66,18 @@ public enum Multisig {
         default:
             // k > 16: minimally-encoded script number push.
             let length = Int(head)
-            guard length >= 1, bytes.count == 2 + length else { return nil }
+            // Thresholds are at most 999, so their script number needs no
+            // more than two bytes. Bound it before shifting into an Int.
+            guard (1...2).contains(length), bytes.count == 2 + length else { return nil }
             var value = 0
             for index in 0 ..< length {
                 value |= Int(bytes[bytes.startIndex + 1 + index]) << (8 * index)
             }
-            // Minimal encoding: no trailing zero byte unless the sign bit needs it.
-            let top = bytes[bytes.startIndex + length]
-            if top == 0, length > 1, bytes[bytes.startIndex + length - 1] & 0x80 == 0 { return nil }
-            guard top & 0x80 == 0 else { return nil } // negative
-            return value
+            guard (17...maxKeys).contains(value) else { return nil }
+            var canonical = Script(Data())
+            canonical.appendScriptNumber(value)
+            canonical.appendOpcode(Script.Op.numEqual)
+            return canonical.bytes == bytes ? value : nil
         }
     }
 }
