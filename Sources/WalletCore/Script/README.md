@@ -7,7 +7,7 @@ which keys can spend a wallet or shared-savings output. The signer and other
 participants must agree on exactly the same script and commitment.
 
 [Descriptors](../Descriptors/README.md) and
-[vaults](../../WalletCore/Wallet/README.md) consume this WalletCore code.
+[vaults](../../VaultKit/README.md) consume this WalletCore code.
 The directory is an organizational boundary, not another runtime layer.
 
 [BIP341 tests](../../../Tests/BitcoinCoreTests/BIP341Tests.swift) cover commitments

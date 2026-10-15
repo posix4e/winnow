@@ -1,143 +1,125 @@
-# Features, journeys, and evidence
+# Testing the wallet
 
-This developer policy explains the test suites and evidence requirements.
-The [CI runbook](../.github/internal/ci-release.md) describes how to run checks
-and inspect their artifacts.
+Use checks that exercise the changed behavior and retain the source revision,
+command, environment and result. This guide maps the existing suites and CI;
+it does not turn a test count, screenshot or old audit into a release guarantee.
+The [architecture guide](architecture.md) explains source ownership, and the
+[CI and release runbook](../.github/internal/ci-release.md) covers operations.
 
-The product is the wallet app for iPhone, iPad, and Apple silicon Mac, plus
-explicit debugging tools. Automated UI coverage is limited to iPhone.
-Everyday and advanced features are documented in the public website's
-[journey inventory](https://github.com/winnowwallet/website/blob/main/docs/journeys.json).
-Its generator references captures named by the pinned UI journey. XCTest takes
-the checkpoints; scripts/prepare-site-artifact normalizes the host recording
-and validates evidence independently of the website.
-Recording evidence identifies the steps
-exercised by the current focused UI journey. The
-public roadmap owns future work; it is not evidence that a feature ships.
+## Test coverage
 
-## What earns a place
+| Suite | Exercises | Boundaries |
+| --- | --- | --- |
+| [BitcoinCoreTests](../Tests/BitcoinCoreTests/README.md) | Cryptographic and encoding vectors, descriptors, scripts and parser bounds | Vectors and parser checks do not demonstrate a user workflow |
+| [WalletCoreTests](../Tests/WalletCoreTests/README.md) | Coin selection, fees, imports, reorgs, peer behavior and synchronization | Controlled peers and fixtures cover their asserted cases |
+| [VaultKitTests](../Tests/VaultKitTests/README.md) | Contact cards, account admission, threshold rules and vault spends | Keys in a test do not prove independent devices or owners |
+| [AppTests](../AppTests/README.md) | Review, authorization, persistence, startup, recipients, backup state and iOS integration | Most cloud cases use in-memory stores; a simulator cannot prove device-lock enforcement |
+| [UITests](../UITests/README.md) | A recorded iPhone payment journey and peer-setting persistence | No automated iPad journey or hardware-wallet matrix |
+| [ToolsTests](../Tests/ToolsTests/README.md) and [fuzzing](../Tools/Fuzz/README.md) | Debugging commands, generators, parser regressions and hostile inputs | A bounded corpus or fuzz run establishes only its own executed coverage |
+| [Script regressions](../scripts/tests/README.md) | CI evidence, media validation and release helpers | These check tooling rather than wallet payments |
 
-- A user-facing feature needs clear usage instructions and focused tests for
-  its decisions and failure cases. One UI integration journey checks ordinary,
-  MuSig2, and script-path 2-of-3 receiving, sending, and confirmation through
-  the real app. Detailed coverage belongs in app, wallet, and protocol tests
-  without repeated screen navigation.
-- A debugging command needs a concrete diagnostic purpose, a runbook, and
-  meaningful command/protocol checks. Help output alone does not prove a live
-  network operation.
-- A lower-level component must serve one of those purposes or enforce a named
-  security property. Do not add a production API just to make a test convenient.
-- Delete obsolete features with their tests. Delete duplicate happy-path tests
-  when the actual app journey and relevant independent checks cover the promise.
-  Keep vectors, adversarial cases, arithmetic bounds, storage integrity,
-  authorization, and recovery regressions when their invariant still exists.
+The encrypted envelope tests are in
+[AppTests/CloudWalletBackupTests.swift](../AppTests/CloudWalletBackupTests.swift).
+They moved with CloudWalletBackup into the app; `swift test` does not run them.
+App tests also cover backup defaults, retries, opt-out, account changes and
+cancellation using injected stores.
 
-## Architecture follows the app
+Keep signing-policy and hostile-input regressions close to the code they test.
+Descriptor changes, forged PSBT metadata, signature validation, nonce reuse,
+amount bounds and storage integrity need focused assertions. A UI journey
+cannot substitute for those checks.
 
-WalletCore now owns wallet state, transaction construction, peer connections,
-headers, filters, and relay in one package target. The app directly orchestrates
-those parts; there is no extra wallet/network facade or parallel library-only
-send/scan workflow. Cryptography, descriptors, and wallet networking now share
-WalletCore too, including their byte encoders. Actors retain their existing
-ownership and lifetimes. Offline inspection is part of winnow-debug; there is no
-separate CLI or demo signing path. Shared-savings vaults and their contact cards
-live in VaultKit, a second library on WalletCore's public interface.
+## Run locally
 
-InMemoryKeyStore belongs to TestSupport, not the shipping wallet. The module
-version placeholders and duplicate binary serializers are removed. There is one
-app release version.
+Run from the repository root on macOS with Xcode and the Swift toolchain:
 
-## Which tests say what
+```sh
+swift test
+```
 
-The one integration test is `test01CreateReceiveSendConfirm` in
-`UITests/WinnowAppUITests.swift`. It starts with a quick ordinary receive and
-send, then receives and sends with a 2-of-2 MuSig2 account shared by the phone
-and one Core cosigner. Finally it receives and sends through a script-path
-2-of-3 account containing the phone’s key and two Core cosigners. Both Core
-wallets know that account, but only the phone and one Core key approve its
-payment. The test checks the funded destinations, accepted transactions, and
-confirmation through the app. The private signet fixture mines blocks
-automatically so confirmations follow promptly. The automated journey runs on an iPhone simulator; there is no iPad UI
-job currently.
+This runs the SwiftPM targets, including VaultKitTests and ToolsTests. For iOS
+app tests, generate the project after importing the census:
 
-This is one continuous UI/video journey, not a broad interoperability matrix.
-There is no separate DifferentialTests target or node comparison job. Other
-signing orders, combinations, and physical hardware need their own evidence.
-The retained video and screenshots are evidence only for the revision and
-coverage recorded in their provenance.
+```sh
+scripts/import-census
+scripts/install-xcodegen
+"${RUNNER_TEMP:-${TMPDIR:-/tmp}}/winnow-xcodegen-2.46.0/xcodegen/bin/xcodegen"
+WINNOW_APP_RESULTS=$(mktemp -d /tmp/winnow-app-tests-XXXXXX)
+scripts/ci-app-tests "$WINNOW_APP_RESULTS"
+```
 
-CI has one `build` job for package, app, fuzz, lint/test gates and release checks,
-followed by a reusable `website` job. One Debug build serves app unit tests
-and this journey with the same simulator and build directory. A fresh run's
-`app-tests-…` artifact contains `units/` and `journey/` result bundles and logs,
-plus the journey recording and checkpoint screenshots. The build job runs on
-GitHub-hosted Apple silicon (`macos-26`) with per-run build products and a fresh
-signet fixture, independently of any developer Mac. Fork pull requests use
-the same image for package and app checks without the private node, UI journey
-or deployment credentials. Manual, nightly and release runs execute fresh tests.
+The app-test script selects an installed iPhone simulator and writes its log and
+`AppTests.xcresult` into that new directory. These results are separate from
+SwiftPM's output. Use [the UI test setup](../UITests/README.md#run-locally) for
+the signet fixture, continuous recording and journey. Local simulator runs
+should be serial because they share fixture ports and an environment file.
 
-For website-only edits, `scripts/ci-journey-cache` hashes test/build inputs and
-finds a successful same-repository run's normalized media artifact. Matching
-inputs allow build and wallet test steps to skip while the current website is
-generated and checked. App-bundled HTML/CSS stays in the fingerprint; changed
-inputs, missing media or API errors require fresh tests. Reused media retains
-its original source and result, rather than claiming a new test execution.
-There are no separate architecture, complexity, selector or LOC jobs. The
-legacy LOC reporter and its tests were removed.
+Repository Python tooling requires Python 3.11 or later; CI uses 3.12. The macOS
+system Python may be older. See [script regressions](../scripts/tests/README.md)
+for their command.
 
-The detailed rules stay in smaller suites. `AppTests/PeoplePaymentTests.swift`
-and `AppTests/SenderLabelTests.swift` cover people, payment decisions, and sender
-labels. `AppTests/WalletStartupTests.swift` and `AppTests/VaultBackupTests.swift`
-cover persisted startup and backup state. `Tests/VaultKitTests/VaultSpendTests.swift`
-checks threshold and missing-signature rules. These focused checks supplement
-the journey without repeating every behavior through screen navigation.
+Use [the script index](../scripts/README.md) for dependency checks, warning
+gates, debugging smoke and evidence validation. `ci-lane` and `ci-tailnet` are
+runner orchestration scripts for disposable CI machines; use the documented
+local entry points on a development Mac.
 
-Policy explanations must come from the actual descriptor, including 1-of-n.
-Names, contact mappings, and PSBT metadata must not change signing requirements
-or establish output ownership. Keep adversarial checks for altered policies,
-forged change metadata, missing signatures, and nonce reuse. Provider, trust,
-physical key separation, and coercion claims require evidence outside a
-simulator; their unverified integrations belong on the roadmap.
+## The payment journey
 
-- UITests runs the one focused journey against a disposable signet node and
-  checks its screen and node outcomes. The host records one continuous video
-  for review and the website; checkpoint screenshots remain secondary artifacts.
-- AppTests checks protected actions, review invalidation, persisted state,
-  network separation, people, and OS integration.
-- WalletCoreTests checks wallet/network invariants and hostile peer behavior.
-  The former BitcoinP2PTests are grouped under WalletCoreTests/Network.
-- VaultKitTests checks contact cards, vault admission and vault spends.
-- BitcoinCoreTests retains independent vectors and parser/cryptographic bounds.
-- ToolsTests and the fuzz harness cover debugging commands and hostile inputs.
+`WinnowAppUITests.test01CreateReceiveSendConfirm` receives, reviews, sends and
+confirms three payments in one app session: an ordinary wallet, a 2-of-2 MuSig2
+account with one Bitcoin Core cosigner, and a script-path 2-of-3 account with two
+Core cosigners available. The phone and one Core key approve the final payment.
+A disposable private signet fixture funds app addresses, accepts transactions
+and mines confirmations. The test checks both the app's outcomes and the
+node's accepted payments.
 
-The larger UI story suite and separate differential matrix are retired. The
-three payment flows share one journey; other detailed behavior and interruptions
-use focused tests. The [recording page](https://winnowwallet.com/recording)
-shows the continuous journey and its source provenance. Older guide
-illustrations retain their provenance.
+The host records one continuous video and retains checkpoint screenshots with
+the test log and Xcode result bundle. Those assertions establish the result;
+media helps review the interaction. This journey supplies evidence for those
+flows on an iPhone simulator. Other signing orders, hardware, recovery paths
+and network environments need their own checks.
 
-## What generated pages do and do not establish
+## CI and reused evidence
 
-Generation refuses a missing test selector, an app scenario with no documented
-journey, or a missing/unresolved journey video. The recording page embeds the
-video once with its tested source and run; the signing guides explain the
-policies and setup steps.
-This catches documentation drift; it is not runtime coverage analysis. Changes
-need checks appropriate to their behavior; the integration journey does not replace
-relevant invariant tests.
+[CI](../.github/workflows/ci.yml) selects parallel validation for same-repository
+runs and a hosted fallback for fork PRs or the manual `hosted` option. Parallel
+validation has five lanes: package, build, units, journey and tailnet. The build
+lane publishes one Debug build; units and journey verify and use those products
+on separate runners and simulators. The hosted fallback combines package, build
+and app checks in one job. Fork PRs omit the signet journey and deployment
+credentials. The [workflow index](../.github/workflows/README.md) lists the
+lanes and retained artifacts.
 
-The xcresult bundle and logs are authoritative for success, failure, and the
-tested revision. The host records the simulator while the journey runs; the
-recording and checkpoint screenshots do not replace test assertions. Keep the
-revision, device, date, and result bundle together in the deployment's
-`/recording` provenance. [Repository video notes](https://github.com/winnowwallet/website/blob/main/docs/videos/README.md) preserve
-the dated history of checked-in recordings.
-`scripts/prepare-site-artifact --normalize-journey` writes a reusable media
-bundle preserving source and run provenance. `--validate-media` checks retained
-evidence. Website sources and deployment live in winnowwallet/website; wallet
-CI no longer prepares or publishes site artifacts. Historical assets and audit
-notes retain their historical status.
+The tailnet lane creates disposable Headscale clients and gateway services.
+It checks discovery and routing in that controlled setup. Live Tor/I2P gateway
+checks are separate manual operations; passing the simulation does not establish
+public-network reachability.
 
-Simulator tests do not establish locked-device Keychain enforcement, battery
-life, real-world peer independence, or independent review. Keep those limitations
-explicit. Future work belongs on the separate roadmap.
+[scripts/ci-validation](../scripts/ci-validation) can reuse a complete,
+successful same-repository evidence bundle for matching build/test inputs,
+workflow identity and validation policy, up to seven days old. It verifies the
+record, file hashes, shared Debug build and media provenance. An unbundled docs
+edit can match; HTML/CSS bundled in the app participates in the fingerprint.
+Changed inputs, missing artifacts, invalid records or lookup errors run fresh
+validation. Manual and nightly runs force fresh checks. Tag releases can reuse
+eligible evidence under the same policy.
+
+Reused evidence keeps its original tested source, run, inventory and recording;
+a green reuse run does not mean the tests executed again. Inspect job
+conclusions and the validation record before reporting a run as fresh. Wallet
+CI retains evidence without building or deploying the separate website.
+
+## Checks that need devices or external evidence
+
+Simulator and in-memory tests do not establish locked-device Keychain behavior,
+actual iCloud transport or iCloud Keychain synchronization. A CloudKit save date
+confirms an upload, without establishing an end-to-end recovery result. Keep
+manual backup and recovery-word guidance in place while physical-device
+validation is outstanding.
+
+Battery life, background scheduling in daily use, peer independence and
+hardware-wallet compatibility also need measurements or explicit integration
+tests. Record the devices, configuration, revision and actual result when doing
+that work. Dated [security reports](security/README.md) and published recordings
+retain their original scope; proposed work belongs on the
+[roadmap](https://winnowwallet.com/roadmap).

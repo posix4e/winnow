@@ -1,109 +1,127 @@
-# CI, release and website operations
+# CI and release operations
 
-Winnow is one repository and one release train. The root Swift package organizes
-internal modules and development executables. The app, fuzz harness
-and debugging tool share one `Package.swift` and one `Package.resolved`; the Swift dependency
-is swift-secp256k1. Xcode resolution must match that root lockfile.
+Winnow has one source tree and version train for the wallet app, SwiftPM library
+products and development tools. Use the committed root package lockfile for
+both SwiftPM and Xcode. The [architecture guide](../../docs/architecture.md)
+explains the products; [testing](../../docs/testing.md) describes coverage and
+its limits.
 
-## Checks and ownership
+## Validation
 
-| Workflow | When | Responsibility |
+[ci.yml](../workflows/ci.yml) selects one implementation and requires its final
+validation result:
+
+| Implementation | Selected for | Execution |
 | --- | --- | --- |
-| CI | PR, main push, nightly, manual, release caller | One validation lane (four WarpBuild jobs or one hosted build job) owns lint/test gates, package and debugging tests, app/Keychain tests and signet UI journey, release warning and E2E exclusion gates, inspection smoke, provenance, fixed fuzz corpus, and journey evidence normalization |
-| Fuzz sanitizers | Weekly or manual seed replay | Sustained address/thread sanitizer coverage; does not repeat normal suites |
-| Release | New stable version tag or manual validation | Calls CI, then signs/uploads and publishes only for tag pushes |
-| TestFlight recovery | Manual, exact version and build number | Finish notes/group assignment for an existing upload |
-| App Store submission | Manual | Attach a processed build and optionally submit for review |
-| TestFlight feedback | Manual, with an age recipient | Pull tester comments, screenshots and crash logs encrypted to that recipient; the log shows counts only |
+| [Parallel](../workflows/ci-parallel.yml) | Same-repository PRs, main pushes and default manual/nightly/release calls | WarpBuild Apple silicon runners; package, build, units, journey and tailnet lanes |
+| [Hosted](../workflows/ci-hosted.yml) | Fork PRs or manual `hosted=true` | GitHub-hosted `macos-26`; combined build and checks, with no signet journey for forks |
 
-CI runs one validation lane; there are no separate selector,
-complexity, architecture or size-report jobs. Same-repository runs use four
-parallel WarpBuild jobs ([ci-parallel.yml](../workflows/ci-parallel.yml));
-the rest of this section describes the hosted `build` job, which fork PRs and
-the manual `hosted` input use. The build job checks out the PR
-head explicitly. `scripts/ci-journey-cache` hashes the test/build inputs,
-including HTML/CSS bundled in the app, and looks for normalized media from a
-successful same-repository run with the same inputs. Website-only edits can
-reuse that media, skip compilation and wallet tests, and still prepare and
-check a fresh website. Reuse preserves the original recording's source and run;
-it does not establish a new test result for the website revision. Missing
-artifacts, API errors or changed inputs run fresh checks. Manual, nightly and
-release calls always run fresh checks.
+Parallel build prepares Debug app/test products once and also checks an ARM64
+Release build. Units and journey download the hash-checked Debug artifact and
+run on separate runners and simulators. Package runs SwiftPM tests, fuzz smoke,
+lint, dependency and production-warning checks, debugging smoke and provenance
+generation. Journey uses a fresh disposable signet fixture. Tailnet builds a
+controlled Headscale/gateway environment for routing tests; it does not verify
+live public Tor or I2P access.
 
-The hosted build job runs on GitHub-hosted Apple silicon with `macos-26`.
-Each job gets its own Mac environment; it does not depend on a developer's
-Mac mini. Same-repository pull requests and
-trusted push, manual, nightly and release runs include the signet journey.
-Fork pull requests use the same hosted runner image for package and app checks,
-without the node fixture, UI journey or deployment credentials.
-The UI journey uses `Tests/Support/Node` for chain operations and Core-held
-cosigner keys. The broad differential target and its separate CI job are retired.
+The parallel scripts currently require Xcode 26.6 build 17F113 and select iOS
+26.5. Runner, runtime, architecture and test inventory are recorded in lane
+evidence. Check the source and run logs when those pins change.
 
-The workflow provisions Python on every run and installs the Bitcoin Core and
-video tools when a fresh journey is needed. Debug build products use a per-run
-DerivedData directory. The temporary node starts from a fresh fixture through
-`scripts/signet-fixture`, without a persistent prepared-bank or simulator cache.
-The iPhone journey covers ordinary-wallet,
-MuSig2 and 2-of-3 payments, with Core supplying the other signing keys.
+## Evidence and reuse
 
-The build job owns fixture setup and teardown under its temporary directory.
-Test logs, checkpoint screenshots, the continuous video, and result bundles use a fresh `mktemp` evidence
-directory per job so cancelled runs cannot poison a later Xcode result path; prior
-wallet state and difficulty retargets cannot affect the next run. The single
-`app-tests-<run-id>-<attempt>` artifact contains `debug-build.log`, `units/` with
-`AppTests.xcresult`, `journey/` with `NodeUI.xcresult`, `journey.mp4`,
-`video.log` and `node-screenshots/`, plus `release-build.log`.
-The Keychain attribute tests use the app's existing iOS test host.
-They verify recorded attributes and round-trip storage; device-lock enforcement
-still needs real hardware. The retired story/media workflow has no CI role;
-app screenshots and video now come from the asserted UI journey through
-`scripts/ci-ui-journey`.
+[scripts/ci-validation](../../scripts/ci-validation) verifies complete reusable
+evidence for matching source inputs, workflow identity and policy. Eligible
+bundles come from successful same-repository CI runs and expire after seven
+days. File hashes, shared Debug product identity and normalized journey media
+are checked before reuse. Unbundled docs may leave the fingerprint unchanged;
+app-bundled HTML/CSS changes affect it. A lookup error or incomplete bundle
+falls back to fresh validation.
+
+Manual and nightly runs force fresh checks. Tag releases can reuse verified
+evidence. Reuse preserves the original source SHA, run, test inventory and
+media provenance. A successful validation job therefore establishes either
+fresh checks or accepted matching evidence; inspect the record and lane
+conclusions to distinguish them.
+
+Parallel runs retain `lane-package-<run>-<attempt>`, `lane-build-…`,
+`lane-units-…` and `lane-journey-…` artifacts, plus the transferred `lane-debug-…`
+products. The complete record is published as `validation-<fingerprint>`.
+A reuse run retains `reused-validation-<run>-<attempt>`. Hosted runs retain
+`app-tests-<run>-<attempt>`, including Debug/Release logs, `units/` and,
+when run, `journey/` results and recordings. Failed runs may contain only
+partial evidence; inspect the original logs and xcresult conclusions.
+
+The journey retains `NodeUI.xcresult`, test/fixture logs, `journey.mp4`, video
+logs and checkpoint screenshots. Normalized media preserves the tested source
+and run. Wallet CI does not build or deploy the public website.
 
 ## Release
 
-Create a new, unused stable `vMAJOR.MINOR.PATCH` tag on the intended Winnow
-commit. This is an app release, including its internal modules and tools. Existing
-tags in Winnow and the archived library remain fixed; the former library's
-`v0.1.0` is historical and is not Winnow's next version.
+A new stable `vMAJOR.MINOR.PATCH` tag triggers
+[Release](../workflows/release.yml). The tag chooses the app marketing version;
+the workflow run number chooses the build number. Existing tags stay fixed.
+The app, WalletCore and VaultKit share those tags; no separate internal version
+bump is needed.
 
-Run Release manually first to validate the checkout without signing, uploading,
-assigning TestFlight groups or publishing. Release validates the stable version.
-The release fetches the census's current list with `scripts/import-census`
-before building, and its log names the census commit the app ships.
-Refreshing the header checkpoint uses `scripts/refresh-checkpoint` and needs a
-genesis-validated header file. This is manual maintenance, not an automatic
-requirement for every release. Its validation and vector update are described in the
+1. Choose the intended commit and update
+   [TestFlight notes](../../docs/testflight-what-to-test.txt) with the behavior
+   and checks testers should exercise. Review current device-test limitations.
+2. Run **Release** manually on that revision's branch and wait for success.
+   Manual dispatch runs fresh validation without signing, uploading, assigning
+   groups or publishing a GitHub release.
+3. Create a new, unused stable tag on the reviewed commit and push that tag.
+   This starts publishing after the reused CI workflow succeeds, using either
+   fresh checks or eligible evidence under the policy above.
+4. Inspect the Release run's selected version/build, archive checks, upload,
+   processing result and TestFlight status. Keep the run URL with release notes.
+
+The publishing job imports the current public census before generating the
+Xcode project; its log records the census commit included in the build. It uses
+pinned XcodeGen 2.46.0, existing repository signing credentials and App Store
+Connect configuration. Signing material stays in temporary runner storage and
+is cleaned up by the workflow.
+
+Before upload, the job checks the archive and exported IPA for the intended
+identity, version, iCloud configuration and exclusion of E2E controls. It records
+resolved dependencies and supply-chain metadata. After upload it waits for
+processing, sets notes, assigns the internal group and requests external beta
+distribution. External **WAITING_FOR_REVIEW** or **IN_REVIEW** means Apple review
+is pending; workflow success does not mean external testers can install yet.
+The final job publishes a GitHub release with SPDX and provenance artifacts.
+
+Checkpoint maintenance is separate: `scripts/refresh-checkpoint` requires a
+genesis-validated header file and a reviewed vector update. See the
 [checkpoint runbook](../../Tools/Generate/README.md).
-The signed app archive is checked for E2E controls and its provenance is
-attached to the GitHub release.
 
-The CI workflow is reused directly, so release definitions cannot drift into a
-second copy of package/app/fuzz checks. One unfiltered Debug `build-for-testing`
-builds the app and both test runners. App unit tests and the UI journey then
-reuse those products with `test-without-building`, using the same simulator
-and DerivedData directory. Native inspection smoke and provenance use the same
-warning-checked release binary. Fuzz smoke reuses its compiled modules, while
-`swift test` runs the library and debugging-tool suites together once per
-run. The iOS Release build separately checks shipping compiler settings
-and bundled resources.
+## Resume an existing upload
 
-If App Store Connect processing outlasts a release, use **TestFlight recovery**
-with its exact marketing version and build number; do not upload that number
-again. App Store submission remains a separate deliberate operation.
+Use [TestFlight recovery](../workflows/testflight-recover.yml) with the exact
+marketing version and build number from the original run. It completes
+processing, notes and group assignment for that upload. It does not rearchive
+or reupload the same build number. Check its final internal and external
+statuses separately.
 
-To read tester feedback, run **TestFlight feedback** with an `age` public key
-whose private key stays on your machine, download the `testflight-feedback-<run>`
-artifact (kept three days) and decrypt it with `age -d -i <key>`. The repository is
-public, so feedback never appears unencrypted in logs or artifacts.
+Prefer these workflows over calling `scripts/testflight.sh` without an explicit
+operation: the helper defaults to `all`, which performs setup and upload.
+The [script index](../../scripts/README.md#release-helpers) lists its operations.
 
-There is no separate public library product or release process. The local app
-and tools change together and need no internal version bumps.
+## App Store and feedback
 
-## Website
+[App Store submission](../workflows/appstore-submit.yml) is a separate manual
+operation. Attaching a build and setting notes changes App Store Connect even
+when submission is disabled; use its status-only option for a read. Submission
+is distinct from TestFlight distribution and Apple approval.
 
-Public site sources, generation, blog and deployment live in
-[winnowwallet/website](https://github.com/winnowwallet/website). Wallet CI
-normalizes and validates journey media, preserving its original source SHA,
-run URL and result. It uploads wallet evidence without publishing the site.
-The app separately bundles five offline technical guides and site.css from
-docs/. Copy reviewed guide updates from the website when releasing the app.
+[TestFlight feedback](../workflows/testflight-feedback.yml) takes an `age` public
+key whose private key stays with the reader. Download its encrypted
+`testflight-feedback-<run>` artifact within three days and decrypt locally.
+The public run logs show counts; tester comments, emails, screenshots and crash
+contents must remain encrypted in retained artifacts.
+
+## Website and offline guides
+
+Public site sources, generation and deployment live in
+[winnowwallet/website](https://github.com/winnowwallet/website). The wallet app
+bundles five offline HTML guides and `site.css` from `docs/`. Review those copies
+when changing guidance for an app release. See the [documentation index](../../docs/README.md).

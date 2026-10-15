@@ -2,6 +2,6 @@ Winnow 0.8.4: vaults, contact cards and recovery checks
 
 This build reorganizes the internal vault and cloud-backup code. No changes to signing rules, account access or the backup format are intended.
 
-After updating, check that existing vaults, contact cards, balances and transaction history are still available. Check payment approvals and automatic cloud-backup updates. Use a separate test wallet to check recovery, and use test-network funds for send tests.
+After updating, check that existing vaults, contact cards, balances and transaction history are still available. Check payment approvals and automatic cloud-backup updates. Use a separate test wallet to check manual backup export and file import, and use test-network funds for send tests.
 
 Report bugs at https://github.com/winnowwallet/winnow/issues. Include the app version, device, network, routing mode and steps to reproduce. Never include recovery words, private keys or wallet backup files.

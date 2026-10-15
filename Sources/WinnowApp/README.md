@@ -5,6 +5,7 @@
 SwiftUI screens and AppModel turn wallet and network state into receiving,
 sending, recovery, saved recipients, and shared accounts. The app owns user review,
 authentication, presentation, and lifecycle; WalletCore and VaultKit own the Bitcoin rules.
+The [architecture guide](../../docs/architecture.md) maps these responsibilities.
 The app supports iPhone, iPad, and Apple silicon Mac (Designed for iPad).
 Simple mode uses one screen; Advanced mode adds Wallet, Send, and Settings tabs.
 The automated UI journey currently covers iPhone only.
@@ -35,9 +36,10 @@ not another code layer. [make-icon.swift](../../scripts/make-icon.swift) creates
 artwork; changing it requires inspecting the rendered icon and building the app.
 Keep documentation outside the asset catalog so it is not treated as an asset.
 
-[Automatic iCloud recovery](../../CloudKit/README.md) automatically updates an
-encrypted wallet backup by default and finds it on a replacement device. Beginner
-mode shows status; Advanced holds manual recovery and the persistent opt-out.
+[Automatic iCloud backup](../../CloudKit/README.md) updates an encrypted wallet
+copy by default when available. Simple mode shows upload status; Advanced holds
+manual export, recovery words and the persistent opt-out. A successful save date
+confirms the upload; keep a manual file and recovery words as well.
 CloudBackupController owns backup preferences, encrypted retries, lifecycle and last-success state;
 ICloudBackupStore owns private CloudKit transport and separate wrapping keys.
 CloudWalletBackup is the encrypted file itself: the phrase and the wallet state, sealed separately.

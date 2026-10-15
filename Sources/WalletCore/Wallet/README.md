@@ -5,7 +5,8 @@
 Balances, coin selection, fees, and recovery imports live here. They supply the
 state and decisions behind receiving, sending, and recovery; the GUI should not
 carry a second wallet implementation. Shared-savings vaults and people are in
-[VaultKit](../../VaultKit/README.md).
+[VaultKit](../../VaultKit/README.md). The
+[architecture guide](../../../docs/architecture.md) maps the rest of WalletCore.
 
 [AppModel](../../WinnowApp/AppModel.swift) coordinates these rules with
 WalletCore networking, [key storage](../Keys/README.md), and

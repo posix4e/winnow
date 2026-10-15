@@ -24,7 +24,7 @@ and exact output matching without creating a sender contact.
 
 `CloudBackupTests` checks automatic defaults, persistent opt-out, failed uploads, cancellation and wallet/account
 changes with in-memory cloud and key stores. It does not establish actual iCloud
-or iCloud Keychain synchronization; see [cloud recovery validation](../CloudKit/README.md#validation).
+or iCloud Keychain synchronization; see [cloud backup validation](../CloudKit/README.md#validation).
 `CloudWalletBackupTests` round-trips the encrypted file, keeps the sealed phrase across automatic updates and
 upgrades a legacy backup; it refuses a wrong key, changed metadata, a mismatched wallet or a missing phrase.
 

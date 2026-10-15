@@ -18,10 +18,11 @@ normalization and validation independently of public website sources.
 [test_release_policy.py](test_release_policy.py) check release tooling with local
 fixtures, without App Store requests or signing.
 
-Run all suites from the repository root:
+Use Python 3.11 or later (CI provisions 3.12); the macOS system Python may be
+older. Run all suites from the repository root with that interpreter:
 
 ```sh
-python3 -m unittest discover -s scripts/tests
+python3.12 -m unittest discover -s scripts/tests
 ```
 
 CI runs the relevant tooling suites. Site-generation regressions are maintained

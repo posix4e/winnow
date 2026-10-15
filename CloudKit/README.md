@@ -1,91 +1,90 @@
-# iCloud wallet recovery
+# iCloud wallet backup
 
-Automatic backup is on by default in both beginner and Advanced modes. Creation
-and restoration prepare encrypted retry state during their existing authentication;
-there is no Enable button or consent dialog. Existing wallets initialize at the next
-foreground opportunity, with device authentication at most once per foreground
-session. No Apple Account means no authentication prompt just to discover that
-cloud storage is unavailable. Beginner mode shows **Backing up**, **Backed up** or
-**Not backed up** and stays usable without iCloud. Advanced contains the persistent
-automatic-backup switch, manual export and recovery words. A mode switch never
-changes the backup preference. No phrase checklist blocks beginner onboarding.
+Winnow automatically uploads an encrypted wallet backup when iCloud is
+available. It is enabled by default in Simple and Advanced modes. Simple shows
+**Backing up**, **Backed up** or **Not backed up**; Advanced holds the persistent
+backup switch, manual export and recovery words. The wallet remains usable
+without an Apple Account, and changing interface mode preserves the preference.
 
-Onboarding automatically finds backups for the selected Bitcoin network in the
-same Apple Account. Restoring still requires selecting a backup and authenticating
-before decrypting and installing the key.
+Keep a current manual file and recovery words. A successful save date confirms
+that CloudKit accepted ciphertext. It does not establish that the wrapping key
+has synchronized or that recovery has been verified on another device. See the
+[manual backup guide](../docs/import.html) for the available file-import route
+and its limits.
 
-The backup contains this phone's recovery phrase, wallet descriptor, tracked
-funds, payment history, address counters, shared accounts, saved people and
-payment cards, sender names, receive-address labels, display name and interface
-mode. Other owners' signing keys are not on this phone and are not included.
-Watch-only and xprv-only imports cannot enable this mnemonic-based backup.
-Manual file export is unchanged and does not include this extra app context.
-The [recovery guide](../docs/import.html#cannot-restore) lists everything a backup
-cannot restore.
-Peer/explorer endpoints remain device-local, so a replacement phone does not
-inherit an inaccessible private-network address.
+## Contents and ownership
 
-## Encryption and updates
+The backup includes this phone's recovery phrase, wallet descriptor, tracked
+funds, payment history, address counters and shared accounts. Its app context
+also includes saved people and payment cards, sender names, receive-address
+labels, display name and interface mode. Other signers' keys are absent and
+need separate backups. Watch-only and xprv-only wallets use manual files because
+this automatic format requires a mnemonic. Peer and explorer endpoints stay
+device-local. Manual file export does not include the extra app context.
 
-`CloudWalletBackup` encrypts the phrase and wallet state separately with AES-256-GCM.
-The random wrapping key is stored under a separate, synchronizable iCloud
-Keychain service, accessible while the device is unlocked. iCloud stores only
-ciphertext plus a random backup ID, network and save date. No phrase or plain
-wallet bundle is written to a staging file. The normal signing Keychain remains
-device-only with user-presence access control. Automatic cloud recovery adds another
-route to the secret: access to the iCloud backup and its wrapping key is enough
-to recover it. It therefore adds trust in Apple Account and iCloud Keychain
-recovery, and does not retain the same device-only threat model.
+The implementation lives in the app:
 
-The wallet-specific opt-out is stored separately from upload configuration. An
-outage never becomes an opt-out. Upload failures retry during foreground refresh
-with exponential backoff from 60 seconds up to five minutes. Initial encrypted
-preparation can precede account availability; the first available account is pinned
-before upload, and subsequent account changes cannot overwrite that copy.
+- [CloudWalletBackup](../Sources/WinnowApp/CloudWalletBackup.swift) encodes and
+  authenticates the encrypted envelope.
+- [CloudBackupController](../Sources/WinnowApp/CloudBackupController.swift) owns
+  preferences, preparation, retries, account binding and successful-save state.
+- [ICloudBackupStore](../Sources/WinnowApp/ICloudBackupStore.swift) writes private
+  CloudKit records and provides a separate wrapping-key store.
 
-Automatic updates reuse the encrypted phrase and export fresh public wallet
-state after foreground sync/refresh. They never reread the local signing key.
-Pending payments defer updates under the existing export policy; the previous
-backup and save date remain visible. Failure, cancellation, a wallet switch or
-an iCloud account mismatch cannot advance the displayed successful-save date.
-Each device’s initial backup creates its own record, so a second phone cannot overwrite the first
-phone's backup. Restoring prepares automatic updates, unless explicitly disabled, for a new independent
-record. Its encrypted retry state survives a restart or outage, and the app
-shows no successful-save date until CloudKit acknowledges that device's upload.
-Existing local contacts win name/destination conflicts, recipient counters never
-move backward for the same key, and sender labels follow merged identifiers.
-This is recovery, not live multi-device wallet synchronization.
+WalletCore owns the wallet import format; it has no CloudKit dependency.
+VaultKit owns shared-account and contact-card rules, independently of cloud
+transport.
 
-Version 2 seals the app context inside the same authenticated ciphertext as
-wallet state. Version 1 copies remain readable, and the restore screen explains
-that they do not contain names or labels. An automatic update upgrades a legacy
-copy without reading the signing phrase again. The total encrypted envelope is
-bounded to 32 MiB; app context is bounded to 10 MiB and each store still enforces
-its own tighter structural limits. Invalid context is rejected before the wallet
-or Keychain is changed.
+## Encryption and update behavior
 
-Stopping automatic updates keeps the existing cloud copy. Deleting the local
-wallet also leaves the cloud copy. Keep recovery words and a manual file as a
-separate recovery route. A successful CloudKit save confirms the ciphertext was
-uploaded; it cannot prove the wrapping key has synchronized to another device.
-The restore screen reports a missing key without replacing it or opening an
-incomplete wallet.
+The phrase and wallet state are sealed separately with AES-256-GCM. App context
+is inside the authenticated wallet ciphertext. The random wrapping key uses a
+separate synchronizable iCloud Keychain service, accessible while unlocked.
+CloudKit stores ciphertext with a backup ID, network and save date. The local
+signing key retains its device-only, user-presence access controls.
 
-## Apple setup required before release
+Access to the cloud ciphertext and its wrapping key is sufficient to recover
+the backed-up signing secret. This adds trust in Apple Account and iCloud
+Keychain security and recovery. No phrase or plaintext wallet bundle is written
+to the upload staging file.
 
-The app entitlement names `iCloud.com.btcswift.app`. Register that container and
-associate it with the `com.btcswift.app` App ID in the Apple Developer account.
-Refresh signing profiles through automatic signing. Provisioning and production
-schema deployment are external account operations; a successful unsigned build
-does not establish either one.
+Initial preparation uses device authentication. Existing wallets initialize at
+a foreground opportunity, with at most one backup authentication per foreground
+session; an unavailable Apple Account does not itself prompt. Automatic updates
+reuse the encrypted phrase and export fresh public wallet state after refresh,
+without rereading the signing key. Pending sends defer updates, so the displayed
+save date can lag.
 
-[schema.ckdb](schema.ckdb) is authored source, not generated Swift. Import it into
-the container's development environment, then deploy to production through
-[CloudKit Console](https://icloud.developer.apple.com/). The `___recordID` query
-index, the network query index and the save-date sort index are required for listing backups. Do not grant access to the public database.
+The opt-out is stored separately from upload configuration. Failures retry in
+the foreground with backoff from 60 seconds up to five minutes. The first
+available account is pinned before upload; later account changes cannot
+overwrite that copy. Failure, cancellation, a wallet switch or an account
+mismatch cannot advance the successful-save date. Backup records have independent
+IDs; the feature is not live multi-device wallet synchronization.
 
-With an authorized management token stored securely in the local Keychain,
-the development schema can be imported using Apple's tool:
+Version 2 includes authenticated app context. Version 1 remains readable and
+lacks that context; an automatic update can upgrade it without rereading the
+phrase. The envelope is bounded to 32 MiB and app context to 10 MiB, with tighter
+structural bounds in individual stores. Validation precedes changes to wallet
+or Keychain state.
+
+Disabling automatic updates keeps the existing cloud copy. Deleting the local
+wallet also leaves that copy.
+
+## Apple setup
+
+The app entitlement names `iCloud.com.btcswift.app`. Associate that container
+with the `com.btcswift.app` App ID and refresh signing profiles through automatic
+signing. Provisioning and production schema deployment are Apple account
+operations; an unsigned build does not establish their completion.
+
+[schema.ckdb](schema.ckdb) is authored schema source. Import it into development,
+then deploy through [CloudKit Console](https://icloud.developer.apple.com/).
+Listing records requires the `___recordID` query index, network query index and
+save-date sort index. The app uses the private database; do not grant public
+database access.
+
+With an authorized management token stored securely in the local Keychain:
 
 ```sh
 xcrun cktool import-schema --team-id 2858MX5336 \
@@ -93,22 +92,22 @@ xcrun cktool import-schema --team-id 2858MX5336 \
   --file CloudKit/schema.ckdb
 ```
 
-Never put management tokens, signing keys or user backup contents in source,
-command arguments or CI logs. See Apple's documentation for
+Keep management tokens, signing keys and user backup contents out of source,
+command arguments and CI logs. Apple documents
 [schema deployment](https://developer.apple.com/documentation/cloudkit/deploying-an-icloud-container-s-schema)
 and [iCloud configuration](https://developer.apple.com/documentation/xcode/configuring-icloud-services).
 
 ## Validation
 
-Package tests exercise encrypted round trips, spending-key restoration, address
-counters, automatic updates, tampering, wrong keys and bounded decoding. App
-unit tests use in-memory cloud and key stores for failures, wallet/account
-changes, cancellation, automatic defaults and persistent opt-out. These run in existing CI.
+[AppTests/CloudWalletBackupTests.swift](../AppTests/CloudWalletBackupTests.swift)
+checks encrypted round trips, restored signing material, counters, updates,
+tampering, wrong keys and bounded decoding in the iOS app test host. It is no
+longer a SwiftPM package suite. Other app tests use in-memory cloud and key
+stores for defaults, retries, account changes, cancellation and persistent
+opt-out. See the [testing guide](../docs/testing.md) for commands and CI evidence.
 
-Before App Store submission, use disposable signet funds on two physical devices
-with the same test Apple Account and iCloud Keychain enabled. Create a wallet (backup starts automatically), wait
-for a saved date, restore on the second device, and check addresses, balances,
-history and a signed payment. Also check an offline device, disabled iCloud
-Keychain, a different Apple Account and cancellation during authentication.
-Do not erase the only real wallet to test recovery. Hosted simulator tests cannot
-prove actual iCloud transport, Keychain synchronization or Apple provisioning.
+Actual CloudKit transport, provisioning, account behavior and wrapping-key
+synchronization require physical-device validation. End-to-end two-device
+restore evidence is still outstanding. Use disposable test wallets and signet
+funds for that work, and retain the device configuration, revision and result
+before expanding recovery guidance.

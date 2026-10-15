@@ -43,7 +43,7 @@ matrix of signing orders or cosigner combinations.
 The app’s periodic scan runs every three seconds under E2E configuration; the
 journey never drags to refresh. Each launch pins a fresh test seed so repeated
 runs do not share coins. Paste buttons read the existing test control file.
-Detailed cases belong in `AppTests` and `WalletCoreTests`: labels, backup state,
+Detailed cases belong in `AppTests`, `WalletCoreTests` and `VaultKitTests`: labels, backup state,
 fee rules, signing invariants, privacy, and network recovery. The separate
 `DifferentialTests` target and job are removed. This journey does not establish
 every feature’s UI behavior or hardware-wallet compatibility. There is no iPad UI job currently.
@@ -94,49 +94,43 @@ of bank preparation and 212.342 seconds for the app journey. Its ordinary,
 MuSig2, and 2-of-3 phases took 35.264, 101.585, and 74.482 seconds respectively.
 These are one local run’s measurements, not a CI duration guarantee. Compilation
 is outside that test duration. That local run reused a prepared bank.
-GitHub-hosted CI starts a fresh fixture and mines the bank's initial 101 blocks;
+Fresh CI starts a new fixture and mines the bank's initial 101 blocks;
 this preparation happens before recording and XCTest, with no bank snapshot
 reused across CI runs. Its preparation and total runtime must be measured from
-the hosted run. CI prepares the bank in its five-minute fixture initialization
+the specific run. CI prepares the bank in its five-minute fixture initialization
 step. The recording step retains its 15-minute limit and XCTest retains its
 600-second execution limit. The recording script checks the prepared bank
 again without mining more blocks.
 
 ## CI
 
-The main [CI workflow](../.github/workflows/ci.yml) runs this journey inside its
-single `build` job alongside package, fuzz, lint/test gates and release checks.
-One Debug `build-for-testing` prepares the app and test bundles;
-app unit tests and the journey then use `test-without-building` with the same
-simulator and build directory. There is no separate node workflow or second
-Debug build. A release build follows the tests.
+The [main workflow](../.github/workflows/ci.yml) selects parallel validation for
+same-repository runs. The build lane publishes Debug app/test products once;
+the journey lane verifies the artifact hash and uses those products on its own
+runner and simulator with `test-without-building`. The journey lane prepares a
+fresh disposable signet fixture and retains `NodeUI.xcresult`, test and fixture
+logs, `journey.mp4`, video logs and checkpoint screenshots in
+`lane-journey-<run>-<attempt>`. The unit lane retains its own app-test results.
 
-The build job uses GitHub-hosted Apple silicon (`macos-26`) with per-run
-DerivedData and a fresh disposable signet fixture. It needs no developer Mac
-or persistent local caches. Fork pull requests use the same hosted image for
-app checks without the fixture or UI journey.
-Manual, nightly and release calls always run fresh tests. The `app-tests-…`
-artifact from a fresh run contains unit evidence
-under `units/` and journey evidence under `journey/`: `NodeUI.xcresult`,
-`bank-setup.log`, `fixture-prepare.log`, `node-ui.log`, `journey.mp4`, `video.log`, and
-`node-screenshots/`.
-On exit, the recorder script also saves the app's E2E event journal as
-`story-events.jsonl` and Core's network debug log as `node.log` when available.
-Missing diagnostics do not change the test result.
+The hosted fallback combines build and tests on GitHub-hosted Apple silicon;
+fork PRs omit the fixture and journey. Its fresh evidence uses the
+`app-tests-<run>-<attempt>` artifact. In either implementation, cancelled or failed
+runs can retain partial evidence. On exit the recorder also saves
+`story-events.jsonl` and Core's `node.log` when available; missing diagnostics
+do not change the test result.
 
-`scripts/ci-journey-cache` can skip build and wallet test steps for website-only
-changes when a successful same-repository run has matching test/build inputs
-and a retained normalized media artifact. App-bundled HTML/CSS changes still
-force fresh tests; absent evidence or API errors also run fresh. The build job
-always prepares and checks a fresh website. Its separate reusable `website`
-job deploys only that same-run artifact, with trusted PR previews and main
-production. There is no separate architecture lane or LOC job.
+Manual and nightly runs force fresh checks. Other eligible runs, including tag
+releases, can reuse complete matching validation evidence up to seven days old
+through `scripts/ci-validation`. Reused results and media retain their original
+revision and run. App-bundled HTML/CSS changes affect the build fingerprint.
+See [CI and release operations](../.github/internal/ci-release.md) for the reuse
+policy and artifacts. Wallet CI does not build or deploy the public website.
 
 ## Run locally
 
 Use the same fixture tooling as CI, with dedicated local ports and a new
 results directory. Keep local simulator runs serial: they share the simulator
-environment file and fixture ports. GitHub-hosted CI runs independently.
+environment file and fixture ports. CI runs on separate disposable runners.
 The script prepares the bank automatically, using an incremental native Debug
 build of `winnow-fixture`. For a direct Xcode test run, run
 `swift run winnow-fixture prepare-bank` first with the same exported node
@@ -163,5 +157,5 @@ SIMULATOR_ID=$(scripts/ios-simulator iPhone) \
 After the first successful run, the stopped fixture can be saved with
 `scripts/signet-fixture snapshot "$HOME/Library/Caches/winnow-signet-template"`
 while `WINNOW_DATADIR` still identifies it. Future local runs can copy that
-prepared bank into their own fixture; hosted CI starts fresh. Keep the original result bundle, screenshots,
+prepared bank into their own fixture; fresh CI starts a new fixture. Keep the original result bundle, screenshots,
 and source revision with runtime measurements.
