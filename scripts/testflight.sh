@@ -79,7 +79,31 @@ step_upload() {
     -f build/WinnowApp.ipa -t ios --apiKey "$KEY_ID" --apiIssuer "$ISSUER"
 }
 
-app_id() { asc GET "/apps?filter[bundleId]=$BUNDLE_ID" | python3 -c 'import json,sys; print(json.load(sys.stdin)["data"][0]["id"])'; }
+app_id() {
+  # The app record's id anchors every later query. When this read fails, the
+  # answer must not be an empty string: 0.8.6's recovery run looked up the
+  # app during a burst of 500s, got nothing, and then asked for
+  # `/builds?filter[app]=` forty times, a 400 each, until the job's deadline.
+  local attempt body id
+  for attempt in 1 2 3 4 5; do
+    body=$(asc GET "/apps?filter[bundleId]=$BUNDLE_ID") || body=""
+    id=$(printf '%s' "$body" | python3 -c '
+import json, sys
+try:
+    print(json.load(sys.stdin)["data"][0]["id"])
+except Exception:
+    pass
+')
+    if [ -n "$id" ]; then
+      printf '%s\n' "$id"
+      return 0
+    fi
+    echo "app lookup for $BUNDLE_ID returned no usable answer (attempt $attempt/5)" >&2
+    sleep 15
+  done
+  echo "app lookup for $BUNDLE_ID failed" >&2
+  return 1
+}
 build_id() {
   if [ -n "${TESTFLIGHT_BUILD_ID:-}" ]; then
     printf '%s\n' "$TESTFLIGHT_BUILD_ID"
@@ -88,7 +112,7 @@ build_id() {
 
   if [ -n "$EXPECTED_BUILD_NUMBER" ] && [ -n "$EXPECTED_MARKETING_VERSION" ]; then
     local aid response id
-    aid=$(app_id)
+    aid=$(app_id) || return 1
     for attempt in $(seq 1 "$BUILD_WAIT_ATTEMPTS"); do
       response=$(asc GET "/builds?filter[app]=$aid&filter[version]=$EXPECTED_BUILD_NUMBER&filter[preReleaseVersion.version]=$EXPECTED_MARKETING_VERSION&limit=2")
       id=$(printf '%s' "$response" | python3 -c '
@@ -109,7 +133,9 @@ print(rows[0]["id"] if rows else "")
     return 1
   fi
 
-  asc GET "/builds?filter[app]=$(app_id)&sort=-uploadedDate&limit=1" | python3 -c 'import json,sys; print(json.load(sys.stdin)["data"][0]["id"])'
+  local aid
+  aid=$(app_id) || return 1
+  asc GET "/builds?filter[app]=$aid&sort=-uploadedDate&limit=1" | python3 -c 'import json,sys; print(json.load(sys.stdin)["data"][0]["id"])'
 }
 
 step_wait_processing() {
