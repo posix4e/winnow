@@ -76,14 +76,14 @@ struct FeeResolutionTests {
         #expect(await pool.feeFilterFloorSatPerVByte() == nil)
         #expect(await pool.feeFilterFloorSatPerVByte(aggregation: .mostLenient) == nil)
         try await nodes[0].send(.feefilter(200_000))
-        #expect(await pollUntil(.seconds(3)) { await pool.feeFilterFloorSatPerVByte(aggregation: .strictest) == 200 })
+        #expect(await pollUntil { await pool.feeFilterFloorSatPerVByte(aggregation: .strictest) == 200 })
         #expect(await pool.feeFilterFloorSatPerVByte() == nil)
         #expect(await pool.feeFilterFloorSatPerVByte(aggregation: .mostLenient) == nil,
                 "two seats have not reported, and each would still relay anything")
         try await nodes[1].send(.feefilter(2_000))
-        #expect(await pollUntil(.seconds(3)) { await pool.feeFilterFloorSatPerVByte() == 2 })
+        #expect(await pollUntil { await pool.feeFilterFloorSatPerVByte() == 2 })
         try await nodes[2].send(.feefilter(3_000))
-        #expect(await pollUntil(.seconds(3)) { await pool.feeFilterFloorSatPerVByte() == 3 })
+        #expect(await pollUntil { await pool.feeFilterFloorSatPerVByte() == 3 })
         #expect(await pool.feeFilterFloorSatPerVByte(aggregation: .strictest) == 200)
         #expect(await pool.feeFilterFloorSatPerVByte(aggregation: .mostLenient) == 2,
                 "the lowest floor anyone connected reports is the rate below which nobody relays")

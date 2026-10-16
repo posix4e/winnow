@@ -694,14 +694,17 @@ struct RangeScanTests {
     /// given a second would spend as long as the matches take, which on a
     /// restore against a full watch set is minutes to hours.
     ///
-    /// The budget is eight seconds against a ten-second hold in the first
-    /// match, and both numbers are margin rather than taste. The suite runs
-    /// its cases concurrently, and the peer round trips before the first
-    /// filter is judged share the loopback with every other socket-backed
-    /// case: alone they take a fifth of a second, beside the filter-sync
-    /// suites over three, and on a contended runner more. A budget spent on
-    /// that setup times the run out with nothing delivered, and the case
-    /// then fails for a reason that is not the one it tests.
+    /// The budget is twenty seconds, and the first match holds until a second
+    /// after that budget has elapsed since the run began, whatever the setup
+    /// cost; both are margin rather than taste. The suite runs its cases
+    /// concurrently, and the peer round trips before the first filter is
+    /// judged share the loopback with every other socket-backed case: alone
+    /// they take a fifth of a second, beside the filter-sync suites over
+    /// three, and on a contended hosted runner they have taken more than
+    /// eight. A budget spent on that setup times the run out with nothing
+    /// delivered, and the case then fails for a reason that is not the one
+    /// it tests, so the budget is sized to the slowest runner observed and
+    /// the hold is measured from the run's own start rather than fixed.
     @Test("the run deadline stops a chunk between its matches")
     func deadlineStopsAChunkBetweenItsMatches() async throws {
         let fixture = try await Self.fixture(chainLength: 6, watchHeight: 3)
@@ -710,13 +713,17 @@ struct RangeScanTests {
 
         let everyBlock = [Data([0x51])]
         let collector = MatchCollector()
-        await #expect(throws: RangeScanError.runTimedOut(limit: .seconds(8))) {
+        let budget: Duration = .seconds(20)
+        let started = ContinuousClock.now
+        await #expect(throws: RangeScanError.runTimedOut(limit: budget)) {
             try await fixture.sync.scanRange(
                 from: 1, to: 6, watchScripts: everyBlock,
-                limits: RangeScanLimits(maxDuration: .seconds(8)),
+                limits: RangeScanLimits(maxDuration: budget),
                 storageURL: fixture.rangeFile) { match in
                     collector.add(match)
-                    try await Task.sleep(for: .seconds(10))
+                    // Hold until the deadline has certainly passed, measured
+                    // from the run's start, so the next filter's check fires.
+                    try await Task.sleep(until: started + budget + .seconds(1), clock: .continuous)
                 }
         }
         #expect(collector.matches.count == 1,

@@ -183,9 +183,8 @@ jobs:
           xcrun altool --upload-app -f build/export/WinnowApp.ipa -t ios \
             --apiKey "$ASC_KEY_ID" --apiIssuer "$ASC_ISSUER_ID"
 
-      - name: TestFlight groups (internal; external only for a tag on main)
+      - name: TestFlight internal group
         env:
-          GH_TOKEN: ${{ github.token }}
           ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
           ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
           ASC_KEY_PATH: ${{ runner.temp }}/winnow-signing/AuthKey.p8
@@ -194,15 +193,11 @@ jobs:
           scripts/testflight.sh wait-processing
           scripts/testflight.sh notes
           scripts/testflight.sh internal
-          # External beta review is requested only for a release cut from
-          # main. A tag on a branch stays with the internal group: a review
-          # request cannot be withdrawn, and a branch build is for the team.
-          placement=$(gh api "repos/$GITHUB_REPOSITORY/compare/$GITHUB_SHA...main" --jq .status)
-          if [ "$placement" = "identical" ] || [ "$placement" = "ahead" ]; then
-            scripts/testflight.sh external
-          else
-            echo "external: skipped, $GITHUB_SHA is not on main; the build stays with the internal group"
-          fi
+          # External beta review is never requested here. A review request
+          # cannot be withdrawn, so handing a build to external testers is a
+          # decision made by a person, after the internal group has used it:
+          # `scripts/testflight.sh external` with the build selectors and ASC
+          # credentials, as the runbook describes.
 
       - name: Remove App Store Connect key
         if: always()

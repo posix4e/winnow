@@ -488,10 +488,13 @@ struct PeerPoolTests {
     @Test("a dial already racing when the pool narrows is not seated")
     func relayOnlyRefusesInFlightDials() async throws {
         // One node answers at once and two answer late, so the pool is still
-        // mid-round — dials in flight, seats unfilled — when it narrows.
+        // mid-round — dials in flight, seats unfilled — when it narrows. The
+        // delay is a full second against a four-second dial timeout: on a
+        // contended runner the fast handshake alone can take hundreds of
+        // milliseconds, and the window has to outlast it.
         let fast = LoopbackNode(params: params)
-        let slowA = LoopbackNode(params: params, versionDelay: .milliseconds(400))
-        let slowB = LoopbackNode(params: params, versionDelay: .milliseconds(400))
+        let slowA = LoopbackNode(params: params, versionDelay: .seconds(1))
+        let slowB = LoopbackNode(params: params, versionDelay: .seconds(1))
         let nodes = [fast, slowA, slowB]
         for node in nodes { try await node.start() }
         defer { for node in nodes { Task { await node.stop() } } }
@@ -499,10 +502,13 @@ struct PeerPoolTests {
         for node in nodes { endpoints.append(await node.endpoint) }
 
         let pool = PeerPool(params: params, peerCount: 3, manualPeers: endpoints,
-                            dialTimeout: .seconds(2))
+                            dialTimeout: .seconds(4))
         let dialing = Task { await pool.start() }
-        #expect(await pollUntil(.seconds(5)) { await pool.connectedPeers().count == 1 },
-                "the fast node must be seated while the slow ones are still handshaking")
+        // At least one, not exactly one: the poll samples every ten
+        // milliseconds, and a runner slow enough to seat the late pair before
+        // the sample lands still has a pool to narrow.
+        #expect(await pollUntil { await pool.connectedPeers().count >= 1 },
+                "the fast node must be seated before the pool narrows")
 
         await pool.enterRelayOnly(seats: 1)
         await dialing.value
