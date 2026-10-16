@@ -196,8 +196,8 @@ jobs:
           # External beta review is never requested here. A review request
           # cannot be withdrawn, so handing a build to external testers is a
           # decision made by a person, after the internal group has used it:
-          # `scripts/testflight.sh external` with the build selectors and ASC
-          # credentials, as the runbook describes.
+          # TestFlight recovery with `external_review` ticked, or
+          # `scripts/testflight.sh external`, as the runbook describes.
 
       - name: Remove App Store Connect key
         if: always()
