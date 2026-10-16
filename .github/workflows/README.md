@@ -9,7 +9,7 @@
 | [ci-parallel.yml](ci-parallel.yml) | Verify reusable evidence or execute package, build, units, journey and tailnet lanes on disposable WarpBuild Macs |
 | [ci-hosted.yml](ci-hosted.yml) | Combined GitHub-hosted validation for fork PRs or the manual hosted option |
 | [release.yml](release.yml) | Manual validation, or signing/TestFlight/GitHub publishing after a stable tag push |
-| [testflight-recover.yml](testflight-recover.yml) | Finish processing and distribution of an exact existing version/build |
+| [testflight-recover.yml](testflight-recover.yml) | Finish processing, notes and the internal group for an exact existing version/build |
 | [appstore-submit.yml](appstore-submit.yml) | Inspect or change a selected App Store version and optionally submit it |
 | [testflight-feedback.yml](testflight-feedback.yml) | Fetch tester feedback into an encrypted artifact |
 | [fuzz.yml](fuzz.yml) | Scheduled or manual sanitizer fuzz runs |

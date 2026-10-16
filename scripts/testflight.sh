@@ -48,6 +48,12 @@ jwt() { DEVELOPER_DIR=/Applications/Xcode.app/Contents/Developer swift scripts/a
 asc() { # asc <METHOD> <path> [json-body]
   local method="$1" path="$2" body="${3:-}"
   local args=(--fail-with-body -sS -g -X "$method" -H "Authorization: Bearer $(jwt)" -H "Content-Type: application/json")
+  # App Store Connect answers 500 in bursts: 0.8.6's upload succeeded and its
+  # release died on three of them in twelve minutes while the build was being
+  # ingested. A read is retried (curl retries 408, 429 and 5xx on its own),
+  # five tries fifteen seconds apart, inside the token's life; a write is
+  # never repeated, since a 500 does not say whether it was applied.
+  [ "$method" = GET ] && args+=(--retry 5 --retry-delay 15)
   [ -n "$body" ] && args+=(-d "$body")
   curl "${args[@]}" "$API$path"
 }
