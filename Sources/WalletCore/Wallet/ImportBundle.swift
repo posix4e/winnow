@@ -106,9 +106,15 @@ public struct ImportBundle: Codable, Equatable, Sendable {
         /// Optional so existing v1/v2 bundles remain readable.
         public var replacedBy: String?
         public var rawTransaction: Data?
+        public var outputs: HistoryEntry.Outputs?
+        /// The block the transaction confirmed in (display hex), so a restore
+        /// can check it against headers without fetching the block. Optional
+        /// so existing bundles remain readable.
+        public var blockHash: String?
 
         public init(txid: String, height: UInt32, received: Int64, spent: Int64,
-                    fee: Int64? = nil, replacedBy: String? = nil, rawTransaction: Data? = nil) {
+                    fee: Int64? = nil, replacedBy: String? = nil, rawTransaction: Data? = nil,
+                    blockHash: String? = nil, outputs: HistoryEntry.Outputs? = nil) {
             self.txid = txid
             self.height = height
             self.received = received
@@ -116,10 +122,12 @@ public struct ImportBundle: Codable, Equatable, Sendable {
             self.fee = fee
             self.replacedBy = replacedBy
             self.rawTransaction = rawTransaction
+            self.blockHash = blockHash
+            self.outputs = outputs
         }
 
         private enum CodingKeys: String, CodingKey {
-            case txid, height, received, spent, fee, replacedBy, rawTransaction
+            case txid, height, received, spent, fee, replacedBy, rawTransaction, blockHash, outputs
         }
 
         public func encode(to encoder: any Encoder) throws {
@@ -131,6 +139,8 @@ public struct ImportBundle: Codable, Equatable, Sendable {
             try container.encodeIfPresent(fee, forKey: .fee)
             try container.encodeIfPresent(replacedBy, forKey: .replacedBy)
             try container.encodeIfPresent(rawTransaction, forKey: .rawTransaction)
+            try container.encodeIfPresent(blockHash, forKey: .blockHash)
+            try container.encodeIfPresent(outputs, forKey: .outputs)
         }
     }
 
@@ -139,6 +149,9 @@ public struct ImportBundle: Codable, Equatable, Sendable {
     public var descriptor: String?
     public var mnemonic: String?
     public var lastKnownHeight: UInt32
+    /// The hash of block `lastKnownHeight` (display hex). Optional so existing
+    /// bundles remain readable.
+    public var lastKnownBlockHash: String?
     public var utxos: [UTXO]
     public var transactions: [KnownTransaction]
     /// Shared and extra-device accounts. Older backups omit them.
@@ -152,13 +165,15 @@ public struct ImportBundle: Codable, Equatable, Sendable {
 
     public init(version: Int = ImportBundle.currentVersion, network: String,
                 descriptor: String? = nil, mnemonic: String? = nil,
-                lastKnownHeight: UInt32, utxos: [UTXO] = [], transactions: [KnownTransaction] = [],
+                lastKnownHeight: UInt32, lastKnownBlockHash: String? = nil,
+                utxos: [UTXO] = [], transactions: [KnownTransaction] = [],
                 nextReceiveIndex: UInt32? = nil, nextChangeIndex: UInt32? = nil) {
         self.version = version
         self.network = network
         self.descriptor = descriptor
         self.mnemonic = mnemonic
         self.lastKnownHeight = lastKnownHeight
+        self.lastKnownBlockHash = lastKnownBlockHash
         self.utxos = utxos
         self.transactions = transactions
         self.nextReceiveIndex = nextReceiveIndex
@@ -168,6 +183,7 @@ public struct ImportBundle: Codable, Equatable, Sendable {
     /// Writer for the documented v2 schema. Txids go out as display hex —
     /// the same convention `claimedUTXOs()` reverses on the way back in.
     public static func export(descriptor: String, network: String, lastKnownHeight: UInt32,
+                              lastKnownBlockHash: Data? = nil,
                               utxos: [WalletUTXO], history: [HistoryEntry],
                               nextReceiveIndex: UInt32, nextChangeIndex: UInt32,
                               mnemonic: String? = nil) throws -> ImportBundle {
@@ -176,6 +192,7 @@ public struct ImportBundle: Codable, Equatable, Sendable {
             descriptor: descriptor,
             mnemonic: mnemonic,
             lastKnownHeight: lastKnownHeight,
+            lastKnownBlockHash: lastKnownBlockHash?.displayHex,
             utxos: utxos.map { utxo in
                 UTXO(txid: utxo.txid.displayHex, vout: utxo.vout, amount: utxo.amount,
                      scriptPubKey: utxo.scriptPubKey.hex, chain: utxo.chain.rawValue,
@@ -185,7 +202,8 @@ public struct ImportBundle: Codable, Equatable, Sendable {
             transactions: history.map { entry in
                 KnownTransaction(txid: entry.txid.displayHex, height: entry.height,
                                  received: entry.received, spent: entry.spent, fee: entry.fee,
-                                 replacedBy: entry.replacedBy?.displayHex, rawTransaction: entry.rawTransaction)
+                                 replacedBy: entry.replacedBy?.displayHex, rawTransaction: entry.rawTransaction,
+                                 blockHash: entry.blockHash?.displayHex, outputs: entry.outputs)
             },
             nextReceiveIndex: nextReceiveIndex,
             nextChangeIndex: nextChangeIndex
@@ -251,7 +269,7 @@ public struct ImportBundle: Codable, Equatable, Sendable {
     }
 
     private enum CodingKeys: String, CodingKey {
-        case version, network, descriptor, mnemonic, lastKnownHeight, utxos, transactions
+        case version, network, descriptor, mnemonic, lastKnownHeight, lastKnownBlockHash, utxos, transactions
         case nextReceiveIndex, nextChangeIndex, vaults
     }
 
@@ -263,6 +281,7 @@ public struct ImportBundle: Codable, Equatable, Sendable {
         try container.encodeIfPresent(descriptor, forKey: .descriptor)
         try container.encodeIfPresent(mnemonic, forKey: .mnemonic)
         try container.encode(lastKnownHeight, forKey: .lastKnownHeight)
+        try container.encodeIfPresent(lastKnownBlockHash, forKey: .lastKnownBlockHash)
         try container.encode(utxos, forKey: .utxos)
         try container.encode(transactions, forKey: .transactions)
         try container.encodeIfPresent(nextReceiveIndex, forKey: .nextReceiveIndex)
@@ -411,16 +430,23 @@ extension Wallet {
         // Prefer the exported cursor so a spent-out restore does not
         // reissue address 0. Never go below the UTXO-derived floor — a
         // tampered-low cursor would otherwise reuse a live coin's address.
-        let state = WalletState(
+        let cursors = try boundedCursors(
+            receive: max(bundle.nextReceiveIndex ?? 0, fromReceiveUTXOs),
+            change: max(bundle.nextChangeIndex ?? 0, fromChangeUTXOs))
+        guard bundle.lastKnownHeight < UInt32.max else {
+            throw WalletError.invalidBundle("last known height \(bundle.lastKnownHeight) is out of range")
+        }
+        var state = WalletState(
             descriptor: descriptor.serialized(),
             network: network.rawValue,
             creationHeight: bundle.lastKnownHeight,
-            nextReceiveIndex: max(bundle.nextReceiveIndex ?? 0, fromReceiveUTXOs),
-            nextChangeIndex: max(bundle.nextChangeIndex ?? 0, fromChangeUTXOs),
+            nextReceiveIndex: cursors.receive,
+            nextChangeIndex: cursors.change,
             nextScanHeight: bundle.lastKnownHeight + 1,
             utxos: utxos,
             history: history
         )
+        state.scannedThroughHash = try blockHash(bundle.lastKnownBlockHash, confirmed: true)
         let wallet = try Wallet(network: network, descriptor: descriptor, accountKey: accountKey,
                                 keyStore: keyStore, storageURL: storageURL, state: state)
         if let storageURL {
@@ -492,6 +518,28 @@ extension Wallet {
 
     /// The claimed history, with txids well-formed and amounts inside the
     /// supply — bounded hostile input like everything else in a bundle.
+    /// The cursors a bundle may set, under the bound `advanceCursors`
+    /// enforces: a restore cannot name a window the gap-limit lookahead cannot
+    /// derive from, which would trap or spin the first scan after import.
+    private static func boundedCursors(receive: UInt32, change: UInt32) throws
+        -> (receive: UInt32, change: UInt32) {
+        let maximum = HDKey.hardenedOffset - Self.gapLimit
+        guard receive <= maximum, change <= maximum else {
+            throw WalletError.invalidBundle("address cursors leave no room for the gap-limit window")
+        }
+        return (receive, change)
+    }
+
+    /// A claimed block hash in internal byte order, or nil when the bundle
+    /// names none. A pending entry has no block to name.
+    private static func blockHash(_ hex: String?, confirmed: Bool) throws -> Data? {
+        guard let hex else { return nil }
+        guard confirmed, let hash = Data(hex: hex), hash.count == 32 else {
+            throw WalletError.invalidBundle("bad block hash \(ImportBundle.excerpt(hex))")
+        }
+        return Data(hash.reversed())
+    }
+
     private static func validatedHistory(of bundle: ImportBundle) throws -> [HistoryEntry] {
         try bundle.transactions.map { known in
             guard let txid = Data(hex: known.txid), txid.count == 32 else {
@@ -512,7 +560,9 @@ extension Wallet {
             else { throw WalletError.invalidBundle("transaction history has invalid amounts") }
             let entry = HistoryEntry(txid: Data(txid.reversed()), height: known.height,
                                 received: known.received, spent: known.spent, fee: known.fee,
-                                replacedBy: replacedBy, rawTransaction: known.rawTransaction)
+                                replacedBy: replacedBy, rawTransaction: known.rawTransaction,
+                                blockHash: try blockHash(known.blockHash, confirmed: known.height > 0),
+                                outputs: known.outputs)
             _ = try entry.transaction()
             return entry
         }

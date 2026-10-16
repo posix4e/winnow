@@ -208,6 +208,10 @@ public actor HeaderChain {
     public var tip: BlockHeader { headers[headers.count - 1] }
     public var tipHash: Data { tip.hash }
     public var height: UInt32 { baseHeight + UInt32(headers.count - 1) }
+    /// The tip's height and hash read in one job, for a caller that must not
+    /// see them move between two reads: a cfcheckpt request names the hash
+    /// and expects the count the height implies.
+    public var tipSnapshot: (height: UInt32, hash: Data) { (height, tip.hash) }
     /// Lowest height this chain holds. Zero unless started from a checkpoint.
     public var startHeight: UInt32 { baseHeight }
 

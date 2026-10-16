@@ -4,7 +4,7 @@ import Foundation
 /// Regtest-style parameters: bits 0x207fffff gives a target near 2^255, so a
 /// valid header is "mined" in ~2 nonce tries. Used to exercise HeaderChain's
 /// real PoW checks without a node.
-public func makeTestParams(genesis: BlockHeader) -> NetworkParams {
+public func makeTestParams(genesis: BlockHeader, noRetargeting: Bool = false) -> NetworkParams {
     NetworkParams(
         network: .signet,
         magic: Data([0x0A, 0x03, 0xCF, 0x40]),
@@ -16,7 +16,7 @@ public func makeTestParams(genesis: BlockHeader) -> NetworkParams {
         genesisHash: genesis.hash,
         // 7fffff00…00 in display order, stored in internal (reversed) order.
         powLimit: Data(repeating: 0, count: 29) + Data([0xFF, 0xFF, 0x7F]),
-        dnsSeeds: []
+        dnsSeeds: [], noRetargeting: noRetargeting
     )
 }
 
@@ -50,7 +50,8 @@ public struct SyntheticChain {
 
 /// Builds a chain of single-transaction blocks; the block at `watchHeight`
 /// pays to `watchScript` (a P2TR-shaped output).
-public func makeSyntheticChain(length: Int = 6, watchHeight: UInt32 = 3) -> SyntheticChain {
+public func makeSyntheticChain(length: Int = 6, watchHeight: UInt32 = 3,
+                               noRetargeting: Bool = false) -> SyntheticChain {
     let watchScript = Data([0x51, 0x20] + repeatElement(0x42, count: 32))
 
     func coinbase(height: Int, includeWatch: Bool) -> Transaction {
@@ -74,19 +75,21 @@ public func makeSyntheticChain(length: Int = 6, watchHeight: UInt32 = 3) -> Synt
         blocks.append(Block(header: header, transactions: [tx]))
         previousHash = header.hash
     }
-    return SyntheticChain(params: makeTestParams(genesis: blocks[0].header),
+    return SyntheticChain(params: makeTestParams(genesis: blocks[0].header, noRetargeting: noRetargeting),
                           blocks: blocks,
                           watchScript: watchScript,
                           watchHeight: watchHeight)
 }
 
-/// A segwit transaction with one witness item, for relay tests.
-public func makeFakeSegwitTx() -> Transaction {
+/// A segwit transaction with one witness item, for relay tests. `value` is a
+/// parameter only so a test that needs two pending transactions can have two
+/// distinct txids; every caller that does not care keeps the original one.
+public func makeFakeSegwitTx(value: Int64 = 50_000) -> Transaction {
     var input = Transaction.Input(
         previousOutput: Transaction.Outpoint(txid: Data(repeating: 0x11, count: 32), vout: 0),
         scriptSig: Data(), sequence: 0xFFFF_FFFD)
     input.witness = [Data([0x30, 0x44, 0x02, 0x20]), Data(repeating: 0x02, count: 33)]
-    let output = Transaction.Output(value: 50_000,
+    let output = Transaction.Output(value: value,
                                     scriptPubKey: Data([0x51, 0x20] + repeatElement(0x77, count: 32)))
     return Transaction(version: 2, inputs: [input], outputs: [output], locktime: 0)
 }

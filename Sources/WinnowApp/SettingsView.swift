@@ -39,184 +39,15 @@ struct SettingsView: View {
     var body: some View {
         NavigationStack {
             Form {
-                // Signet is an Advanced-mode concern; see showsNetworkPicker
-                // for why a signet wallet always keeps the row.
-                if model.showsNetworkPicker {
-                    Section {
-                        Picker("Network", selection: Binding(
-                            get: { model.network },
-                            set: { newValue in Task { await model.switchNetwork(to: newValue) } }
-                        )) {
-                            Text("Mainnet").tag(BitcoinNetwork.mainnet)
-                            Text("Signet").tag(BitcoinNetwork.signet)
-                        }
-                        .disabled(model.e2e?.forcedNetwork != nil)
-                    } footer: {
-                        if model.e2e?.forcedNetwork != nil {
-                            Text("This debug session is locked to \(model.network == .mainnet ? "mainnet" : "public signet").")
-                        } else {
-                            Text("Each network has a separate wallet. Signet uses test coins with no value.")
-                        }
-                    }
-                }
-
-                BackupSection()
-
-                if model.advancedMode {
-                    PeerGatewaysSection()
-                    Section {
-                        if let shipped = CensusCatalog.bundled {
-                            Text("Observed \(shipped.date): \(AppModel.candidateCount(shipped, networks: model.activePeerGateways.networks)).").accessibilityIdentifier("peerCatalogNotice")
-                        } else { Text("This build carries no peer list. Winnow uses saved peers and, when clearnet is allowed, DNS seeds.") }
-                    } header: { Text("Mainnet peer list") } footer: {
-                        Text("Each release carries the census of its day, the list it starts from. Every selected peer still undergoes Winnow's normal checks.")
-                    }
-                }
-
-                if model.showsManualPeers {
-                Section {
-                    ForEach(model.manualPeers, id: \.self) { peer in
-                        Text(peer).font(.system(.footnote, design: .monospaced))
-                    }
-                    .onDelete { model.removeManualPeers(at: $0) }
-                    HStack {
-                        TextField("host:port", text: $newPeer)
-                            .font(.system(.footnote, design: .monospaced))
-                            .autocorrectionDisabled()
-                            .textInputAutocapitalization(.never)
-                        Button("Add") { addPeer() }
-                            .disabled(newPeer.trimmingCharacters(in: .whitespaces).isEmpty)
-                    }
-                    if let peerError {
-                        Text(peerError).foregroundStyle(.red).font(.footnote)
-                    }
-                    Button("Reconnect peers") {
-                        Task { await model.reconnect() }
-                    }
-                } header: {
-                    Text("Manual peers")
-                } footer: {
-                    Text("Manual peers are tried first when their network is enabled. Clearnet seeds resolve over HTTPS (Cloudflare 1.1.1.1), with system DNS as the fallback. Overlay names are resolved by their SOCKS gateway. The default port is 8333 (mainnet) / 38333 (signet). Peers must advertise compact filters and pass Winnow's checks.")
-                }
-                }
-
-                if model.showsExplorerSettings {
-                Section {
-                    Picker("Block explorer", selection: Binding(
-                        get: { model.explorerProvider },
-                        set: { model.setExplorerProvider($0) }
-                    )) {
-                        Text("blockstream.info").tag(AppModel.ExplorerProvider.blockstream)
-                        Text("mempool.space").tag(AppModel.ExplorerProvider.mempool)
-                        Text("Custom").tag(AppModel.ExplorerProvider.custom)
-                    }
-                    .pickerStyle(.menu)
-                    .accessibilityIdentifier("explorerProviderPicker")
-                    if model.explorerProvider == .custom {
-                        TextField("Esplora-compatible website URL", text: Binding(
-                            get: { model.esploraURLString },
-                            set: { model.setEsploraURL($0) }
-                        ))
-                        .font(.system(.footnote, design: .monospaced))
-                        .autocorrectionDisabled()
-                        .textInputAutocapitalization(.never)
-                        .accessibilityIdentifier("esploraURLField")
-                    }
-                    Text("Selected: \(model.esploraBaseURL.absoluteString)")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                    Button("What this trades away") { showReadSide = true }
-                } header: {
-                    Text("External block explorer")
-                } footer: {
-                    Text("Winnow does not use the explorer for balances, synchronization, fees or broadcasting. Every funding-address lookup asks for consent and explains the transaction-ID disclosure; you must explicitly select any result. External browser links have their own warning: the browser shares its IP address with the site. On signet, the blockstream.info preset uses mempool.space.")
-                }
-                }
-
-                if model.showsChainVerification {
-                Section {
-                    Toggle("Verify the chain from genesis", isOn: Binding(
-                        get: { model.verifyFromGenesis },
-                        set: { enabled in Task { await model.setVerifyFromGenesis(enabled) } }
-                    ))
-                    .accessibilityIdentifier("verifyFromGenesisToggle")
-                    if model.verifyFromGenesis {
-                        Text("Turning this off later keeps the chain you already verified.")
-                            .font(.caption)
-                            .foregroundStyle(.secondary)
-                    }
-                } header: {
-                    Text("Chain verification")
-                } footer: {
-                    Text("Winnow normally starts from a block header built into the app, then verifies every block after it. That header was produced by syncing this same code from block 0, and anyone can reproduce it — but on your phone it begins as a value you are taking from us rather than one you computed. Turn this on to skip it and re-derive the entire chain from block 0 instead. It downloads and proof-of-work-checks every header ever mined, which takes several minutes and discards the headers already stored.")
-                }
-                }
-
-                if model.advancedMode {
-                Section("Connected peers") {
-                    ForEach(connectedPeers) { peer in
-                        VStack(alignment: .leading, spacing: 2) {
-                            Text(peer.networkLabel)
-                                .font(.caption.weight(.semibold))
-                                .foregroundStyle(peer.network == .clearnet ? .orange : .green)
-                                .accessibilityIdentifier("peerNetwork")
-                            Text(peer.endpoint)
-                                .font(.system(.footnote, design: .monospaced))
-                                .accessibilityIdentifier("peerEndpoint")
-                            Text("\(peer.userAgent) · height \(peer.startHeight)"
-                                + (peer.feeFilter.map { " · floor \($0) sat/kvB" } ?? ""))
-                                .font(.caption2)
-                                .foregroundStyle(.secondary)
-                        }
-                    }
-                    if connectedPeers.isEmpty {
-                        Text("No peers connected.").font(.footnote).foregroundStyle(.secondary)
-                    }
-                    Button("Refresh") { Task { await refreshPeers() } }
-                        .accessibilityIdentifier("refreshPeersButton")
-                    Button(resettingPeers ? "Resetting…" : "Reset and shuffle peers") {
-                        confirmPeerReset = true
-                    }
-                    .accessibilityIdentifier("resetPeersButton")
-                    .disabled(resettingPeers)
-                    .confirmationDialog("Reset and shuffle peers?",
-                                        isPresented: $confirmPeerReset, titleVisibility: .visible) {
-                        Button("Reset and shuffle peers", role: .destructive) {
-                            Task {
-                                resettingPeers = true
-                                defer { resettingPeers = false }
-                                await model.resetPeers()
-                                await refreshPeers()
-                            }
-                        }
-                        .accessibilityIdentifier("confirmResetPeersButton")
-                        Button("Cancel", role: .cancel) {}
-                    } message: {
-                        Text("Disconnects all peers, forgets saved peers, and finds new ones from the downloaded peer list and, when clearnet is allowed, DNS seeds. Your manual peers and downloaded catalog are kept.")
-                    }
-                }
-                }
-
-                Section("About") {
-                    LabeledContent("Version", value: AppModel.appVersionText)
-                    if model.advancedMode {
-                        LabeledContent("Wallet ID", value: model.walletID ?? "—")
-                    }
-                    Button("Design papers") { showPapers = true }
-                }
-
-                if model.walletID != nil {
-                    Section {
-                        Button("Delete wallet from this device", role: .destructive) {
-                            showDestroyWallet = true
-                        }
-                        .accessibilityIdentifier("deleteWalletButton")
-                    } header: {
-                        Text("Danger zone")
-                    } footer: {
-                        Text("Removes this \(model.network.rawValue) wallet and its shared savings so you can create or import another. The key is deleted from this device; restore it from your iCloud backup or a backup file that includes the recovery phrase, or the money is gone. People you added stay on this phone, and block headers are kept, so the next wallet does not re-sync the chain.")
-                    }
-                }
+                networkPickerSection
+                backupSections
+                peerCatalogSection
+                manualPeersSection
+                explorerSection
+                chainVerificationSection
+                connectedPeersSection
+                aboutSection
+                deleteWalletSection
             }
             .navigationTitle("Settings")
             .task(id: model.advancedMode) {
@@ -245,6 +76,212 @@ struct SettingsView: View {
             }
             .sheet(isPresented: $showPapers) {
                 DesignPapersView()
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var networkPickerSection: some View {
+        // Signet is an Advanced-mode concern; see showsNetworkPicker
+        // for why a signet wallet always keeps the row.
+        if model.showsNetworkPicker {
+            Section {
+                Picker("Network", selection: Binding(
+                    get: { model.network },
+                    set: { newValue in Task { await model.switchNetwork(to: newValue) } }
+                )) {
+                    Text("Mainnet").tag(BitcoinNetwork.mainnet)
+                    Text("Signet").tag(BitcoinNetwork.signet)
+                }
+                .disabled(model.e2e?.forcedNetwork != nil)
+            } footer: {
+                if model.e2e?.forcedNetwork != nil {
+                    Text("This debug session is locked to \(model.network == .mainnet ? "mainnet" : "public signet").")
+                } else {
+                    Text("Each network has a separate wallet. Signet uses test coins with no value.")
+                }
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var backupSections: some View {
+        BackupSection()
+    }
+
+    @ViewBuilder
+    private var peerCatalogSection: some View {
+        if model.advancedMode {
+            PeerGatewaysSection()
+            Section {
+                if let shipped = CensusCatalog.bundled {
+                    Text("Observed \(shipped.date): \(AppModel.candidateCount(shipped, networks: model.activePeerGateways.networks)).").accessibilityIdentifier("peerCatalogNotice")
+                } else { Text("This build carries no peer list. Winnow uses saved peers and, when clearnet is allowed, DNS seeds.") }
+            } header: { Text("Mainnet peer list") } footer: {
+                Text("Each release carries the census of its day, the list it starts from. Every selected peer still undergoes Winnow's normal checks.")
+            }
+        }
+    }
+
+    @ViewBuilder
+    private var manualPeersSection: some View {
+        if model.showsManualPeers {
+        Section {
+            ForEach(model.manualPeers, id: \.self) { peer in
+                Text(peer).font(.system(.footnote, design: .monospaced))
+            }
+            .onDelete { model.removeManualPeers(at: $0) }
+            HStack {
+                TextField("host:port", text: $newPeer)
+                    .font(.system(.footnote, design: .monospaced))
+                    .autocorrectionDisabled()
+                    .textInputAutocapitalization(.never)
+                Button("Add") { addPeer() }
+                    .disabled(newPeer.trimmingCharacters(in: .whitespaces).isEmpty)
+            }
+            if let peerError {
+                Text(peerError).foregroundStyle(.red).font(.footnote)
+            }
+            Button("Reconnect peers") {
+                Task { await model.reconnect() }
+            }
+        } header: {
+            Text("Manual peers")
+        } footer: {
+            Text("Manual peers are tried first when their network is enabled. Clearnet seeds resolve over HTTPS (Cloudflare 1.1.1.1), with system DNS as the fallback. Overlay names are resolved by their SOCKS gateway. The default port is 8333 (mainnet) / 38333 (signet). Peers must advertise compact filters and pass Winnow's checks.")
+        }
+        }
+    }
+
+    @ViewBuilder
+    private var explorerSection: some View {
+        if model.showsExplorerSettings {
+        Section {
+            Picker("Block explorer", selection: Binding(
+                get: { model.explorerProvider },
+                set: { model.setExplorerProvider($0) }
+            )) {
+                Text("blockstream.info").tag(AppModel.ExplorerProvider.blockstream)
+                Text("mempool.space").tag(AppModel.ExplorerProvider.mempool)
+                Text("Custom").tag(AppModel.ExplorerProvider.custom)
+            }
+            .pickerStyle(.menu)
+            .accessibilityIdentifier("explorerProviderPicker")
+            if model.explorerProvider == .custom {
+                TextField("Esplora-compatible website URL", text: Binding(
+                    get: { model.esploraURLString },
+                    set: { model.setEsploraURL($0) }
+                ))
+                .font(.system(.footnote, design: .monospaced))
+                .autocorrectionDisabled()
+                .textInputAutocapitalization(.never)
+                .accessibilityIdentifier("esploraURLField")
+            }
+            Text("Selected: \(model.esploraBaseURL.absoluteString)")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            Button("What this trades away") { showReadSide = true }
+        } header: {
+            Text("External block explorer")
+        } footer: {
+            Text("Winnow does not use the explorer for balances, synchronization, fees or broadcasting. Every funding-address lookup asks for consent and explains the transaction-ID disclosure; you must explicitly select any result. External browser links have their own warning: the browser shares its IP address with the site. On signet, the blockstream.info preset uses mempool.space.")
+        }
+        }
+    }
+
+    @ViewBuilder
+    private var chainVerificationSection: some View {
+        if model.showsChainVerification {
+        Section {
+            Toggle("Verify the chain from genesis", isOn: Binding(
+                get: { model.verifyFromGenesis },
+                set: { enabled in Task { await model.setVerifyFromGenesis(enabled) } }
+            ))
+            .accessibilityIdentifier("verifyFromGenesisToggle")
+            if model.verifyFromGenesis {
+                Text("Turning this off later keeps the chain you already verified.")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+        } header: {
+            Text("Chain verification")
+        } footer: {
+            Text("Winnow normally starts from a block header built into the app, then verifies every block after it. That header was produced by syncing this same code from block 0, and anyone can reproduce it — but on your phone it begins as a value you are taking from us rather than one you computed. Turn this on to skip it and re-derive the entire chain from block 0 instead. It downloads and proof-of-work-checks every header ever mined, which takes several minutes and discards the headers already stored.")
+        }
+        }
+    }
+
+    @ViewBuilder
+    private var connectedPeersSection: some View {
+        if model.advancedMode {
+        Section("Connected peers") {
+            ForEach(connectedPeers) { peer in
+                VStack(alignment: .leading, spacing: 2) {
+                    Text(peer.networkLabel)
+                        .font(.caption.weight(.semibold))
+                        .foregroundStyle(peer.network == .clearnet ? .orange : .green)
+                        .accessibilityIdentifier("peerNetwork")
+                    Text(peer.endpoint)
+                        .font(.system(.footnote, design: .monospaced))
+                        .accessibilityIdentifier("peerEndpoint")
+                    Text("\(peer.userAgent) · height \(peer.startHeight)"
+                        + (peer.feeFilter.map { " · floor \($0) sat/kvB" } ?? ""))
+                        .font(.caption2)
+                        .foregroundStyle(.secondary)
+                }
+            }
+            if connectedPeers.isEmpty {
+                Text("No peers connected.").font(.footnote).foregroundStyle(.secondary)
+            }
+            Button("Refresh") { Task { await refreshPeers() } }
+                .accessibilityIdentifier("refreshPeersButton")
+            Button(resettingPeers ? "Resetting…" : "Reset and shuffle peers") {
+                confirmPeerReset = true
+            }
+            .accessibilityIdentifier("resetPeersButton")
+            .disabled(resettingPeers)
+            .confirmationDialog("Reset and shuffle peers?",
+                                isPresented: $confirmPeerReset, titleVisibility: .visible) {
+                Button("Reset and shuffle peers", role: .destructive) {
+                    Task {
+                        resettingPeers = true
+                        defer { resettingPeers = false }
+                        await model.resetPeers()
+                        await refreshPeers()
+                    }
+                }
+                .accessibilityIdentifier("confirmResetPeersButton")
+                Button("Cancel", role: .cancel) {}
+            } message: {
+                Text("Disconnects all peers, forgets saved peers, and finds new ones from the downloaded peer list and, when clearnet is allowed, DNS seeds. Your manual peers and downloaded catalog are kept.")
+            }
+        }
+        }
+    }
+
+    @ViewBuilder
+    private var aboutSection: some View {
+        Section("About") {
+            LabeledContent("Version", value: AppModel.appVersionText)
+            if model.advancedMode {
+                LabeledContent("Wallet ID", value: model.walletID ?? "—")
+            }
+            Button("Design papers") { showPapers = true }
+        }
+    }
+
+    @ViewBuilder
+    private var deleteWalletSection: some View {
+        if model.walletID != nil {
+            Section {
+                Button("Delete wallet from this device", role: .destructive) {
+                    showDestroyWallet = true
+                }
+                .accessibilityIdentifier("deleteWalletButton")
+            } header: {
+                Text("Danger zone")
+            } footer: {
+                Text("Removes this \(model.network.rawValue) wallet and its shared savings so you can create or import another. The key is deleted from this device; restore it from your iCloud backup or a backup file that includes the recovery phrase, or the money is gone. People you added stay on this phone, and block headers are kept, so the next wallet does not re-sync the chain.")
             }
         }
     }

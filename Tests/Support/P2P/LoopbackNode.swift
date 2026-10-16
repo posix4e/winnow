@@ -23,6 +23,7 @@ public actor LoopbackNode {
     /// that used to get an endpoint banned for the session (#82).
     public let withholdHeaders: Bool
     /// When set, the filter served for this height is bit-flipped (lying node).
+    public let oversizedFilterBytes: Int?
     public let corruptFilterAtHeight: Int?
     /// Serves filter *commitments* that disagree with the honest chain while
     /// keeping block headers honest — a peer lying about BIP157 filter
@@ -88,7 +89,7 @@ public actor LoopbackNode {
 
     public init(params: NetworkParams, services: UInt64 = PeerConnection.nodeCompactFilters,
          chain: [Block] = [], withholdHeaders: Bool = false,
-         corruptFilterAtHeight: Int? = nil,
+         corruptFilterAtHeight: Int? = nil, oversizedFilterBytes: Int? = nil,
          lieAboutFilterCommitments: Bool = false, lieSalt: UInt8 = 0xFF,
          cfcheckptStopHashOverride: Data? = nil, cfcheckptLieAtHeight: Int? = nil,
          cfcheckptCountDelta: Int = 0,
@@ -104,6 +105,7 @@ public actor LoopbackNode {
         self.services = services
         self.chain = chain
         self.withholdHeaders = withholdHeaders
+        self.oversizedFilterBytes = oversizedFilterBytes
         self.corruptFilterAtHeight = corruptFilterAtHeight
         self.lieAboutFilterCommitments = lieAboutFilterCommitments
         self.lieSalt = lieSalt
@@ -358,85 +360,108 @@ public actor LoopbackNode {
             if answersPings { try await send(.pong(nonce)) }
 
         case let .getheaders(request):
-            if withholdHeaders { return } // reachable, but never answers
-            if emptyHeaders { try await send(.headers([])); return }
-            // First matching locator wins; no match → from height 1.
-            var start = 1
-            for hash in request.locatorHashes {
-                if let height = height(ofHash: hash) {
-                    start = height + 1
-                    break
-                }
-            }
-            let end = min(start + HeaderChain.maxHeadersPerRequest, chain.count)
-            let batch = start < end ? Array(chain[start ..< end].map(\.header)) : []
-            try await send(.headers(batch))
+            try await respondHeaders(request)
 
         case let .getcfcheckpt(request):
-            guard let stop = height(ofHash: request.stopHash) else {
-                if disconnectOnUnknownStopHash { connection?.cancel() }
-                return
-            }
-            // Core's ProcessGetCFCheckPt: headers at heights 1000, 2000, …
-            // ascending, capped at the stop height — the stop block itself is
-            // included only when it is a checkpoint multiple.
-            var headers: [Data] = []
-            var height = Int(FilterSync.checkpointInterval)
-            while height <= stop, height < filterHeaders.count {
-                var header = filterHeaders[height]
-                if height == cfcheckptLieAtHeight { header[header.startIndex] ^= 0xFF }
-                headers.append(header)
-                height += Int(FilterSync.checkpointInterval)
-            }
-            if cfcheckptCountDelta < 0 {
-                headers = Array(headers.dropLast(min(headers.count, -cfcheckptCountDelta)))
-            } else if cfcheckptCountDelta > 0 {
-                headers += Array(repeating: Data(repeating: 0, count: 32), count: cfcheckptCountDelta)
-            }
-            try await send(.cfcheckpt(CFCheckptMessage(
-                stopHash: cfcheckptStopHashOverride ?? request.stopHash, filterHeaders: headers)))
+            try await respondCheckpoints(request)
 
         case let .getcfheaders(request):
-            guard let stop = height(ofHash: request.stopHash) else { return }
-            let start = Int(request.startHeight)
-            guard start <= stop else { return }
-            let previous = start == 0 ? Data(repeating: 0, count: 32) : filterHeaders[start - 1]
-            try await send(.cfheaders(CFHeadersMessage(stopHash: request.stopHash,
-                                                       previousFilterHeader: previous,
-                                                       filterHashes: Array(filterHashes[start ... stop]))))
+            try await respondFilterHeaders(request)
 
         case let .getcfilters(request):
-            guard let stop = height(ofHash: request.stopHash) else { return }
-            let start = Int(request.startHeight)
-            guard start <= stop else { return }
-            for height in start ... stop {
-                var filter = filters[height]
-                if height == corruptFilterAtHeight, !filter.isEmpty {
-                    filter[filter.count - 1] ^= 0xFF // serve a lying filter
-                }
-                try await send(.cfilter(CFilterMessage(blockHash: chain[height].hash,
-                                                       filter: filter)))
-            }
+            try await respondFilters(request)
 
         case let .getdata(payload):
-            var notFound: [InventoryVector] = []
-            for vector in payload.vectors {
-                if vector.type.baseType == .block, let height = height(ofHash: vector.hash) {
-                    try await send(.block(chain[height]))
-                } else if vector.type.baseType == .tx {
-                    if let transaction = transactions[vector.hash] {
-                        try await send(.tx(transaction))
-                    } else {
-                        notFound.append(vector)
-                    }
-                }
-            }
-            if !notFound.isEmpty {
-                try await send(.notfound(InventoryPayload(notFound)))
-            }
+            try await respondData(payload)
 
         default:
             break
+        }
+    }
+
+    private func respondHeaders(_ request: GetHeadersMessage) async throws {
+        if withholdHeaders { return } // reachable, but never answers
+        if emptyHeaders { try await send(.headers([])); return }
+        // First matching locator wins; no match → from height 1.
+        var start = 1
+        for hash in request.locatorHashes {
+            if let height = height(ofHash: hash) {
+                start = height + 1
+                break
+            }
+        }
+        let end = min(start + HeaderChain.maxHeadersPerRequest, chain.count)
+        let batch = start < end ? Array(chain[start ..< end].map(\.header)) : []
+        try await send(.headers(batch))
+    }
+
+    private func respondCheckpoints(_ request: GetCFCheckptRequest) async throws {
+        guard let stop = height(ofHash: request.stopHash) else {
+            if disconnectOnUnknownStopHash { connection?.cancel() }
+            return
+        }
+        // Core's ProcessGetCFCheckPt: headers at heights 1000, 2000, …
+        // ascending, capped at the stop height — the stop block itself is
+        // included only when it is a checkpoint multiple.
+        var headers: [Data] = []
+        var height = Int(FilterSync.checkpointInterval)
+        while height <= stop, height < filterHeaders.count {
+            var header = filterHeaders[height]
+            if height == cfcheckptLieAtHeight { header[header.startIndex] ^= 0xFF }
+            headers.append(header)
+            height += Int(FilterSync.checkpointInterval)
+        }
+        if cfcheckptCountDelta < 0 {
+            headers = Array(headers.dropLast(min(headers.count, -cfcheckptCountDelta)))
+        } else if cfcheckptCountDelta > 0 {
+            headers += Array(repeating: Data(repeating: 0, count: 32), count: cfcheckptCountDelta)
+        }
+        try await send(.cfcheckpt(CFCheckptMessage(
+            stopHash: cfcheckptStopHashOverride ?? request.stopHash, filterHeaders: headers)))
+    }
+
+    private func respondFilterHeaders(_ request: GetCFiltersRequest) async throws {
+        guard let stop = height(ofHash: request.stopHash) else { return }
+        let start = Int(request.startHeight)
+        guard start <= stop else { return }
+        let previous = start == 0 ? Data(repeating: 0, count: 32) : filterHeaders[start - 1]
+        try await send(.cfheaders(CFHeadersMessage(stopHash: request.stopHash,
+                                                   previousFilterHeader: previous,
+                                                   filterHashes: Array(filterHashes[start ... stop]))))
+    }
+
+    private func respondFilters(_ request: GetCFiltersRequest) async throws {
+        guard let stop = height(ofHash: request.stopHash) else { return }
+        let start = Int(request.startHeight)
+        guard start <= stop else { return }
+        for height in start ... stop {
+            var filter = filters[height]
+            if let oversizedFilterBytes, filter.count < oversizedFilterBytes {
+                filter.append(Data(repeating: 0, count: oversizedFilterBytes - filter.count))
+            }
+            if height == corruptFilterAtHeight, !filter.isEmpty {
+                filter[filter.count - 1] ^= 0xFF // serve a lying filter
+            }
+            try await send(.cfilter(CFilterMessage(blockHash: chain[height].hash,
+                                                   filter: filter)))
+        }
+    }
+
+    private func respondData(_ payload: InventoryPayload) async throws {
+        var notFound: [InventoryVector] = []
+        for vector in payload.vectors {
+            if vector.type.baseType == .block, let height = height(ofHash: vector.hash) {
+                try await send(.block(chain[height]))
+            } else if vector.type.baseType == .tx {
+                if let transaction = transactions[vector.hash] {
+                    try await send(.tx(transaction))
+                } else {
+                    notFound.append(vector)
+                }
+            }
+        }
+        if !notFound.isEmpty {
+            try await send(.notfound(InventoryPayload(notFound)))
         }
     }
 }

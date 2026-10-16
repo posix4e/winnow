@@ -28,3 +28,11 @@ source classes, address ranges, persistence, and DNS replies.
 [Pool tests](../../../../Tests/WalletCoreTests/Network/PeerPoolTests.swift) exercise
 connection behavior. Diversity rules reduce concentration; they do not prove
 that apparently different public peers have independent operators.
+
+An embedding application may opt into `TxBroadcaster.enterRelayOnly(seats:)`
+after cancelling and awaiting its scans. It keeps existing connections for
+already authorized transactions, dials no replacements and refuses new chain
+reads. The broadcaster ends the session when pending relay drains or its seats
+are lost; `PeerPool.start()` returns to full service. A transport handoff is
+recorded separately from acceptance, propagation and confirmation. Winnow's app
+continues to use its existing networking lifecycle.

@@ -5,6 +5,8 @@ public enum KeyStoreError: LocalizedError, Equatable {
     case notFound(walletID: String)
     case alreadyExists(walletID: String)
     case malformedSecret
+    /// A recognizable account-secret format that this version cannot read.
+    case unsupportedSecretVersion(String)
     case keychain(OSStatus)
 
     public var errorDescription: String? {
@@ -15,6 +17,8 @@ public enum KeyStoreError: LocalizedError, Equatable {
             "This device already contains a protected key for wallet \(walletID)."
         case .malformedSecret:
             "The protected wallet key is damaged or has an unsupported format."
+        case .unsupportedSecretVersion:
+            "This wallet key uses an unsupported format version. Keep the key and open it with compatible wallet software."
         case .keychain(errSecUserCanceled):
             "Unlocking the wallet key was cancelled."
         case .keychain(errSecAuthFailed):
@@ -27,31 +31,64 @@ public enum KeyStoreError: LocalizedError, Equatable {
     }
 }
 
-/// The root secret of a wallet, as held by a `KeyStore`.
+/// The signing secret of a wallet, as held by a `KeyStore`.
 public enum WalletSecret: Equatable, Sendable {
     /// BIP39 mnemonic sentence (single spaces, checksummed).
     case mnemonic(String)
     /// BIP32 master extended private key, Base58Check (xprv/tprv).
     case masterKey(String)
+    /// An account extended private key at the descriptor's origin, with the
+    /// master fingerprint supplied separately by the caller. A BIP32 child key
+    /// records its parent's fingerprint, which is not the master fingerprint.
+    case accountKey(xprv: String, masterFingerprint: UInt32)
 
-    /// Tagged text encoding: a header line (`mnemonic` / `xprv`) + payload line.
+    private static let accountPrefix = "account/"
+    private static let accountHeader = "account/1"
+
+    /// Tagged text: the legacy `mnemonic` / `xprv` header and payload, or
+    /// `account/1`, an eight-digit lowercase master fingerprint, and an xprv.
     /// Versionable and inspectable; the bytes are what lands in the keychain.
     public var serialized: Data {
         switch self {
         case let .mnemonic(words): Data("mnemonic\n\(words)".utf8)
         case let .masterKey(xprv): Data("xprv\n\(xprv)".utf8)
+        case let .accountKey(xprv, fingerprint):
+            Data("\(Self.accountHeader)\n\(String(format: "%08x", fingerprint))\n\(xprv)".utf8)
         }
     }
 
     public init(serialized: Data) throws {
         let text = String(decoding: serialized, as: UTF8.self)
         let lines = text.split(separator: "\n", omittingEmptySubsequences: false)
-        guard lines.count == 2 else { throw KeyStoreError.malformedSecret }
-        switch lines[0] {
-        case "mnemonic": self = .mnemonic(String(lines[1]))
-        case "xprv": self = .masterKey(String(lines[1]))
+        guard let first = lines.first else { throw KeyStoreError.malformedSecret }
+        switch first {
+        case "mnemonic" where lines.count == 2: self = .mnemonic(String(lines[1]))
+        case "xprv" where lines.count == 2: self = .masterKey(String(lines[1]))
+        case Substring(Self.accountHeader):
+            self = try Self.decodeAccount(lines)
+        case let header where header.hasPrefix(Self.accountPrefix):
+            // Only a bounded numeric version label can leave this parser.
+            // A malformed header may contain the payload; never echo it.
+            let version = header.dropFirst(Self.accountPrefix.count)
+                .prefix { $0 >= "0" && $0 <= "9" }.prefix(8)
+            // `account/1` is this build's own format, so a header that starts
+            // like it and is not exactly it is damage, not a newer version to
+            // send someone to other software for. A header naming another
+            // version is reported by its bounded label alone.
+            guard !version.isEmpty, Self.accountPrefix + version != Self.accountHeader else {
+                throw KeyStoreError.malformedSecret
+            }
+            throw KeyStoreError.unsupportedSecretVersion(Self.accountPrefix + version)
         default: throw KeyStoreError.malformedSecret
         }
+    }
+
+    private static func decodeAccount(_ lines: [Substring]) throws -> WalletSecret {
+        guard lines.count == 3, lines[1].utf8.count == 8,
+              lines[1].utf8.allSatisfy({ (48...57).contains($0) || (97...102).contains($0) }),
+              let fingerprint = UInt32(lines[1], radix: 16)
+        else { throw KeyStoreError.malformedSecret }
+        return .accountKey(xprv: String(lines[2]), masterFingerprint: fingerprint)
     }
 }
 

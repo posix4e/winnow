@@ -524,7 +524,11 @@ private struct FeeBumpView: View {
         do {
             let rate = try await model.pendingFeeRate(txid: txid)
             currentRate = rate
-            let suggestedRate = ceil(rate + 1)
+            // One sat/vB above the current rate, and never below the floor
+            // peers report: a bump under the floor is refused at review, so
+            // the suggestion starts where a review can pass.
+            let floor = model.status.feeFloorSatPerVByte.map { ceil($0) } ?? 0
+            let suggestedRate = max(ceil(rate + 1), floor)
             targetRateText = String(format: "%.0f", suggestedRate)
             let requested = reviewInputs
             guard let targetRate = requested.targetRate else { return }

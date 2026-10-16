@@ -85,8 +85,10 @@ is cleaned up by the workflow.
 Before upload, the job checks the archive and exported IPA for the intended
 identity, version, iCloud configuration and exclusion of E2E controls. It records
 resolved dependencies and supply-chain metadata. After upload it waits for
-processing, sets notes, assigns the internal group and requests external beta
-distribution. External **WAITING_FOR_REVIEW** or **IN_REVIEW** means Apple review
+processing, sets notes and assigns the internal group. External beta
+distribution is requested only when the tagged commit is on `main`; a tag on a
+branch publishes an internal-only build, because a review request cannot be
+withdrawn. External **WAITING_FOR_REVIEW** or **IN_REVIEW** means Apple review
 is pending; workflow success does not mean external testers can install yet.
 The final job publishes a GitHub release with SPDX and provenance artifacts.
 

@@ -383,6 +383,446 @@ struct PeerPoolTests {
         await pool.stop()
     }
 
+    // MARK: - Relay-only sessions
+
+    // Keeping a payment moving while nothing is being read.
+    //
+    // `stop()` is all or nothing: it disconnects every peer, and `TxBroadcaster`
+    // announces over exactly those connections, so a wallet that stops its pool
+    // with a transaction still pending stops relaying it. `enterRelayOnly` is
+    // the state in between — a seat or two held for announcements, nothing
+    // dialled, nothing read.
+
+    @Test("a relay-only session keeps only the seats it was given and dials nothing")
+    func relayOnlyKeepsSeats() async throws {
+        var nodes: [LoopbackNode] = []
+        var endpoints: [PeerEndpoint] = []
+        for _ in 0 ..< 3 {
+            let node = LoopbackNode(params: params)
+            try await node.start()
+            nodes.append(node)
+            endpoints.append(await node.endpoint)
+        }
+        defer { for node in nodes { Task { await node.stop() } } }
+
+        let pool = PeerPool(params: params, peerCount: 3, manualPeers: endpoints,
+                            dialTimeout: .milliseconds(500))
+        await pool.start()
+        #expect(await pool.connectedPeers().count == 3)
+
+        await pool.enterRelayOnly(seats: 1)
+        #expect(await pool.mode == .relayOnly)
+        #expect(await pool.isRunning, "a narrowed pool is still running")
+        let kept = await pool.connectedPeers()
+        #expect(kept.count == 1)
+        #expect(await kept.first?.isConnected == true, "the seat that stays must stay connected")
+        let status = await pool.connectionStatus
+        #expect(status.connected == 1)
+        #expect(status.target == 1, "the target is what the session holds, not the sync pool's")
+
+        // Nothing dials it back up: not the retry the UI offers after
+        // exhaustion, and not the monitor, which the session cancelled. Two
+        // candidates are sitting there unconnected, so a pool that was willing
+        // to dial would take them.
+        //
+        // The attempt counter is the assertion that says *dialled*, not merely
+        // *seated*: a pool that dials and then refuses the arrival still spent
+        // the connection, still told two more nodes where this wallet is, and
+        // would still have resolved DNS seeds to find them.
+        await pool.retry()
+        try await Task.sleep(for: .milliseconds(200))
+        #expect(await pool.connectedPeers().count == 1)
+        #expect(await pool.connectionStatus.attempts == 0, "a relay-only session dials nothing")
+        #expect(await pool.connectionStatus.dialing == false)
+        await pool.stop()
+    }
+
+    /// A session that never heals still has to be honest about what it holds.
+    ///
+    /// `enterRelayOnly` cancels the replacement monitor, and that monitor is
+    /// the only thing in the pool that drops a seat nobody reported. So a
+    /// remote that simply goes away — the ordinary end of a mobile connection
+    /// — left its seat in `peers` for as long as the session lasted:
+    /// `connectedPeers()` went on reporting it, every announcement over it
+    /// failed silently, and the session had nothing left that could end it.
+    /// The prune pass runs in the cancelled monitor's place and does the one
+    /// half of its job a relay-only session can have. It drops what has gone,
+    /// and it dials nothing: the seat is not replaced, which is the mode, but
+    /// it is not claimed either.
+    @Test("a relay-only session drops a seat that is gone and dials no replacement")
+    func relayOnlyPrunesADeadSeat() async throws {
+        var nodes: [LoopbackNode] = []
+        var endpoints: [PeerEndpoint] = []
+        var byEndpoint: [PeerEndpoint: LoopbackNode] = [:]
+        for _ in 0 ..< 2 {
+            let node = LoopbackNode(params: params)
+            try await node.start()
+            nodes.append(node)
+            endpoints.append(await node.endpoint)
+            byEndpoint[await node.endpoint] = node
+        }
+        defer { for node in nodes { Task { await node.stop() } } }
+
+        // The pass runs on the replacement monitor's cadence, thirty seconds.
+        // This asks for the same pass sooner rather than sleeping through it.
+        let pool = PeerPool(params: params, peerCount: 2, manualPeers: endpoints,
+                            dialTimeout: .milliseconds(500), monitorInterval: .milliseconds(50))
+        await pool.start()
+        #expect(await pool.connectedPeers().count == 2)
+
+        await pool.enterRelayOnly(seats: 1)
+        let seat = try #require(await pool.connectedPeers().first)
+        let kept = try #require(byEndpoint[await seat.endpoint])
+
+        // The remote goes away without anyone telling the pool.
+        await kept.stop()
+        #expect(await pollUntil(.seconds(10)) { await pool.connectedPeers().isEmpty },
+                "a seat whose connection is gone must not go on being reported as held")
+        #expect(await pool.mode == .relayOnly)
+        #expect(await pool.isRunning, "pruning is not stopping: what the pool is for is the owner's call")
+        #expect(await pool.connectionStatus.attempts == 0,
+                "the seat is dropped, never replaced — replacing it means dialling")
+        await pool.stop()
+    }
+
+    @Test("a dial already racing when the pool narrows is not seated")
+    func relayOnlyRefusesInFlightDials() async throws {
+        // One node answers at once and two answer late, so the pool is still
+        // mid-round — dials in flight, seats unfilled — when it narrows.
+        let fast = LoopbackNode(params: params)
+        let slowA = LoopbackNode(params: params, versionDelay: .milliseconds(400))
+        let slowB = LoopbackNode(params: params, versionDelay: .milliseconds(400))
+        let nodes = [fast, slowA, slowB]
+        for node in nodes { try await node.start() }
+        defer { for node in nodes { Task { await node.stop() } } }
+        var endpoints: [PeerEndpoint] = []
+        for node in nodes { endpoints.append(await node.endpoint) }
+
+        let pool = PeerPool(params: params, peerCount: 3, manualPeers: endpoints,
+                            dialTimeout: .seconds(2))
+        let dialing = Task { await pool.start() }
+        #expect(await pollUntil(.seconds(5)) { await pool.connectedPeers().count == 1 },
+                "the fast node must be seated while the slow ones are still handshaking")
+
+        await pool.enterRelayOnly(seats: 1)
+        await dialing.value
+
+        // The late arrivals are refused and hung up on rather than seated: a
+        // session that asked for one seat must not end up holding three
+        // because the dials that were racing happened to land.
+        #expect(await pool.connectedPeers().count == 1)
+        #expect(await pool.mode == .relayOnly)
+        let status = await pool.connectionStatus
+        #expect(status.attempts == 0, "no dial was launched after the pool narrowed")
+        #expect(!status.exhausted, "a round cut short by narrowing is not a peerless pool")
+        await pool.stop()
+    }
+
+    @Test("start() leaves a relay-only session and fills the pool again")
+    func relayOnlyResumes() async throws {
+        var nodes: [LoopbackNode] = []
+        var endpoints: [PeerEndpoint] = []
+        for _ in 0 ..< 3 {
+            let node = LoopbackNode(params: params)
+            try await node.start()
+            nodes.append(node)
+            endpoints.append(await node.endpoint)
+        }
+        defer { for node in nodes { Task { await node.stop() } } }
+
+        let pool = PeerPool(params: params, peerCount: 3, manualPeers: endpoints,
+                            dialTimeout: .milliseconds(500))
+        await pool.start()
+        await pool.enterRelayOnly(seats: 1)
+        #expect(await pool.connectedPeers().count == 1)
+
+        // The app's foreground path is a plain `start()`, and a narrowed pool
+        // is already started — so this is the call that has to notice.
+        await pool.start()
+        #expect(await pool.mode == .full)
+        #expect(await pool.connectedPeers().count == 3)
+        #expect(await pool.connectionStatus.target == 3)
+        await pool.stop()
+    }
+
+    @Test("stop() during a relay-only session still disconnects everything")
+    func relayOnlyStopIsStillFull() async throws {
+        let nodeA = LoopbackNode(params: params)
+        let nodeB = LoopbackNode(params: params)
+        try await nodeA.start()
+        try await nodeB.start()
+        defer {
+            Task { await nodeA.stop() }
+            Task { await nodeB.stop() }
+        }
+
+        let pool = PeerPool(params: params, peerCount: 2,
+                            manualPeers: [await nodeA.endpoint, await nodeB.endpoint],
+                            dialTimeout: .milliseconds(500))
+        await pool.start()
+        await pool.enterRelayOnly(seats: 1)
+        let seat = try #require(await pool.connectedPeers().first)
+
+        // The mode is a narrower pool, never a pool that refuses to be shut
+        // down: upstream's teardown must mean exactly what it meant before.
+        await pool.stop()
+        #expect(await pool.connectedPeers().isEmpty)
+        #expect(await seat.isConnected == false)
+        #expect(await pool.isRunning == false)
+        #expect(await pool.mode == .full, "a stopped pool is not in a session")
+    }
+
+    @Test("a relay-only pool refuses header sync and asks its peer nothing")
+    func relayOnlyRefusesHeaderSync() async throws {
+        let best = makeSyntheticChain(length: 8, watchHeight: 3)
+        let node = LoopbackNode(params: best.params, chain: best.blocks)
+        try await node.start()
+        defer { Task { await node.stop() } }
+
+        let pool = PeerPool(params: best.params, peerCount: 1,
+                            manualPeers: [await node.endpoint],
+                            dialTimeout: .seconds(1))
+        await pool.start()
+        await pool.enterRelayOnly(seats: 1)
+
+        let chain = try HeaderChain(params: best.params)
+        var caught: PeerPoolHeaderSyncError?
+        do {
+            try await pool.syncHeaders(chain, timeoutPerPeer: .seconds(1), maxAttempts: 1)
+        } catch let error as PeerPoolHeaderSyncError {
+            caught = error
+        }
+        #expect(caught == .relayOnly)
+        // Refused before the wire, not after: the seat is being held for a
+        // payment, and a header sync over it can burn it on a peer fault.
+        #expect(await node.nextMessage(command: "getheaders", timeout: .milliseconds(300)) == nil)
+        #expect(await chain.height == 0)
+        #expect(await pool.connectedPeers().count == 1, "refusing must not cost the seat")
+        await pool.stop()
+    }
+
+    /// The seat split is committed before the first disconnect is awaited, so
+    /// a removal that interleaves cannot leave the session holding a
+    /// connection the narrowing itself tore down.
+    ///
+    /// `await peer.disconnect()` suspends the pool, and the removals that
+    /// arrive there are the ordinary ones: a scan still unwinding reports a
+    /// timeout through `transportFailure`, which is exactly what is in flight
+    /// when an app narrows the pool on going idle. Taking the prefix after
+    /// that await reads a shifted array, and the seat kept is a peer already
+    /// disconnected — after which `announce` throws on every send, the monitor
+    /// that would prune the dead seat is cancelled by the mode, and nothing
+    /// drains the pending set, so the payment silently stops going out over a
+    /// pool that is never stopped.
+    ///
+    /// The invariant is the assertion, not the interleaving: whatever the two
+    /// jobs do to each other, a seat the pool reports must be a live
+    /// connection. The loop is what makes the window reachable — `mode` is set
+    /// on the actor before the first suspension, so waiting for it puts the
+    /// failure inside the teardown rather than before or after it — and it
+    /// runs enough rounds to hit a window the unfixed code loses roughly one
+    /// round in five.
+    @Test("a peer dropped while the pool narrows never leaves a disconnected seat")
+    func relayOnlyCommitsTheSplitBeforeDisconnecting() async throws {
+        var nodes: [LoopbackNode] = []
+        var endpoints: [PeerEndpoint] = []
+        for _ in 0 ..< 3 {
+            let node = LoopbackNode(params: params)
+            try await node.start()
+            nodes.append(node)
+            endpoints.append(await node.endpoint)
+        }
+        defer { for node in nodes { Task { await node.stop() } } }
+
+        // A fresh pool per round: `transportFailure` cools the endpoint off,
+        // and that cooldown is per pool, so reusing one would starve the
+        // later rounds of the three seats this needs.
+        for round in 0 ..< 25 {
+            let pool = PeerPool(params: params, peerCount: 3, manualPeers: endpoints,
+                                dialTimeout: .milliseconds(500))
+            await pool.start()
+            let seated = await pool.connectedPeers()
+            try #require(seated.count == 3, "round \(round) needs three seats to narrow")
+            let doomed = try #require(seated.first)
+
+            let narrowing = Task { await pool.enterRelayOnly(seats: 1) }
+            // The mode is set before `enterRelayOnly` awaits anything, so this
+            // returns only once the narrowing is inside its disconnects.
+            while await pool.mode != .relayOnly { await Task.yield() }
+            await pool.transportFailure(doomed, reason: "test: a scan unwinding while the pool narrows")
+            _ = await narrowing.value
+
+            for peer in await pool.connectedPeers() {
+                #expect(await peer.isConnected,
+                        "round \(round): a relay-only seat must be a live connection")
+            }
+            await pool.stop()
+        }
+    }
+
+    /// The count `enterRelayOnly` returns is what the session holds once the
+    /// narrowing is done, not what the split set out to keep.
+    ///
+    /// Committing the split before the first `await peer.disconnect()` closes
+    /// one side of that suspension; this is the other. The removals that land
+    /// there are the same ones: a scan still unwinding reports the kept seat
+    /// through `transportFailure`, which takes it out of `peers` while the
+    /// loop is still tearing down the rest. A count taken before the loop
+    /// reported that seat as held, and `TxBroadcaster.enterRelayOnly` opens a
+    /// session on any count above zero: relay-only mode, so nothing dials and
+    /// no monitor runs, over no connection at all, with the pending payment
+    /// never announced again and nothing left to drain the pending set.
+    ///
+    /// The return and the seat count are read as one job on the pool, so
+    /// nothing can land between them: whatever the interleaving, what
+    /// `enterRelayOnly` reports must be what the pool is seated on when it
+    /// returns. The failure is queued from inside that job, so it runs at the
+    /// narrowing's first suspension, and the pool drops four peers so the loop
+    /// suspends four times; the removal lands inside the loop on nearly every
+    /// round, and the run checks that it did at least once, so a fixture
+    /// change cannot leave this passing while testing nothing.
+    @Test("a seat lost while the pool narrows is not reported as held")
+    func relayOnlyCountsTheSeatsItStillHolds() async throws {
+        var nodes: [LoopbackNode] = []
+        var endpoints: [PeerEndpoint] = []
+        for _ in 0 ..< 5 {
+            let node = LoopbackNode(params: params)
+            try await node.start()
+            nodes.append(node)
+            endpoints.append(await node.endpoint)
+        }
+        defer { for node in nodes { Task { await node.stop() } } }
+
+        // A fresh pool per round, as above: the failure cools its endpoint
+        // off per pool, and a reused one would run short of seats.
+        var lostInsideTheLoop = 0
+        for round in 0 ..< 20 {
+            let pool = PeerPool(params: params, peerCount: 5, manualPeers: endpoints,
+                                dialTimeout: .milliseconds(500))
+            await pool.start()
+            let seated = await pool.connectedPeers()
+            try #require(seated.count == 5, "round \(round) needs five seats to narrow")
+            // The split keeps a prefix, so the first seat is the one held.
+            let kept = try #require(seated.first)
+
+            let (reported, live) = await narrowWhileTheKeptSeatFails(pool, kept: kept)
+            #expect(reported == live,
+                    "round \(round): reported \(reported) seat(s) while holding \(live)")
+            if live == 0 { lostInsideTheLoop += 1 }
+            await pool.stop()
+        }
+        #expect(lostInsideTheLoop > 0,
+                "the removal never landed inside the narrowing, so nothing was tested")
+    }
+
+    /// One job on the pool. The failure is queued behind this job and so
+    /// runs at the narrowing's first suspension, and the count is read in
+    /// the same job as the return, with no suspension between the two.
+    private func narrowWhileTheKeptSeatFails(_ pool: isolated PeerPool,
+                                             kept: PeerConnection) async -> (reported: Int, live: Int) {
+        let failing = Task {
+            await pool.transportFailure(kept, reason: "test: the kept seat fails while the pool narrows")
+        }
+        let reported = await pool.enterRelayOnly(seats: 1)
+        let live = pool.connectedPeers().count
+        await failing.value
+        return (reported, live)
+    }
+
+    /// `stop()` clears the run's rejections before it awaits the disconnects,
+    /// and a data fault from a scan still unwinding can land in those awaits.
+    /// The next `start()` is a new run and owes that fault nothing: the peer
+    /// is dialled again.
+    @Test("a rejection that lands after stop() does not bar the peer from the next run")
+    func lateRejectionDoesNotOutliveStop() async throws {
+        let params = NetworkParams.signet
+        let node = LoopbackNode(params: params)
+        try await node.start()
+        defer { Task { await node.stop() } }
+        let pool = PeerPool(params: params, peerCount: 1, manualPeers: [await node.endpoint],
+                            dialTimeout: .milliseconds(500))
+        await pool.start()
+        let seat = try #require(await pool.connectedPeers().first)
+        await pool.stop()
+        // The fault's verdict arrives after the stop already cleared the run.
+        await pool.misbehaving(seat, reason: "late data fault")
+        #expect(await pool.rejectionReasons[await seat.endpoint] == "late data fault")
+        await pool.start()
+        #expect(await pollUntil(.seconds(10)) { await pool.connectedPeers().count == 1 },
+                "a new run dials the peer the old run's late fault named")
+        await pool.stop()
+    }
+
+    /// `stopIfRelayOnly` is the whole re-read, done as one job on the pool.
+    ///
+    /// `TxBroadcaster` ends a session from a detached task and has to ask
+    /// whether the caller took the pool back first. Asking and acting as two
+    /// jobs is not asking at all: a `start()` between them runs first and the
+    /// queued `stop()` then undoes it. Both answers are pinned here, on a pool
+    /// with no broadcaster in sight.
+    @Test("stopIfRelayOnly stops a narrowed pool and leaves a resumed one alone")
+    func stopIfRelayOnlyRespectsAResumedPool() async throws {
+        let node = LoopbackNode(params: params)
+        try await node.start()
+        defer { Task { await node.stop() } }
+        let pool = PeerPool(params: params, peerCount: 1, manualPeers: [await node.endpoint],
+                            dialTimeout: .milliseconds(500))
+
+        // Full service: not this session's pool to stop.
+        await pool.start()
+        await pool.stopIfRelayOnly()
+        #expect(await pool.isRunning, "a full-service pool belongs to its caller")
+        #expect(await pool.connectedPeers().count == 1)
+
+        // Narrowed: exactly what it is for.
+        await pool.enterRelayOnly(seats: 1)
+        await pool.stopIfRelayOnly()
+        #expect(await pool.isRunning == false)
+        #expect(await pool.connectedPeers().isEmpty)
+
+        // Narrowed and then resumed, which is the race this exists to close:
+        // the pool is in full service again, so the session's stop expires.
+        await pool.start()
+        await pool.enterRelayOnly(seats: 1)
+        await pool.start()
+        await pool.stopIfRelayOnly()
+        #expect(await pool.isRunning, "a resumed pool is not stopped by an expired session")
+        #expect(await pool.connectedPeers().count == 1)
+        await pool.stop()
+    }
+
+    /// A pool with nothing to keep keeps nothing, and says so. The count is
+    /// what tells a caller "relaying over a seat" from "nothing will ever go
+    /// out": a zero-seat session announces to nobody, and cannot dial one,
+    /// because dialling is what the mode refuses.
+    @Test("narrowing a stopped or empty pool reports no seats")
+    func relayOnlyReportsSeatsItCouldNotKeep() async throws {
+        let node = LoopbackNode(params: params)
+        try await node.start()
+        defer { Task { await node.stop() } }
+
+        // Never started.
+        let stopped = PeerPool(params: params, peerCount: 1, manualPeers: [await node.endpoint],
+                               dialTimeout: .milliseconds(500))
+        #expect(await stopped.enterRelayOnly(seats: 1) == 0)
+        #expect(await stopped.isRunning == false)
+
+        // Started, but with nothing to dial, so there is no seat to hold.
+        let empty = PeerPool(params: params, peerCount: 1, manualPeers: [],
+                             dialTimeout: .milliseconds(500))
+        await empty.start()
+        #expect(await empty.connectedPeers().isEmpty)
+        #expect(await empty.enterRelayOnly(seats: 1) == 0)
+        await empty.stop()
+
+        // And a pool with a seat reports the seat it kept.
+        let seated = PeerPool(params: params, peerCount: 1, manualPeers: [await node.endpoint],
+                              dialTimeout: .milliseconds(500))
+        await seated.start()
+        #expect(await seated.enterRelayOnly(seats: 1) == 1)
+        await seated.stop()
+    }
+
     // MARK: - Peer cooldown
 
     // A slow peer is cooled off; a dishonest one is banned (#82).

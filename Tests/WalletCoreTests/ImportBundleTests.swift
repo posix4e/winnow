@@ -96,6 +96,38 @@ struct ImportBundleTests {
         #expect(throws: WalletError.self) { try Wallet.importing(bundle, keyStore: InMemoryKeyStore()) }
     }
 
+    @Test("block hashes survive export and import, and a malformed or pending one is refused")
+    func blockHashes() async throws {
+        var bundle = try await makeBundle()
+        let block = Data(repeating: 0x0B, count: 32)
+        let frontier = Data(repeating: 0x0F, count: 32)
+        bundle.transactions[0].blockHash = block.displayHex
+        bundle.lastKnownBlockHash = frontier.displayHex
+
+        let decoded = try JSONDecoder().decode(ImportBundle.self, from: Data(try bundle.serialized().utf8))
+        #expect(decoded == bundle)
+        let wallet = try Wallet.importing(decoded, keyStore: InMemoryKeyStore())
+        #expect(await wallet.history[0].blockHash == block)
+        #expect(await wallet.scannedThroughHash == frontier)
+        let exported = try await wallet.exportBundle(includeMnemonic: false)
+        #expect(exported.transactions[0].blockHash == block.displayHex)
+        #expect(exported.lastKnownBlockHash == frontier.displayHex)
+
+        var malformed = bundle
+        malformed.transactions[0].blockHash = "not-a-block"
+        #expect(throws: WalletError.invalidBundle("bad block hash not-a-block")) {
+            _ = try Wallet.importing(malformed, keyStore: InMemoryKeyStore())
+        }
+        var pending = bundle
+        pending.transactions[0].height = 0
+        #expect(throws: WalletError.self) { _ = try Wallet.importing(pending, keyStore: InMemoryKeyStore()) }
+        var pendingEntry = await wallet.history[0]
+        pendingEntry.height = 0
+        #expect(throws: DecodingError.self) {
+            _ = try JSONDecoder().decode(HistoryEntry.self, from: JSONEncoder().encode(pendingEntry))
+        }
+    }
+
     @Test("fee-replacement history survives export and import")
     func replacementHistory() async throws {
         var bundle = try await makeBundle()
@@ -157,6 +189,24 @@ struct ImportBundleTests {
         invalidHistory.transactions[0].received = -1
         #expect(throws: WalletError.invalidBundle("transaction history has invalid amounts")) {
             _ = try Wallet.importing(invalidHistory, keyStore: InMemoryKeyStore())
+        }
+        // Bounds a hostile bundle used to be able to trap or spin the wallet
+        // on: a height with no block after it, and a cursor past the window
+        // the gap-limit lookahead can derive from.
+        var heightAtTheTop = bundle
+        heightAtTheTop.lastKnownHeight = UInt32.max
+        #expect(throws: WalletError.invalidBundle("last known height \(UInt32.max) is out of range")) {
+            _ = try Wallet.importing(heightAtTheTop, keyStore: InMemoryKeyStore())
+        }
+        var cursorPastTheWindow = bundle
+        cursorPastTheWindow.nextReceiveIndex = UInt32.max
+        #expect(throws: WalletError.invalidBundle("address cursors leave no room for the gap-limit window")) {
+            _ = try Wallet.importing(cursorPastTheWindow, keyStore: InMemoryKeyStore())
+        }
+        var changeCursorPastTheWindow = bundle
+        changeCursorPastTheWindow.nextChangeIndex = HDKey.hardenedOffset
+        #expect(throws: WalletError.invalidBundle("address cursors leave no room for the gap-limit window")) {
+            _ = try Wallet.importing(changeCursorPastTheWindow, keyStore: InMemoryKeyStore())
         }
     }
 

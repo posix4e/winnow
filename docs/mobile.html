@@ -63,7 +63,7 @@
   </tr>
   <tr>
   <td>What fee?</td>
-  <td>User override, else median of <em>our</em> confirmed spends, else presets; clamped by BIP133 <code>feefilter</code></td>
+  <td>User override, else median of <em>our</em> confirmed spends, else presets; majority-of-seats BIP133 floor, with automatic peer-driven increases capped at 120 sat/vB and a new explicit decision required above the cap</td>
   <td><a href="/write-side">write-side</a></td>
   </tr>
   <tr>

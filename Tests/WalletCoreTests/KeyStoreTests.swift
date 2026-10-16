@@ -35,4 +35,35 @@ struct KeyStoreTests {
             _ = try WalletSecret(serialized: Data("no-newline".utf8))
         }
     }
+
+    @Test("account secret encoding preserves legacy bytes and rejects unknown versions safely")
+    func accountSerialization() throws {
+        let key = try BIP86.accountKey(from: testMaster(), coinType: 1).serialized(network: .testnet)
+        let secret = WalletSecret.accountKey(xprv: key, masterFingerprint: 0x73c5da0a)
+        #expect(secret.serialized == Data("account/1\n73c5da0a\n\(key)".utf8))
+        #expect(try WalletSecret(serialized: secret.serialized) == secret)
+        #expect(WalletSecret.mnemonic(testMnemonic).serialized == Data("mnemonic\n\(testMnemonic)".utf8))
+        #expect(WalletSecret.masterKey(key).serialized == Data("xprv\n\(key)".utf8))
+        for malformed in ["account/1", "account/1\n73c5da0a", "account/1\n73C5DA0A\n\(key)",
+                          "account/1\n73c5da0\n\(key)", "account/1\n73c5da0a\n\(key)\nextra",
+                          // A header that is not exactly `account/<digits>` is damage,
+                          // not a newer version to send the user elsewhere for.
+                          "account/1x\n73c5da0a\n\(key)", "account/\n73c5da0a\n\(key)",
+                          "account/1 \n73c5da0a\n\(key)"] {
+            #expect(throws: KeyStoreError.malformedSecret) {
+                _ = try WalletSecret(serialized: Data(malformed.utf8))
+            }
+        }
+        #expect(throws: KeyStoreError.unsupportedSecretVersion("account/2")) {
+            _ = try WalletSecret(serialized: Data("account/2\n73c5da0a\n\(key)".utf8))
+        }
+        do {
+            _ = try WalletSecret(serialized: Data("account/2\(key)".utf8))
+            Issue.record("unsupported version accepted")
+        } catch let error as KeyStoreError {
+            #expect(error == .unsupportedSecretVersion("account/2"))
+            #expect(!String(describing: error).contains(key.prefix(4)))
+            #expect(!error.localizedDescription.contains(key.prefix(4)))
+        }
+    }
 }

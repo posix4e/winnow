@@ -35,3 +35,33 @@ to bound a single run; the next one resumes from the saved frontier.
 exercise verification, damaged progress, disagreement, and rollback.
 The [UI journey](../../../../UITests/README.md) discovers and confirms ordinary
 and shared-account payments through the real signet node's filters.
+
+A checkpoint comparison records a `CrossCheckReceipt`: the answer digest,
+compared tip, endpoints and known acquisition source classes that actually
+agreed; configuration alone is not evidence. Receipts persist atomically with
+progress and clear on rollback. `CrossCheckPolicy.requireDistinctSources`
+refuses a run whose agreeing peers span fewer than two known classes, and cools
+off rather than bans the peers such a vote outvoted. Every network defaults to
+`acceptSingleSource`, the behaviour before the policy existed, because an
+overlay-only or all-manual pool can never span two classes; making the strict
+policy the mainnet default needs its own change with a way for those pools to
+satisfy it. Source classes describe acquisition, not independent operators or
+consensus proof, and unknown provenance cannot satisfy the strict policy. The
+app does not expose the policy yet.
+
+`scanRange(from:to:watchScripts:limits:storageURL:onMatch:)` is an opt-in recovery
+primitive. Its separate `RangeScanProgress` file cannot replace the forward
+progress file. It never syncs headers or moves the forward frontier. Callers own
+the recovery birthday, derivation expansion and fixed-point loop; one complete
+pass is not proof the whole wallet has been recovered. Interrupted batches may
+redeliver matches, so callbacks must be idempotent.
+
+Default range limits are 105,120 blocks, 2,000 scripts, 64 MiB of filters plus
+matched blocks, 300 seconds per run and 10 passes. Hard ceilings are 262,800
+blocks, 20,000 scripts, 1 GiB, one hour and 50 passes. Exhaustion refuses rather
+than claiming completion. Byte accounting can overshoot by one bounded filter
+chunk plus one block; time can overshoot by one outstanding peer request or
+callback. A resumed scan retains committed batches and verifies its anchor.
+Ranges lacking a checkpoint boundary or an already verified anchor fail closed
+except on chains shorter than the first checkpoint interval. Range scanning is
+covered by [RangeScan tests](../../../../Tests/WalletCoreTests/Network/RangeScanTests.swift).

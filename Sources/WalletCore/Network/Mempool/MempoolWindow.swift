@@ -187,7 +187,9 @@ public actor MempoolWindow {
     }
 
     private func attachToConnectedPeers() async {
-        guard running else { return }
+        // A relay-only pool holds its seats for a payment going out, not for
+        // reading what the network relays; nothing attaches to them.
+        guard running, await pool.mode == .full else { return }
         for peer in await pool.connectedPeers() {
             let key = peer.endpoint.description
             guard listenerTasks[key] == nil else { continue }

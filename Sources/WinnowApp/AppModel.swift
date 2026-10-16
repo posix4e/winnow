@@ -54,6 +54,8 @@ final class AppModel {
         case noStack
         case noPeers
         case mnemonicUnavailable
+        case rootKeyUnavailable
+        case feeDecisionRequired(rate: Double, floor: Double)
         case invalidPeer(String)
         case wrongNetwork(String)
         case duplicateVault
@@ -73,25 +75,34 @@ final class AppModel {
 
         var errorDescription: String? {
             switch self {
+            // MARK: Wallet
             case .noWallet: "No wallet is open."
+            case .mnemonicUnavailable: "The new wallet's mnemonic could not be read back from the Keychain."
+            case .rootKeyUnavailable: "This wallet's signing key is limited to its own account and cannot authorize this operation."
+            case .duplicateVault: "A vault with this descriptor already exists."
+            case let .storageDamaged(message): message
+            case .noStorage: "Winnow could not reach its storage, so a chain reorganisation could not be recorded. Syncing has stopped rather than continue on stale data."
+            // MARK: Payments
             case .paymentDetailsUnavailable: "Payment details aren’t available on this phone."
             case .personCannotBePaid: "This person has no pay-to key or address yet. Ask them for their Winnow card."
             case let .personCannotCoOwn(name): "\(name) has no signer key yet. Ask them for their Winnow card before creating savings together."
-            case .noStack: "The sync stack is not running."
-            case .noPeers: "No peers reachable. Check the network connection or add a manual peer in Settings."
-            case .mnemonicUnavailable: "The new wallet's mnemonic could not be read back from the Keychain."
-            case let .invalidPeer(text): "Invalid peer “\(text)” — use host:port."
-            case let .wrongNetwork(network): "This bundle is for \(network); switch the network in Settings first."
-            case .duplicateVault: "A vault with this descriptor already exists."
+            case let .feeDecisionRequired(rate, floor):
+                "Connected peers require at least \(floor) sat/vB to relay this payment, above the selected \(rate) sat/vB. "
+                    + "Enter an explicit rate of at least \(floor) sat/vB, or wait for the floor to change. "
+                    + "Winnow will not raise an automatic rate that far on its own."
             case .sendReviewChanged: "The available coins, fee, or change changed. Review the payment again before signing."
-            case let .storageDamaged(message): message
-            case .deviceAuthUnavailable: "Set a device passcode first — sensitive wallet actions require device authentication."
-            case .deviceAuthFailed: "Device authentication failed."
-            case .spendAlreadyInFlight: "Another payment is already being signed and broadcast. Wait for it to finish."
             case let .vaultSpendNotRecorded(txid, reason):
                 "The payment was sent (\(txid.displayHex)) but this account's coins could not be updated (\(reason)). "
                     + "Reopen the account before spending from it again."
-            case .noStorage: "Winnow could not reach its storage, so a chain reorganisation could not be recorded. Syncing has stopped rather than continue on stale data."
+            // MARK: Connection
+            case .noStack: "The sync stack is not running."
+            case .noPeers: "No peers reachable. Check the network connection or add a manual peer in Settings."
+            case let .invalidPeer(text): "Invalid peer “\(text)” — use host:port."
+            case let .wrongNetwork(network): "This bundle is for \(network); switch the network in Settings first."
+            // MARK: Authorization
+            case .deviceAuthUnavailable: "Set a device passcode first — sensitive wallet actions require device authentication."
+            case .deviceAuthFailed: "Device authentication failed."
+            case .spendAlreadyInFlight: "Another payment is already being signed and broadcast. Wait for it to finish."
             }
         }
     }
@@ -240,6 +251,9 @@ final class AppModel {
             return peer.isTransport
         case let sync as FilterSyncError:
             if case .peersCoolingDown = sync { return true }
+            // The pool has not seated peers of enough classes yet; the next
+            // pass asks again as the pool changes.
+            if case .crossCheckUnavailable = sync { return true }
             return sync == .noPeers
         default:
             return false
@@ -1153,7 +1167,7 @@ final class AppModel {
             // apply() does not move the wallet frontier — FilterSync is
             // authoritative here. Persist it so exportBundle() and the next
             // launch's startHeight match what the UI already shows.
-            try await wallet.recordScanHeight(await filters.nextScanHeight)
+            try await persistScanFrontier(of: filters, to: wallet)
             // Held confirmation tombstones age out on the same 100-block
             // horizon spent-coin tombstones do (#157).
             try await broadcaster.pruneConfirmed(scannedTo: await filters.nextScanHeight)
@@ -1178,18 +1192,30 @@ final class AppModel {
             // checkpoint comparison before anything above ran for them, so
             // their progress is verified and worth keeping — the batch that
             // threw applied nothing. Keep WalletState from lagging it.
-            try? await wallet.recordScanHeight(await filters.nextScanHeight)
+            try? await persistScanFrontier(of: filters, to: wallet)
             // Backgrounding, a network switch or an expired background check
             // cancels the scan and closes its peers. Nothing failed.
-            if !Task.isCancelled, !(error is CancellationError) {
-                status.lastSyncError = error.localizedDescription
-                let transient = Self.isTransientSyncError(error)
-                transientSyncFailures = transient ? transientSyncFailures + 1 : 0
-                transientSyncError = transient ? error.localizedDescription : nil
-            }
+            recordSyncFailure(error)
         }
         await refresh()
         return complete
+    }
+
+    /// Writes the filter scan's frontier into the wallet file, so the wallet's
+    /// recorded height never lags what FilterSync has verified.
+    private func persistScanFrontier(of filters: FilterSync, to wallet: Wallet) async throws {
+        let frontier = await filters.frontier()
+        try await wallet.recordScanHeight(frontier.nextScanHeight,
+                                          scannedThroughHash: frontier.scannedThroughHash)
+    }
+
+    private func recordSyncFailure(_ error: Error) {
+        if !Task.isCancelled, !(error is CancellationError) {
+            status.lastSyncError = error.localizedDescription
+            let transient = Self.isTransientSyncError(error)
+            transientSyncFailures = transient ? transientSyncFailures + 1 : 0
+            transientSyncError = transient ? error.localizedDescription : nil
+        }
     }
 
     /// Keep replaced originals beside the payment that superseded them.
@@ -1415,7 +1441,7 @@ final class AppModel {
         // The UI snapshot already prefers filters.nextScanHeight; export
         // must too, in case the last persist was skipped (failed pass).
         if let filters = stack?.filters {
-            try await wallet.recordScanHeight(await filters.nextScanHeight)
+            try await persistScanFrontier(of: filters, to: wallet)
         }
         var bundle = try await wallet.exportBundle(includeMnemonic: includeMnemonic)
         bundle.vaults = try await vaultStore.backupRecords()
@@ -1711,9 +1737,37 @@ final class AppModel {
     /// peers' BIP133 floor
     /// (FeePolicy, docs/write-side.md §4).
     func resolvedFeeRate(priority: FeePolicy.Priority, override: Double?) async -> Double {
+        await resolvedFee(priority: priority, override: override).rate
+    }
+
+    private func resolvedFee(priority: FeePolicy.Priority, override: Double?) async -> FeePolicy.Resolution {
         let observed = await wallet?.observedFeeRates ?? []
-        return FeePolicy.resolve(priority: priority, override: override,
-                                 observed: observed, floorSatPerVByte: status.feeFloorSatPerVByte)
+        return FeePolicy.resolution(priority: priority, override: override,
+                                    observed: observed, floorSatPerVByte: status.feeFloorSatPerVByte)
+    }
+
+    static func requireRelayFee(rate: Double, floor: Double?) throws {
+        if let floor, rate < floor { throw AppError.feeDecisionRequired(rate: rate, floor: floor) }
+    }
+
+    /// An override typed outside the band coin selection accepts is refused
+    /// where it was typed, not silently replaced by a preset.
+    static func requireUsableOverride(_ override: Double?) throws {
+        if let override, !FeePolicy.acceptsRate(override) {
+            throw CoinSelectionError.invalidFeeRate(override)
+        }
+    }
+
+    /// The live relay floors a rate must clear before anything is signed or
+    /// announced: the seat majority, which prices the quote, and the most
+    /// lenient connected peer, below which nobody connected would relay. The
+    /// second keeps a lone connected peer's floor from being outvoted by
+    /// empty seats into a payment that goes nowhere. No stack means no floor
+    /// to compare, as before.
+    func requireRelayFloors(rate: Double) async throws {
+        guard let pool = stack?.pool else { return }
+        try Self.requireRelayFee(rate: rate, floor: await pool.feeFilterFloorSatPerVByte())
+        try Self.requireRelayFee(rate: rate, floor: await pool.feeFilterFloorSatPerVByte(aggregation: .mostLenient))
     }
 
     /// What a send will look like at the resolved feerate (coin selection run
@@ -1868,7 +1922,11 @@ final class AppModel {
     /// selection at the resolved feerate.
     func previewSend(destination: String, amount: Int64, priority: FeePolicy.Priority,
                      override: Double?, accountID: String? = nil) async throws -> SendPreview {
-        let feeRate = await resolvedFeeRate(priority: priority, override: override)
+        try Self.requireUsableOverride(override)
+        let resolution = await resolvedFee(priority: priority, override: override)
+        try Self.requireRelayFee(rate: resolution.rate, floor: resolution.clampedFloor)
+        try await requireRelayFloors(rate: resolution.rate)
+        let feeRate = resolution.rate
         let trimmed = destination.trimmingCharacters(in: .whitespacesAndNewlines)
         let payments = [try Payment(amount: amount, address: trimmed, network: network)]
         if let accountID {
@@ -2015,6 +2073,9 @@ final class AppModel {
 
     func previewFeeBump(txid: Data, feeRateSatPerVByte: Double) async throws -> FeeBumpPreview {
         guard let wallet else { throw AppError.noWallet }
+        // Refused at review, before Face ID and signing; `broadcast` asks
+        // again against the live floor as the final gate.
+        try await requireRelayFloors(rate: feeRateSatPerVByte)
         return try await wallet.previewFeeBump(txid: txid,
                                                feeRateSatPerVByte: feeRateSatPerVByte)
     }
@@ -2058,7 +2119,11 @@ final class AppModel {
     /// `feeRateSatPerVByte` (known from the send preview) enables the
     /// broadcaster's BIP133 fee-floor events.
     func broadcast(_ transaction: WalletCore.Transaction, feeRateSatPerVByte: Double? = nil) async throws -> Data {
-        guard let broadcaster = stack?.broadcaster else { throw AppError.noStack }
+        guard let stack else { throw AppError.noStack }
+        let broadcaster = stack.broadcaster
+        if let rate = feeRateSatPerVByte {
+            try await requireRelayFloors(rate: rate)
+        }
         let raw = transaction.serialized(includeWitness: true)
         let txid = try await broadcaster.broadcast(raw, feeRateSatPerVByte: feeRateSatPerVByte)
         e2e?.journal("transaction.broadcast", fields: ["txid": txid.displayHex, "raw": raw.hex])
@@ -2505,6 +2570,23 @@ final class AppModel {
         return try await broadcastVaultSpend(transaction, vault: vault, record: record)
     }
 
+    /// The fee rate of a spend whose inputs are all coins the record knows,
+    /// or nil when one is not: the review that admits a spend has already
+    /// refused that shape, so nil here only means there is nothing to gate.
+    static func feeRate(of transaction: WalletCore.Transaction, spending coins: [WalletUTXO]) -> Double? {
+        var inputs: Int64 = 0
+        for input in transaction.inputs {
+            guard let coin = coins.first(where: {
+                $0.txid == input.previousOutput.txid && $0.vout == input.previousOutput.vout
+            }) else { return nil }
+            inputs += coin.amount
+        }
+        let fee = inputs - transaction.outputs.reduce(0) { $0 + $1.value }
+        let vsize = TransactionBuilder.vsize(of: transaction)
+        guard fee > 0, vsize > 0 else { return nil }
+        return Double(fee) / Double(vsize)
+    }
+
     /// Broadcasts a finalized vault spend and commits it, under the
     /// `spending` gate. A commit that fails after the broadcast is reported,
     /// not swallowed: the transaction is out, and a spent coin left in the
@@ -2512,7 +2594,13 @@ final class AppModel {
     func broadcastVaultSpend(_ transaction: WalletCore.Transaction, vault: Vault,
                              record: VaultRecord) async throws -> Data {
         try await exclusively(.spending) {
-            let txid = try await broadcast(transaction)
+            // The rate is known from the record's own coins, so the live
+            // relay-floor gate a wallet send passes applies here too: a spend
+            // every co-owner approved must not go out below a floor that rose
+            // while they were approving it, and sit reserved for nothing.
+            let txid = try await broadcast(transaction,
+                                           feeRateSatPerVByte: Self.feeRate(of: transaction,
+                                                                            spending: record.utxos))
             let changeIndex = record.nextChangeIndex
             let changeScript = try? vault.scriptPubKey(index: changeIndex, choice: AddressChain.change.rawValue)
             do {
@@ -2615,6 +2703,7 @@ final class AppModel {
         switch try keyStore.load(walletID: walletID) {
         case let .mnemonic(words): master = try HDKey(seed: BIP39.seed(mnemonic: words))
         case let .masterKey(xprv): master = try HDKey.deserialize(xprv)
+        case .accountKey: throw AppError.rootKeyUnavailable
         }
         return try body(master)
     }
@@ -2813,6 +2902,7 @@ final class AppModel {
         await activate()
         await refresh()
     }
+
 
     /// "977 candidates", for the peer-list notice: the entries on the
     /// networks the current routing may dial.

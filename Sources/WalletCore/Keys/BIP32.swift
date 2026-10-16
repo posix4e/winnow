@@ -119,18 +119,23 @@ public struct HDKey: Sendable, Equatable {
 
     /// Derives along a path like "m/84'/0'/0'/0/0" (also accepts h/H suffixes).
     public func derived(path: String) throws -> HDKey {
-        var key = self
         var components = path.split(separator: "/").map(String.init)
         if components.first == "m" || components.first == "M" { components.removeFirst() }
-        for component in components {
+        let indices = try components.map { component -> UInt32 in
             let hardened = component.hasSuffix("'") || component.hasSuffix("h") || component.hasSuffix("H")
             let digits = hardened ? String(component.dropLast()) : component
             guard let index = UInt32(digits), index < Self.hardenedOffset else {
                 throw BIP32Error.invalidPath
             }
-            key = try key.child(at: index + (hardened ? Self.hardenedOffset : 0))
+            return index + (hardened ? Self.hardenedOffset : 0)
         }
-        return key
+        return try derived(path: indices)
+    }
+
+    /// Derives along already-numeric child indices (hardened ones carry
+    /// `hardenedOffset`).
+    public func derived(path: [UInt32]) throws -> HDKey {
+        try path.reduce(self) { try $0.child(at: $1) }
     }
 
     /// Base58Check serialization (78-byte payload: version/depth/fingerprint/index/chain/key).

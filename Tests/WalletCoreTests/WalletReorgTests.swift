@@ -311,6 +311,69 @@ struct WalletReorgTests {
         return (wallet, funding, prepared)
     }
 
+    // MARK: Block hashes
+
+    /// A payment remembers the block it confirmed in, so a restore can check
+    /// it against headers instead of fetching the block again. A rewind that
+    /// sends it back to pending forgets the block it left.
+    @Test("a confirmed payment keeps its block hash until a rewind re-pends it")
+    func blockHashFollowsConfirmation() async throws {
+        let (wallet, fundingTxid) = try await fundedWalletAndTxid()
+        let spend = Transaction(
+            version: 2,
+            inputs: [Transaction.Input(previousOutput: .init(txid: fundingTxid, vout: 0),
+                                       scriptSig: Data(), sequence: 0xFFFF_FFFD)],
+            outputs: [Transaction.Output(value: 400_000, scriptPubKey: destination)],
+            locktime: 0)
+        let match = fakeMatch(height: 250, transactions: [spend])
+        try await wallet.apply(match: match)
+        let funding = try #require(await wallet.history.first { $0.txid == fundingTxid })
+        #expect(funding.blockHash != nil)
+        #expect(await wallet.history.first { $0.txid == spend.txid }?.blockHash == match.blockHash)
+
+        try await wallet.rollBack(to: 200)
+
+        let repended = try #require(await wallet.history.first { $0.txid == spend.txid })
+        #expect(repended.height == 0)
+        #expect(repended.blockHash == nil, "a pending payment is in no block")
+        #expect(await wallet.history.first { $0.txid == fundingTxid }?.blockHash == funding.blockHash,
+                "below the fork, nothing changes")
+    }
+
+    @Test("our own send gains its block hash when a block confirms it")
+    func ownSendGainsBlockHash() async throws {
+        let (wallet, _) = try await fundedWalletAndTxid()
+        let prepared = try await wallet.buildSend(
+            payments: [Payment(amount: 100_000, scriptPubKey: destination)],
+            feeRateSatPerVByte: 2, chainTip: 840_000, randomness: { 0.5 })
+        try await wallet.commit(prepared)
+        let txid = prepared.built.transaction.txid
+        #expect(await wallet.history.first { $0.txid == txid }?.blockHash == nil)
+
+        let match = fakeMatch(height: 840_001, transactions: [prepared.built.transaction])
+        try await wallet.apply(match: match)
+        #expect(await wallet.history.first { $0.txid == txid }?.blockHash == match.blockHash)
+    }
+
+    @Test("the scan frontier keeps its block hash, and a rewind behind it clears it")
+    func frontierHash() async throws {
+        let url = tempFileURL("frontier-hash-wallet.json")
+        let keyStore = InMemoryKeyStore()
+        let wallet = try makeTestWallet(storageURL: url, keyStore: keyStore)
+        let hash = Data(repeating: 0xAB, count: 32)
+        try await wallet.recordScanHeight(301, scannedThroughHash: hash)
+        #expect(await wallet.scannedThroughHash == hash)
+        #expect(try await Wallet.open(storageURL: url, keyStore: keyStore).scannedThroughHash == hash)
+
+        try await wallet.rollBack(to: 200)
+        #expect(await wallet.nextScanHeight == 201)
+        #expect(await wallet.scannedThroughHash == nil, "block 300 is no longer known to be on the chain")
+
+        try await wallet.recordScanHeight(301, scannedThroughHash: hash)
+        try await wallet.recordScanHeight(302)
+        #expect(await wallet.scannedThroughHash == nil, "a hash is never left describing another height")
+    }
+
     // MARK: What a reorg takes away
 
     /// A payment that only existed on the orphaned branch.

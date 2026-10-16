@@ -267,6 +267,36 @@ struct FilterSyncTests {
         await pool.stop()
     }
 
+    /// The read side over a pool that is only relaying: refused, and refused
+    /// before the wire. A relay-only pool (`PeerPool.enterRelayOnly(seats:)`)
+    /// holds a seat so a signed payment can finish going out; a filter sync
+    /// over it would spend that seat on cfcheckpt round trips and could burn
+    /// it outright on a peer fault or a stale tip.
+    @Test("a relay-only pool refuses a filter sync and asks its peer nothing")
+    func relayOnlyRefusesFilterSync() async throws {
+        let synthetic = makeSyntheticChain(length: 4, watchHeight: 6)
+        let node = LoopbackNode(params: synthetic.params, chain: synthetic.blocks)
+        try await node.start()
+        defer { Task { await node.stop() } }
+
+        let pool = PeerPool(params: synthetic.params, peerCount: 1,
+                            manualPeers: [await node.endpoint])
+        await pool.start()
+        await pool.enterRelayOnly(seats: 1)
+
+        let chain = try HeaderChain(params: synthetic.params)
+        let sync = try FilterSync(pool: pool, chain: chain, startHeight: 1,
+                                  requiredCheckpointPeers: 1)
+        await #expect(throws: FilterSyncError.relayOnly) {
+            try await sync.sync(watchScripts: []) { _ in }
+        }
+        #expect(await node.nextMessage(command: "getheaders", timeout: .milliseconds(300)) == nil)
+        #expect(await node.nextMessage(command: "getcfcheckpt", timeout: .milliseconds(100)) == nil)
+        #expect(await sync.nextScanHeight == 1, "a refused run scans nothing")
+        #expect(await pool.connectedPeers().count == 1, "and costs no seat")
+        await pool.stop()
+    }
+
     // MARK: - Bounded runs and chunked fetching
 
     /// `maxBlocks` is what makes a scan that cannot run to the tip possible:
@@ -326,10 +356,159 @@ struct FilterSyncTests {
         #expect(collector.matches.map(\.height) == [synthetic.watchHeight])
     }
 
+    /// The other end of `maxBlocks`: a run that may scan nothing. The ceiling
+    /// is resolved before the cfcheckpt round trip, so a caller handing back
+    /// control with no room left spends no round trips at all and leaves the
+    /// frontier exactly where it was — the state the next run resumes from.
+    @Test("a run bounded to zero blocks asks for nothing and moves nothing")
+    func zeroMaxBlocksScansNothing() async throws {
+        let synthetic = makeSyntheticChain(length: 6, watchHeight: 3)
+        let node = LoopbackNode(params: synthetic.params, chain: synthetic.blocks)
+        try await node.start()
+        defer { Task { await node.stop() } }
+        let pool = PeerPool(params: synthetic.params, peerCount: 1,
+                            manualPeers: [await node.endpoint],
+                            peersFileURL: tempFileURL("peers.json"))
+        await pool.start()
+        defer { Task { await pool.stop() } }
+        let chain = try HeaderChain(params: synthetic.params)
+        let progressFile = tempFileURL("zero-bounded-progress.json")
+        defer { try? FileManager.default.removeItem(at: progressFile.deletingLastPathComponent()) }
+        let sync = try FilterSync(pool: pool, chain: chain, startHeight: 1,
+                                  storageURL: progressFile, requiredCheckpointPeers: 1)
+        let collector = MatchCollector()
+
+        try await sync.sync(watchScripts: [synthetic.watchScript], maxBlocks: 0) {
+            collector.add($0)
+        }
+        #expect(await sync.nextScanHeight == 1, "the frontier stands where it was")
+        #expect(collector.matches.isEmpty)
+        #expect(await sync.pinnedFilterHeadersForTest.isEmpty)
+        #expect(!FileManager.default.fileExists(atPath: progressFile.path),
+                "a run that scanned nothing has nothing to persist")
+
+        // Nothing was asked of the peer beyond the header sync — not even the
+        // checkpoint comparison, which is one round trip per peer.
+        let asked = await node.receivedMessages.filter { message in
+            switch message {
+            case .getcfcheckpt, .getcfheaders, .getcfilters: true
+            default: false
+            }
+        }
+        #expect(asked.isEmpty)
+
+        // And the run that follows it is unaffected: the ceiling bounds one
+        // run, it does not disable the sync.
+        try await sync.sync(watchScripts: [synthetic.watchScript]) { collector.add($0) }
+        #expect(await sync.nextScanHeight == 7)
+        #expect(collector.matches.map(\.height) == [synthetic.watchHeight])
+    }
+
+    /// A bounded run on a chain long enough to have checkpoint boundaries, so
+    /// the ceiling meets the two places the tip is read.
+    ///
+    /// Every other integration test of `maxBlocks` runs on a six-block chain,
+    /// where `tip / 1000` and `ceiling / 1000` are both zero and the final
+    /// guard's `lastCheckpoint` is zero as well: the ceiling and the tip are
+    /// indistinguishable there, and both count guards are vacuous. This runs
+    /// 999 ... 1998 against a node at 2,001 — one batch that crosses the 1,000
+    /// boundary and stops 3 blocks short of the tip and 2 short of the second
+    /// boundary — which separates them.
+    ///
+    /// What that separation catches, checked against the code as it stands:
+    ///
+    /// - `expectedCheckpoints` is `tip / 1000` = 2. Derived from the ceiling it
+    ///   would be 1, and the honest node's two-entry cfcheckpt list would be
+    ///   refused as a mismatch before any batch ran.
+    /// - `lastCheckpoint` is `(tip / 1000) * 1000` = 2,000, which this run
+    ///   stops below and so has not pinned — nothing to compare, and the run
+    ///   that reaches it does the comparing. Derived from the ceiling it would
+    ///   be 1,000, which *is* pinned, and it would be compared against the
+    ///   reference's last entry, the header at 2,000: a mismatch on an honest
+    ///   peer, and every bounded run below a boundary would fail.
+    ///
+    /// Both mutations therefore turn this red rather than leaving it green on
+    /// a chain too short to tell.
+    @Test("a bounded run across a checkpoint boundary is checked against the tip, not the ceiling")
+    func boundedRunAcrossACheckpointBoundary() async throws {
+        let synthetic = makeSyntheticChain(length: 2_100, watchHeight: 1_500)
+        let node = LoopbackNode(params: synthetic.params,
+                                chain: Array(synthetic.blocks.prefix(2_002)))
+        try await node.start()
+        defer { Task { await node.stop() } }
+        let pool = PeerPool(params: synthetic.params, peerCount: 1,
+                            manualPeers: [await node.endpoint],
+                            peersFileURL: tempFileURL("peers.json"))
+        await pool.start()
+        defer { Task { await pool.stop() } }
+        let chain = try HeaderChain(params: synthetic.params)
+        let progressFile = tempFileURL("bounded-boundary.json")
+        defer { try? FileManager.default.removeItem(at: progressFile.deletingLastPathComponent()) }
+        let sync = try FilterSync(pool: pool, chain: chain, startHeight: 999,
+                                  storageURL: progressFile, requiredCheckpointPeers: 1)
+        let collector = MatchCollector()
+
+        // 999 through 1,998: one batch, because the ceiling shortens the batch
+        // rather than adding one, and it crosses the boundary at 1,000.
+        try await sync.sync(watchScripts: [synthetic.watchScript], maxBlocks: 1_000) {
+            collector.add($0)
+        }
+        #expect(await chain.height == 2_001, "the header sync still ran to the node's tip")
+        #expect(await sync.nextScanHeight == 1_999, "the frontier stops at the ceiling")
+        #expect(collector.matches.map(\.height) == [synthetic.watchHeight],
+                "the boundary-crossing batch committed, and delivered its match")
+        #expect(await sync.filterHeader(at: 1_000) != nil,
+                "the boundary the batch crossed is pinned for the next run to compare")
+        #expect(await sync.filterHeader(at: 1_998) != nil, "and the frontier's anchor")
+        #expect(await sync.filterHeader(at: 2_000) == nil, "the run stopped below the next boundary")
+
+        // The cfheaders request covered exactly the blocks scanned — the
+        // ceiling shortened the batch, it did not skip one.
+        let ranges = await node.receivedMessages.compactMap { message -> UInt32? in
+            guard case let .getcfheaders(request) = message else { return nil }
+            return request.startHeight
+        }
+        #expect(ranges == [999])
+
+        // Then unbounded from the bounded frontier, which is the run that
+        // reaches 2,000 and so the one the final guard actually compares.
+        try await sync.sync(watchScripts: [synthetic.watchScript]) { collector.add($0) }
+        #expect(await sync.nextScanHeight == 2_002)
+        #expect(await sync.filterHeader(at: 2_000) != nil, "the boundary the second run reached")
+        #expect(await sync.filterHeader(at: 2_001) != nil, "the anchor")
+        #expect(collector.matches.map(\.height) == [synthetic.watchHeight],
+                "and no match is delivered twice across the two runs")
+    }
+
+    /// A chunk size of zero would make each chunk's stop one below its start,
+    /// so the loop would never advance and a scan would hang rather than fail;
+    /// one above the batch length would ask a peer for filters past the batch
+    /// its headers were pinned over. Neither is a caller's to get wrong, which
+    /// is what the clamp is for.
+    @Test("the chunk size is clamped to a range a batch can be fetched in")
+    func chunkSizeIsClamped() async throws {
+        let pool = PeerPool(params: .signet, peerCount: 0, manualPeers: [])
+        let chain = try HeaderChain(params: .signet)
+        func chunk(_ requested: UInt32) async throws -> UInt32 {
+            try await FilterSync(pool: pool, chain: chain, startHeight: 1,
+                                 filtersPerChunk: requested).filtersPerChunk
+        }
+        #expect(try await chunk(0) == 1, "zero would never advance the chunk loop")
+        #expect(try await chunk(1) == 1)
+        #expect(try await chunk(100) == 100)
+        #expect(try await chunk(FilterSync.maxRangePerRequest) == FilterSync.maxRangePerRequest)
+        #expect(try await chunk(FilterSync.maxRangePerRequest + 1)
+            == FilterSync.maxRangePerRequest)
+        #expect(try await chunk(.max) == FilterSync.maxRangePerRequest)
+        // The default a caller who says nothing gets.
+        let standard = try FilterSync(pool: pool, chain: chain, startHeight: 1)
+        #expect(await standard.filtersPerChunk == FilterSync.defaultFiltersPerChunk)
+    }
+
     /// Chunking changes how the filters are fetched and nothing else, so the
     /// two paths have to agree on everything outside FilterSync: the same
-    /// matches, and the same saved progress. What differs is what the scan
-    /// holds while it works.
+    /// matches, and the same scanned state saved. What differs is what the
+    /// scan holds while it works.
     @Test("a chunked scan and a whole-batch scan agree, and the chunked one holds less")
     func chunkedScanMatchesWholeBatch() async throws {
         let synthetic = makeSyntheticChain(length: 6, watchHeight: 3)
@@ -339,7 +518,24 @@ struct FilterSyncTests {
         #expect(whole.matches.map(\.height) == chunked.matches.map(\.height))
         #expect(whole.matches.map(\.blockHash) == chunked.matches.map(\.blockHash))
         #expect(whole.matches.count == 1)
-        #expect(whole.progress == chunked.progress)
+        // Field by field rather than whole: the saved cross-check receipt
+        // names the endpoint that answered, and these are two runs against two
+        // loopback nodes on two ports, which is the one thing that is supposed
+        // to differ between them.
+        #expect(whole.progress.nextScanHeight == chunked.progress.nextScanHeight)
+        #expect(whole.progress.filterHeaders == chunked.progress.filterHeaders)
+        #expect(whole.progress.crossCheck?.answerDigest
+            == chunked.progress.crossCheck?.answerDigest,
+            "the same chain, so the same adopted checkpoint answer")
+        // The halves of the receipt that do not carry a port: the same classes
+        // agreed, and as many of them.
+        // A receipt both runs failed to write would make every comparison
+        // below nil == nil; pin that there is one to compare.
+        #expect(whole.progress.crossCheck != nil)
+        #expect(whole.progress.crossCheck?.sourceClasses
+            == chunked.progress.crossCheck?.sourceClasses)
+        #expect(whole.progress.crossCheck?.agreed.count
+            == chunked.progress.crossCheck?.agreed.count)
 
         // One request for the whole batch, against one per chunk: 1 ... 2,
         // 3 ... 4, 5 ... 6. The stop hashes say the ranges are real.
@@ -353,6 +549,210 @@ struct FilterSyncTests {
         // blocks are all about the same size, is comfortably under half.
         #expect(chunked.peakChunkBytes > 0)
         #expect(chunked.peakChunkBytes * 2 <= whole.peakChunkBytes)
+    }
+
+    /// A chunk size that does not divide the batch, which is the ordinary case
+    /// on a real chain and the one the fixture above cannot reach: 6 blocks in
+    /// chunks of 2 is three whole chunks, so the `min(chunkStart + chunk - 1,
+    /// batchStop)` never takes its `batchStop` branch and the ragged last chunk
+    /// is unpinned by any assertion. Seven blocks in chunks of four take it:
+    /// 1 ... 4 is a whole chunk and 5 ... 7 is what is left, which the stop
+    /// hashes name. A chunk that ran past the batch would ask this node about a
+    /// block it does not have.
+    @Test("a chunk that does not divide the batch ends on the batch stop")
+    func raggedFinalChunkStopsAtTheBatch() async throws {
+        let synthetic = makeSyntheticChain(length: 7, watchHeight: 6)
+        let ragged = try await scanWholeChain(synthetic, filtersPerChunk: 4)
+
+        #expect(ragged.filterRequests.map(\.startHeight) == [1, 5])
+        #expect(ragged.filterRequests.map(\.stopHash)
+            == [4, 7].map { synthetic.blocks[$0].hash })
+        #expect(ragged.matches.map(\.height) == [6])
+        #expect(ragged.progress.nextScanHeight == 8)
+    }
+
+    /// The chunk bounds messages; this bounds bytes. Nothing in a chunk is
+    /// looked at until all of it has arrived, so the message count alone caps
+    /// a hostile burst at `count` times the protocol maximum — 400 MB at the
+    /// default chunk size — before the first filter is checked.
+    ///
+    /// Asserted at the transport, where the bound lives: an honest burst of
+    /// the same three filters passes under a generous bound, and the same
+    /// request under a bound of one byte fails on the first message with a
+    /// protocol violation rather than sitting there until the timeout.
+    @Test("requestMany refuses a burst past its byte bound and drops the peer")
+    func requestManyBoundsTheBurstInBytes() async throws {
+        let synthetic = makeSyntheticChain(length: 3, watchHeight: 3)
+        let node = LoopbackNode(params: synthetic.params, chain: synthetic.blocks)
+        try await node.start()
+        defer { Task { await node.stop() } }
+
+        let peer = PeerConnection(endpoint: await node.endpoint, params: synthetic.params)
+        try await peer.connect()
+        let request = PeerMessage.getcfilters(
+            GetCFiltersRequest(startHeight: 1, stopHash: synthetic.blocks[3].hash))
+
+        // Honest first, so the failure below cannot be the node refusing to
+        // serve: three filters, well under a bound a real chunk would use.
+        let honest = try await peer.requestMany(request, expecting: "cfilter", count: 3,
+                                                maxTotalBytes: FilterSync.chunkByteBound(filters: 3),
+                                                timeout: .seconds(30))
+        #expect(honest.count == 3)
+
+        var thrown: (any Error)?
+        do {
+            _ = try await peer.requestMany(request, expecting: "cfilter", count: 3,
+                                           maxTotalBytes: 1, timeout: .seconds(30))
+        } catch {
+            thrown = error
+        }
+        guard case let .protocolViolation(reason)? = thrown as? PeerError else {
+            Issue.record("expected a protocol violation, got \(String(describing: thrown))")
+            return
+        }
+        #expect(reason.contains("cfilter burst"))
+        // Torn down, not merely failed: the burst it was still sending must
+        // not go on filling memory after the request that bounded it is gone.
+        #expect(await !peer.isConnected)
+    }
+
+    /// The same bound one layer up, where a scan meets it: a peer answering
+    /// the chunk it was asked for, in the right count and the right shape,
+    /// with messages far larger than a filter can be.
+    ///
+    /// The padding keeps the commitments honest, so nothing the client
+    /// computes for itself contradicts this peer — the filters it sends would
+    /// fail their header check, but that check runs after the whole chunk has
+    /// arrived, which is precisely what the byte bound has to beat. Two
+    /// filters of 2 MB against a bound of two times
+    /// `maxFilterMessageBytes` means the second message crosses it and the
+    /// chunk never completes.
+    @Test("a peer whose filter chunk is too large is refused mid-burst and dropped for the session")
+    func oversizedFilterChunkIsRefused() async throws {
+        let synthetic = makeSyntheticChain(length: 6, watchHeight: 3)
+        // An honest node on the same chain and the same chunk size still
+        // scans it end to end: the bound refuses size, not chunking.
+        let honest = try await scanWholeChain(synthetic, filtersPerChunk: 2)
+        #expect(honest.progress.nextScanHeight == 7)
+        #expect(honest.matches.map(\.height) == [3])
+
+        let node = LoopbackNode(params: synthetic.params, chain: synthetic.blocks,
+                                oversizedFilterBytes: 2_000_000)
+        try await node.start()
+        defer { Task { await node.stop() } }
+        let endpoint = await node.endpoint
+        let pool = PeerPool(params: synthetic.params, peerCount: 1, manualPeers: [endpoint],
+                            peersFileURL: tempFileURL("peers.json"))
+        await pool.start()
+        defer { Task { await pool.stop() } }
+        let chain = try HeaderChain(params: synthetic.params)
+        let progressFile = tempFileURL("oversized-progress.json")
+        defer { try? FileManager.default.removeItem(at: progressFile.deletingLastPathComponent()) }
+        let sync = try FilterSync(pool: pool, chain: chain, startHeight: 1,
+                                  storageURL: progressFile, requiredCheckpointPeers: 1,
+                                  filtersPerChunk: 2)
+
+        var thrown: (any Error)?
+        do {
+            try await sync.sync(watchScripts: [synthetic.watchScript]) { _ in }
+        } catch {
+            thrown = error
+        }
+        guard case let .protocolViolation(reason)? = thrown as? PeerError else {
+            Issue.record("expected a protocol violation, got \(String(describing: thrown))")
+            return
+        }
+        #expect(reason.contains("cfilter burst"))
+
+        // Judged as a data fault, like a filter that does not reproduce its
+        // header: dropped for the session rather than cooled off.
+        #expect(await pool.connectedPeers().isEmpty)
+        #expect(await pool.rejectionReason(endpoint)?.contains("cfilter burst") == true)
+        #expect(await pool.coolingEndpoints.isEmpty)
+
+        // And the batch changed nothing: no frontier moved, nothing was saved.
+        #expect(await sync.nextScanHeight == 1)
+        #expect(!FileManager.default.fileExists(atPath: progressFile.path))
+    }
+
+    /// Being an actor bounds what runs *at once*, not what interleaves: every
+    /// step of `sync` awaits the network or the caller's `onMatch`, and a
+    /// second call is free to run during those suspensions. Both passes then
+    /// share one pool and one progress record, and a peer's reply goes to
+    /// whichever collector expects the command first.
+    ///
+    /// The first run is parked inside `onMatch` — one of exactly those
+    /// suspensions — so the second call lands in the window that used to
+    /// interleave. It has to be refused there and then, having done nothing,
+    /// and the run it collided with has to finish as though it had never
+    /// happened: the same matches and the same scanned state a single pass
+    /// over this chain leaves.
+    @Test("a second sync during the first is refused, and the first is untouched")
+    func concurrentSyncIsRefused() async throws {
+        let synthetic = makeSyntheticChain(length: 6, watchHeight: 3)
+        let expected = try await scanWholeChain(synthetic, filtersPerChunk: 2)
+
+        let node = LoopbackNode(params: synthetic.params, chain: synthetic.blocks)
+        try await node.start()
+        defer { Task { await node.stop() } }
+        let pool = PeerPool(params: synthetic.params, peerCount: 1,
+                            manualPeers: [await node.endpoint],
+                            peersFileURL: tempFileURL("peers.json"))
+        await pool.start()
+        defer { Task { await pool.stop() } }
+        let chain = try HeaderChain(params: synthetic.params)
+        let progressFile = tempFileURL("concurrent-progress.json")
+        defer { try? FileManager.default.removeItem(at: progressFile.deletingLastPathComponent()) }
+        let sync = try FilterSync(pool: pool, chain: chain, startHeight: 1,
+                                  storageURL: progressFile, requiredCheckpointPeers: 1,
+                                  filtersPerChunk: 2)
+
+        let gate = ParkGate()
+        let collector = MatchCollector()
+        let watchScript = synthetic.watchScript
+        // A run that ended without ever matching opens the gate too, so a
+        // broken first pass fails this test on an assertion instead of
+        // parking it on a wait that will never be resumed.
+        let first = gate.settling {
+            try await sync.sync(watchScripts: [watchScript]) { match in
+                collector.add(match)
+                await gate.reach()
+                await gate.waitForRelease()
+            }
+        }
+        await gate.waitForReach()
+
+        var thrown: (any Error)?
+        do {
+            try await sync.sync(watchScripts: [synthetic.watchScript]) { _ in
+                Issue.record("the refused sync must not scan anything")
+            }
+        } catch {
+            thrown = error
+        }
+        #expect(thrown as? FilterSyncError == .busy)
+        // Refused before any side effect: the frontier is still where the
+        // first run left it, mid-batch and unsaved.
+        #expect(await sync.nextScanHeight == 1)
+        #expect(!FileManager.default.fileExists(atPath: progressFile.path))
+
+        await gate.release()
+        try await first.value.get()
+        #expect(collector.matches.map(\.height) == expected.matches.map(\.height))
+        #expect(await sync.nextScanHeight == 7)
+        let saved = try JSONDecoder().decode(FilterSync.Progress.self,
+                                             from: Data(contentsOf: progressFile))
+        // As above: the control run had its own node, so its receipt names its
+        // own port. Everything the scan derived is compared.
+        #expect(saved.nextScanHeight == expected.progress.nextScanHeight)
+        #expect(saved.filterHeaders == expected.progress.filterHeaders)
+        #expect(saved.crossCheck?.answerDigest == expected.progress.crossCheck?.answerDigest)
+        #expect(saved.crossCheck != nil)
+        #expect(saved.crossCheck?.sourceClasses == expected.progress.crossCheck?.sourceClasses)
+        #expect(saved.crossCheck?.agreed.count == expected.progress.crossCheck?.agreed.count)
+
+        // And the flag is cleared on the way out, so the next scan runs.
+        try await sync.sync(watchScripts: [synthetic.watchScript]) { _ in }
     }
 
     @Test("the scan ceiling counts from the frontier, stops at the tip, and never traps")
@@ -546,6 +946,133 @@ struct FilterSyncTests {
         #expect(await sync.nextScanHeight == 1)
         #expect(await sync.filterHeader(at: 1) == nil)
         #expect(!FileManager.default.fileExists(atPath: store.path))
+    }
+
+    /// The receipt survives the file, and a file written before receipts
+    /// existed still loads. The field is optional, so an absent one decodes to
+    /// nil: every install on disk today reads back unchanged and there is
+    /// nothing to migrate.
+    @Test("a cross-check receipt round-trips, and progress without one still loads")
+    func crossCheckReceiptRoundTrips() async throws {
+        let pool = PeerPool(params: .signet, peerCount: 0, manualPeers: [])
+        let chain = try HeaderChain(params: .signet)
+        let store = tempFileURL("filter-receipt.json")
+        defer { try? FileManager.default.removeItem(at: store.deletingLastPathComponent()) }
+
+        let receipt = FilterSync.CrossCheckReceipt(
+            tipHeight: 812_345,
+            answerDigest: Data(repeating: 0x5A, count: 32).hex,
+            agreed: [.init(endpoint: "203.0.113.7:8333", source: .dnsSeed),
+                     .init(endpoint: "198.51.100.9:8333", source: .persisted),
+                     .init(endpoint: "192.0.2.4:8333", source: nil)])
+        try writeProgress(.init(nextScanHeight: 5, crossCheck: receipt), to: store)
+
+        let loaded = try FilterSync(pool: pool, chain: chain, startHeight: 1, storageURL: store)
+        #expect(loaded.persistenceState == .loaded)
+        #expect(await loaded.lastCrossCheck == receipt)
+        #expect(receipt.sourceClasses == [.dnsSeed, .persisted],
+                "the unknown peer is not a third channel")
+
+        // The shape every store on disk has today.
+        try Data(#"{"nextScanHeight":5,"filterHeaders":{}}"#.utf8).write(to: store)
+        let older = try FilterSync(pool: pool, chain: chain, startHeight: 1, storageURL: store)
+        #expect(older.persistenceState == .loaded)
+        #expect(await older.nextScanHeight == 5)
+        #expect(await older.lastCrossCheck == nil)
+    }
+
+    /// A receipt is a claim about peers that are gone, so nothing can check
+    /// that it is true. What can be checked is that it is shaped like one, and
+    /// it is checked on the way in like every other field in this file.
+    /// A receipt is a note about who corroborated the frontier. A class this
+    /// build does not know is nil in that note — unknown never counts — and
+    /// not a reason to refuse the whole progress file after a downgrade.
+    @Test("an unknown source class in a receipt decodes as unknown, not as damage")
+    func unknownSourceClassIsLenient() throws {
+        let foreign = Data(#"{"endpoint":"10.0.0.1:8333","source":"carrierPigeon"}"#.utf8)
+        let agreement = try JSONDecoder().decode(FilterSync.CrossCheckReceipt.Agreement.self, from: foreign)
+        #expect(agreement.endpoint == "10.0.0.1:8333")
+        #expect(agreement.source == nil)
+        let known = try JSONDecoder().decode(
+            FilterSync.CrossCheckReceipt.Agreement.self,
+            from: Data(#"{"endpoint":"10.0.0.2:8333","source":"manual"}"#.utf8))
+        #expect(known.source == .manual)
+        let encoded = try JSONEncoder().encode(known)
+        #expect(try JSONDecoder().decode(FilterSync.CrossCheckReceipt.Agreement.self, from: encoded) == known)
+    }
+
+    @Test("a damaged cross-check receipt fails closed rather than being read")
+    func invalidReceiptFields() throws {
+        let pool = PeerPool(params: .signet, peerCount: 0, manualPeers: [])
+        let chain = try HeaderChain(params: .signet)
+        let store = tempFileURL("filter-receipt-invalid.json")
+        defer { try? FileManager.default.removeItem(at: store.deletingLastPathComponent()) }
+
+        func receipt(digest: String, endpoint: String) -> FilterSync.CrossCheckReceipt {
+            .init(tipHeight: 1, answerDigest: digest,
+                  agreed: [.init(endpoint: endpoint, source: .manual)])
+        }
+        let good = Data(repeating: 0x11, count: 32).hex
+
+        try writeProgress(.init(nextScanHeight: 5,
+                                crossCheck: receipt(digest: "abcd", endpoint: "10.0.0.1:8333")),
+                          to: store)
+        #expect(throws: FilterSyncStorageError.self) {
+            _ = try FilterSync(pool: pool, chain: chain, startHeight: 1, storageURL: store)
+        }
+
+        try writeProgress(.init(nextScanHeight: 5,
+                                crossCheck: receipt(digest: good, endpoint: "")),
+                          to: store)
+        #expect(throws: FilterSyncStorageError.self) {
+            _ = try FilterSync(pool: pool, chain: chain, startHeight: 1, storageURL: store)
+        }
+
+        // The control: the same receipt, well formed, loads.
+        try writeProgress(.init(nextScanHeight: 5,
+                                crossCheck: receipt(digest: good, endpoint: "10.0.0.1:8333")),
+                          to: store)
+        #expect(try FilterSync(pool: pool, chain: chain, startHeight: 1,
+                               storageURL: store).persistenceState == .loaded)
+    }
+
+    /// The rollback's half of the receipt, kept here with the other two
+    /// because it is about what the file says rather than where the frontier
+    /// lands. A receipt attests to a tip on the branch a rollback just
+    /// replaced, so it goes with the pins above the fork — including when the
+    /// frontier does not move, which is the case that would otherwise leave a
+    /// store claiming corroboration for a chain it is no longer on. A claim
+    /// that outlives its evidence is worse than no claim.
+    @Test("a rollback clears the cross-check receipt, even above the frontier")
+    func rollBackClearsTheReceipt() async throws {
+        let pool = PeerPool(params: .signet, peerCount: 0, manualPeers: [])
+        let chain = try HeaderChain(params: .signet)
+        let store = tempFileURL("filter-rollback-receipt.json")
+        defer { try? FileManager.default.removeItem(at: store.deletingLastPathComponent()) }
+
+        let receipt = FilterSync.CrossCheckReceipt(
+            tipHeight: 500,
+            answerDigest: Data(repeating: 0x2C, count: 32).hex,
+            agreed: [.init(endpoint: "203.0.113.7:8333", source: .dnsSeed),
+                     .init(endpoint: "198.51.100.9:8333", source: .manual)])
+        let pin = Data(repeating: 0xAA, count: 32).hex
+        try writeProgress(.init(nextScanHeight: 400, filterHeaders: ["200": pin],
+                                crossCheck: receipt),
+                          to: store)
+        let filters = try FilterSync(pool: pool, chain: chain, startHeight: 1, storageURL: store)
+        #expect(await filters.lastCrossCheck == receipt)
+
+        // A fork above the frontier: nothing scanned is affected, so the
+        // frontier stays where it is and the pin below the fork stays too.
+        // The receipt still goes, and the file is rewritten to say so.
+        try await filters.rollBack(to: 900)
+        #expect(await filters.nextScanHeight == 400)
+        #expect(await filters.pinnedFilterHeadersForTest == ["200": pin])
+        #expect(await filters.lastCrossCheck == nil)
+        let saved = try JSONDecoder().decode(FilterSync.Progress.self,
+                                             from: Data(contentsOf: store))
+        #expect(saved.crossCheck == nil, "the store on disk stopped claiming it too")
+        #expect(saved.nextScanHeight == 400)
     }
 
     private func writeProgress(_ progress: FilterSync.Progress, to url: URL) throws {

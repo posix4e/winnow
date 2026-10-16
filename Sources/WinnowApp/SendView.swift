@@ -247,7 +247,7 @@ struct SendView: View {
             }
             .accessibilityIdentifier("feePriorityPicker")
             LabeledContent("Resolved rate", value: resolvedRate.map(feeRateText) ?? "—")
-            LabeledContent("Network floor", value: model.status.feeFloorSatPerVByte.map(feeRateText) ?? "unknown")
+            LabeledContent("Peer relay floor", value: model.status.feeFloorSatPerVByte.map(feeRateText) ?? "unknown")
             TextField("Override (sat/vB, optional)", text: $overrideText)
                 .keyboardType(.decimalPad)
                 .focused($focusedField, equals: .fee)
@@ -255,7 +255,7 @@ struct SendView: View {
         } header: {
             Text("Fee")
         } footer: {
-            Text("The rate uses your override, recent confirmed fees, or a preset, never below the peers' relay floor. It is not a live fee-market estimate.")
+            Text("The rate uses your override, recent confirmed fees, or a preset. A majority of peer seats supplies a relay-floor hint; it is not a market estimate or a guarantee. Peer-driven increases stop at 120 sat/vB and require your decision above that.")
         }
     }
 

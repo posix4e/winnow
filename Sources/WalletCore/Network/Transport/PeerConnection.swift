@@ -120,7 +120,9 @@ public actor PeerConnection {
     private struct PendingCollector {
         let command: String
         let expected: Int
+        let maxTotalBytes: Int?
         var received: [PeerMessage]
+        var receivedBytes: Int
         let continuation: CheckedContinuation<[PeerMessage], Error>
     }
 
@@ -438,7 +440,7 @@ public actor PeerConnection {
     /// Sends a request and collects `count` responses of one command
     /// (e.g. the `cfilter` burst answering `getcfilters`).
     public func requestMany(_ message: PeerMessage, expecting command: String, count: Int,
-                            timeout: Duration = .seconds(60)) async throws -> [PeerMessage] {
+                            maxTotalBytes: Int? = nil, timeout: Duration = .seconds(60)) async throws -> [PeerMessage] {
         precondition(count > 0)
         // Same rule as `request`: a burst that timed out mid-delivery leaves
         // its trailing messages in the backlog, and they are not the answer
@@ -447,7 +449,7 @@ public actor PeerConnection {
         let id = UUID()
         scheduleTimeout(for: id, timeout: timeout)
         do {
-            async let collected = collect(id: id, command: command, count: count)
+            async let collected = collect(id: id, command: command, count: count, maxTotalBytes: maxTotalBytes)
             try await send(message)
             let result = try await collected
             timeoutTasks.removeValue(forKey: id)?.cancel()
@@ -462,18 +464,28 @@ public actor PeerConnection {
     /// Registers a response collector; resolves once `count` messages of
     /// `command` have arrived (or the timeout from `requestMany` fires).
     /// Drains any matching backlog entries first.
-    private func collect(id: UUID, command: String, count: Int) async throws -> [PeerMessage] {
+    private func collect(id: UUID, command: String, count: Int,
+                         maxTotalBytes: Int?) async throws -> [PeerMessage] {
         try Task.checkCancellation()
         guard connection != nil, !didTeardown else { throw PeerError.notConnected }
         var received: [PeerMessage] = []
+        var receivedBytes = 0
         while received.count < count,
               let index = backlog.firstIndex(where: { $0.message.command == command }) {
-            received.append(takeFromBacklog(at: index).message)
+            let entry = takeFromBacklog(at: index)
+            receivedBytes += entry.bytes
+            received.append(entry.message)
+        }
+        if let limit = maxTotalBytes, receivedBytes > limit {
+            let error = Self.burstTooLarge(command: command, bytes: receivedBytes, limit: limit)
+            teardown(error: error)
+            throw error
         }
         guard received.count < count else { return received }
         return try await withCheckedThrowingContinuation { continuation in
-            collectors[id] = PendingCollector(command: command, expected: count, received: received,
-                                              continuation: continuation)
+            collectors[id] = PendingCollector(command: command, expected: count,
+                                              maxTotalBytes: maxTotalBytes, received: received,
+                                              receivedBytes: receivedBytes, continuation: continuation)
         }
     }
 
@@ -648,21 +660,37 @@ public actor PeerConnection {
             request.continuation.resume(returning: message)
             return
         }
-        if let (id, collector) = collectors.first(where: { $0.value.command == command }) {
-            var collector = collector
-            collector.received.append(message)
-            if collector.received.count >= collector.expected {
-                collectors.removeValue(forKey: id)
-                timeoutTasks.removeValue(forKey: id)?.cancel()
-                collector.continuation.resume(returning: collector.received)
-            } else {
-                collectors[id] = collector
-            }
-            return
-        }
+        if deliverToCollector(message, bytes: payload.count) { return }
         // No waiter yet: keep it for future waitFor/collect calls (the peer
         // owes us nothing about send/receive ordering) and notify subscribers.
         buffer(message, bytes: payload.count)
+    }
+
+    private static func burstTooLarge(command: String, bytes: Int, limit: Int) -> PeerError {
+        .protocolViolation("\(command) burst of \(bytes) bytes exceeds the \(limit)-byte bound")
+    }
+
+    private func deliverToCollector(_ message: PeerMessage, bytes: Int) -> Bool {
+        guard let (id, value) = collectors.first(where: { $0.value.command == message.command }) else { return false }
+        var collector = value
+        collector.receivedBytes += bytes
+        if let limit = collector.maxTotalBytes, collector.receivedBytes > limit {
+            collectors.removeValue(forKey: id)
+            timeoutTasks.removeValue(forKey: id)?.cancel()
+            let error = Self.burstTooLarge(command: message.command, bytes: collector.receivedBytes, limit: limit)
+            collector.continuation.resume(throwing: error)
+            teardown(error: error)
+            return true
+        }
+        collector.received.append(message)
+        if collector.received.count >= collector.expected {
+            collectors.removeValue(forKey: id)
+            timeoutTasks.removeValue(forKey: id)?.cancel()
+            collector.continuation.resume(returning: collector.received)
+        } else {
+            collectors[id] = collector
+        }
+        return true
     }
 
     /// Buffers an unsolicited message for a later `waitFor`/`collect` and

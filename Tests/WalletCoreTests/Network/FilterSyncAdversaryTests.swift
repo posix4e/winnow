@@ -124,7 +124,9 @@ struct FilterSyncAdversaryTests {
     private static func threePeerFixture(liars: [CheckpointLie?],
                                          delays: [Duration] = [],
                                          chainLength: Int = 1_001,
-                                         watchHeight: UInt32 = 3) async throws -> CheckpointFixture {
+                                         watchHeight: UInt32 = 3,
+                                         policy: FilterSync.CrossCheckPolicy = .acceptSingleSource)
+        async throws -> CheckpointFixture {
         let synthetic = makeSyntheticChain(length: chainLength, watchHeight: watchHeight)
         let padded = delays + Array(repeating: Duration.zero,
                                     count: max(0, liars.count - delays.count))
@@ -145,13 +147,73 @@ struct FilterSyncAdversaryTests {
         let progressFile = tempFileURL("progress.json")
         let sync = try FilterSync(pool: pool, chain: chain, startHeight: 1,
                                   storageURL: progressFile,
-                                  requiredCheckpointPeers: liars.count)
+                                  requiredCheckpointPeers: liars.count,
+                                  crossCheckPolicy: policy)
         return CheckpointFixture(
             synthetic: synthetic,
             nodes: nodes,
             endpoints: endpoints,
             liarEndpoints: zip(liars, endpoints).filter { $0.0 != nil }.map { $0.1 },
             honestEndpoints: zip(liars, endpoints).filter { $0.0 == nil }.map { $0.1 },
+            peersFile: peersFile,
+            progressFile: progressFile,
+            pool: pool,
+            chain: chain,
+            sync: sync)
+    }
+
+    /// `threePeerFixture` with the pool deliberately split across acquisition
+    /// channels: `sources` names the class each node is reached through, so a
+    /// case can say "two channels" and mean it rather than infer it from a
+    /// pool that happens to be diverse. Every peer in the fixture above is
+    /// manual, which is one channel however many nodes it has.
+    ///
+    /// Only `.manual` and `.persisted` are buildable without a network, and
+    /// they are built the way `secondClassIsQueried` already builds them:
+    /// manual nodes go in `manualPeers`, persisted ones are written to the
+    /// peers file before the pool starts. A persisted node answers its
+    /// handshake late so it is seated last, which is what makes a case about
+    /// selection order fail every run rather than one in three.
+    private static func mixedSourceFixture(sources: [PeerSource],
+                                           liars: [CheckpointLie?]? = nil,
+                                           chainLength: Int = 1_001,
+                                           watchHeight: UInt32 = 3,
+                                           checkpointPeers: Int? = nil,
+                                           policy: FilterSync.CrossCheckPolicy)
+        async throws -> CheckpointFixture {
+        let lies = liars ?? Array(repeating: nil, count: sources.count)
+        let synthetic = makeSyntheticChain(length: chainLength, watchHeight: watchHeight)
+        var nodes: [LoopbackNode] = []
+        for (lie, source) in zip(lies, sources) {
+            nodes.append(makeNode(params: synthetic.params, blocks: synthetic.blocks, lie: lie,
+                                  versionDelay: source == .manual ? .zero : .milliseconds(300)))
+        }
+        for node in nodes { try await node.start() }
+        var endpoints: [PeerEndpoint] = []
+        for node in nodes { endpoints.append(await node.endpoint) }
+
+        let peersFile = tempFileURL("mixed-source-peers.json")
+        let remembered = zip(sources, endpoints)
+            .filter { $0.0 != .manual }
+            .map { PeerCandidate(endpoint: $0.1, source: $0.0) }
+        try JSONEncoder().encode(PersistedPeers(remembered)).write(to: peersFile)
+
+        let pool = PeerPool(params: synthetic.params, peerCount: sources.count,
+                            manualPeers: zip(sources, endpoints).filter { $0.0 == .manual }.map(\.1),
+                            peersFileURL: peersFile)
+        await pool.start()
+        let chain = try HeaderChain(params: synthetic.params)
+        let progressFile = tempFileURL("mixed-source-progress.json")
+        let sync = try FilterSync(pool: pool, chain: chain, startHeight: 1,
+                                  storageURL: progressFile,
+                                  requiredCheckpointPeers: checkpointPeers ?? sources.count,
+                                  crossCheckPolicy: policy)
+        return CheckpointFixture(
+            synthetic: synthetic,
+            nodes: nodes,
+            endpoints: endpoints,
+            liarEndpoints: zip(lies, endpoints).filter { $0.0 != nil }.map(\.1),
+            honestEndpoints: zip(lies, endpoints).filter { $0.0 == nil }.map(\.1),
             peersFile: peersFile,
             progressFile: progressFile,
             pool: pool,
@@ -858,6 +920,237 @@ struct FilterSyncAdversaryTests {
         #expect(await persisted.nextMessage(command: "getcfheaders", timeout: .seconds(2)) != nil,
                 "the persisted channel was never asked — the cross-check compared one class with itself")
         await pool.stop()
+    }
+
+    // MARK: - The cross-check policy and its receipt
+
+    // The half of #3 the selection above cannot reach.
+    //
+    // `crossSourceSet` prefers a set that spans classes, but it is a ceiling
+    // and not a quota, and the three tests above pin that on purpose: one
+    // class is used, not refused. Two ordinary pool states make the whole
+    // comparison run inside a single channel — `DiversityPolicy` exempts
+    // manual peers from the source rule, so an all-manual pool is one class in
+    // every seat; and its ceiling counts against `peerCount` rather than
+    // against how many peers are connected, so a pool at two of three seats
+    // admits two peers of one class. Neither is an attack. A wallet that would
+    // rather refuse than advance uncorroborated sets
+    // `CrossCheckPolicy.requireDistinctSources`, and these are what that buys.
+    //
+    // The receipt is the other half: what agreed, recorded, so the claim can
+    // be read afterwards instead of inferred from configuration that does not
+    // imply it.
+
+    // MARK: The rule, without a network
+
+    private func receipt(_ sources: [PeerSource?],
+                         tipHeight: UInt32 = 1_001) -> FilterSync.CrossCheckReceipt {
+        FilterSync.CrossCheckReceipt(
+            tipHeight: tipHeight,
+            answerDigest: Data(repeating: 0x07, count: 32).hex,
+            agreed: sources.enumerated().map {
+                .init(endpoint: "10.0.\($0.offset).1:8333", source: $0.element)
+            })
+    }
+
+    @Test("every network defaults to single-source verification; strict verification is an explicit choice")
+    func networkDefaults() async throws {
+        #expect(FilterSync.CrossCheckPolicy.default(for: .mainnet) == .acceptSingleSource)
+        #expect(FilterSync.CrossCheckPolicy.default(for: .signet) == .acceptSingleSource)
+        let pool = PeerPool(params: .mainnet, peerCount: 0)
+        let chain = try HeaderChain(params: .mainnet, start: .checkpoint)
+        let strict = try FilterSync(pool: pool, chain: chain, startHeight: await chain.startHeight,
+                                    crossCheckPolicy: .requireDistinctSources)
+        let degraded = try FilterSync(pool: pool, chain: chain, startHeight: await chain.startHeight)
+        #expect(await strict.crossCheckPolicy == .requireDistinctSources)
+        #expect(await degraded.crossCheckPolicy == .acceptSingleSource)
+    }
+
+    @Test("two known classes span; one class, or an unknown one, does not")
+    func receiptSpansOnlyKnownClasses() {
+        #expect(receipt([.manual, .persisted]).spansDistinctSources)
+        #expect(!receipt([.manual, .manual, .manual]).spansDistinctSources,
+                "three seats of one class is one channel agreeing with itself")
+        #expect(!receipt([.dnsSeed, nil]).spansDistinctSources,
+                "not knowing where a peer came from is not evidence it came from elsewhere")
+        #expect(!receipt([nil, nil]).spansDistinctSources)
+        #expect(!receipt([]).spansDistinctSources)
+        #expect(receipt([.manual, nil, .census]).sourceClasses == [.manual, .census])
+    }
+
+    @Test("explicit degraded verification admits a lone source while strict verification refuses it")
+    func policiesDisagreeOnlyOnTheDegradedCase() {
+        let lone = receipt([.manual])
+        #expect(FilterSync.CrossCheckPolicy.acceptSingleSource.admits(lone),
+                "degraded verification is an explicit single-source choice")
+        #expect(!FilterSync.CrossCheckPolicy.requireDistinctSources.admits(lone))
+        let spanning = receipt([.manual, .persisted])
+        #expect(FilterSync.CrossCheckPolicy.acceptSingleSource.admits(spanning))
+        #expect(FilterSync.CrossCheckPolicy.requireDistinctSources.admits(spanning))
+    }
+
+    // MARK: The rule, on the wire
+
+    /// The cfcheckpt lane took `prefix` over seating order until this patch,
+    /// while the cfheaders lane beside it went through `crossSourceSet` — so
+    /// the comparison every later check is anchored to was the one settled by
+    /// which peer connected first. Three peers, two channels, two asked:
+    /// seating order asks the two manuals, which is one channel corroborating
+    /// itself, and the class-spanning selection reaches the other.
+    ///
+    /// Nothing about the policy here: this is who gets asked, which matters
+    /// under either one.
+    @Test("the checkpoint comparison reaches the second source class")
+    func checkpointComparisonSpansClasses() async throws {
+        let fixture = try await Self.mixedSourceFixture(
+            sources: [.manual, .manual, .persisted], chainLength: 6,
+            checkpointPeers: 2, policy: .acceptSingleSource)
+        defer { fixture.stopNodes() }
+        #expect(await fixture.pool.connectedPeers().count == 3)
+
+        try await fixture.sync.sync(watchScripts: [fixture.synthetic.watchScript]) { _ in }
+
+        #expect(await fixture.nodes[2].nextMessage(command: "getcfcheckpt",
+                                                  timeout: .seconds(2)) != nil,
+                "the persisted channel was never asked for checkpoints — the comparison ran inside one class")
+        await fixture.pool.stop()
+    }
+
+    /// The case the pool ceiling is supposed to make impossible and does not.
+    /// Three manual peers, one lying about filter commitments: two answers
+    /// outvote one, and the two that agreed are the same channel, because
+    /// manual peers are exempt from the source rule. A majority of one channel
+    /// is what `requireDistinctSources` refuses — and a majority it refuses to
+    /// stand on condemns nobody: the dissenter is cooled off its seat, not
+    /// struck from the persisted good-peers list on that channel's word.
+    @Test("a 2-of-3 majority inside one source class advances nothing")
+    func singleClassMajorityIsRefused() async throws {
+        let fixture = try await Self.threePeerFixture(
+            liars: [nil, nil, .filterCommitments(salt: 0xFF)],
+            policy: .requireDistinctSources)
+        defer { fixture.stopNodes() }
+        let liarEndpoint = fixture.liarEndpoints[0]
+
+        let collector = MatchCollector()
+        var thrown: (any Error)?
+        do {
+            try await fixture.sync.sync(watchScripts: [fixture.synthetic.watchScript]) {
+                collector.add($0)
+            }
+        } catch { thrown = error }
+
+        guard case let .crossCheckUnavailable(reason)? = thrown as? FilterSyncError else {
+            Issue.record("expected a cross-check refusal, got \(String(describing: thrown))")
+            return
+        }
+        #expect(reason.contains("2 peers agreed, from 1 known source class"))
+        #expect(collector.matches.isEmpty, "no block was handed to the caller")
+        #expect(await fixture.sync.nextScanHeight == 1, "the frontier did not move")
+        #expect(await fixture.sync.lastCrossCheck == nil)
+        #expect(!FileManager.default.fileExists(atPath: fixture.progressFile.path),
+                "a refused run persists nothing at all")
+        // The comparison still ran and the dissenter is off its seat, but on
+        // the strength of a vote the policy declined: cooled off, so the pool
+        // seats other candidates before the next attempt, and not banned.
+        #expect(!(await Self.connectedEndpoints(fixture.pool)).contains(liarEndpoint.description))
+        #expect(await fixture.pool.rejectionReasons[liarEndpoint] == "cfcheckpt mismatch in a single-class vote",
+                "a single-class majority is not evidence against the peer it outvoted")
+        #expect(await fixture.pool.coolingEndpoints.contains(liarEndpoint))
+        await fixture.pool.stop()
+    }
+
+    /// The same three peers, two channels: the scan runs, and the receipt on
+    /// disk names the classes that agreed rather than the classes that were
+    /// dialled.
+    @Test("two source classes agreeing advances the scan and records who agreed")
+    func twoClassesAdvanceAndAreRecorded() async throws {
+        let fixture = try await Self.mixedSourceFixture(
+            sources: [.manual, .manual, .persisted], policy: .requireDistinctSources)
+        defer { fixture.stopNodes() }
+        #expect(await fixture.pool.connectedPeers().count == 3)
+
+        let collector = MatchCollector()
+        let reported = try await fixture.sync.sync(watchScripts: [fixture.synthetic.watchScript]) {
+            collector.add($0)
+        }
+
+        #expect(collector.matches.count == 1)
+        #expect(await fixture.sync.lastScannedHeight == 1_001, "the frontier advanced")
+        guard let receipt = reported else {
+            Issue.record("a run that scanned to the tip reported no receipt")
+            return
+        }
+        #expect(receipt.spansDistinctSources)
+        #expect(receipt.sourceClasses == [.manual, .persisted],
+                "the classes that answered, read from the pool rather than assumed")
+        #expect(receipt.agreed.count == 3)
+        #expect(receipt.tipHeight == 1_001)
+        #expect(Set(receipt.agreed.map(\.endpoint))
+            == Set(fixture.endpoints.map(\.description)))
+        // The returned receipt and the saved one are the same claim, so a
+        // caller that restarts reads what the run reported.
+        #expect(try Self.storedProgress(fixture.progressFile).crossCheck == receipt)
+        #expect(await fixture.sync.lastCrossCheck == receipt)
+        await fixture.pool.stop()
+    }
+
+    /// A lone survivor, which `majorityReference` accepts on purpose. The pool
+    /// spans two channels and only one of them answers: the other is evicted
+    /// for replying about a different chain, which is the eviction working.
+    /// Upstream advances on what is left; here nothing does, and there is no
+    /// receipt to read afterwards because there was no run to write one.
+    @Test("a lone surviving checkpoint peer commits nothing and leaves no receipt")
+    func loneSurvivorCommitsNothing() async throws {
+        let fixture = try await Self.mixedSourceFixture(
+            sources: [.manual, .persisted], liars: [nil, .stopHash],
+            policy: .requireDistinctSources)
+        defer { fixture.stopNodes() }
+        #expect(await fixture.pool.connectedPeers().count == 2, "two channels were dialled")
+
+        let collector = MatchCollector()
+        var thrown: (any Error)?
+        do {
+            try await fixture.sync.sync(watchScripts: [fixture.synthetic.watchScript]) {
+                collector.add($0)
+            }
+        } catch { thrown = error }
+
+        guard case let .crossCheckUnavailable(reason)? = thrown as? FilterSyncError else {
+            Issue.record("expected a cross-check refusal, got \(String(describing: thrown))")
+            return
+        }
+        #expect(reason.contains("1 peer agreed, from 1 known source class"))
+        #expect(collector.matches.isEmpty)
+        #expect(await fixture.sync.nextScanHeight == 1)
+        #expect(await fixture.sync.lastCrossCheck == nil, "no receipt: nothing was corroborated")
+        #expect(!FileManager.default.fileExists(atPath: fixture.progressFile.path))
+        await fixture.pool.stop()
+    }
+
+    /// The same pool under the explicit degraded policy, so the refusal above is read as
+    /// the policy choosing and not as a two-peer pool being broken.
+    @Test("the same lone survivor advances only with explicit degraded policy, with a one-class receipt")
+    func loneSurvivorAdvancesUnderTheDefault() async throws {
+        let fixture = try await Self.mixedSourceFixture(
+            sources: [.manual, .persisted], liars: [nil, .stopHash],
+            policy: .acceptSingleSource)
+        defer { fixture.stopNodes() }
+
+        let collector = MatchCollector()
+        let reported = try await fixture.sync.sync(watchScripts: [fixture.synthetic.watchScript]) {
+            collector.add($0)
+        }
+
+        #expect(collector.matches.count == 1)
+        #expect(await fixture.sync.lastScannedHeight == 1_001)
+        guard let receipt = reported else {
+            Issue.record("a run that scanned to the tip reported no receipt")
+            return
+        }
+        #expect(!receipt.spansDistinctSources, "recorded as uncorroborated, not hidden")
+        #expect(receipt.agreed.count == 1)
+        #expect(try Self.storedProgress(fixture.progressFile).crossCheck == receipt)
+        await fixture.pool.stop()
     }
 
     // MARK: - Checkpoint hang-up failover

@@ -9,7 +9,9 @@ import TestSupport
 ///
 /// Combined from `TxBroadcaster` (minus its store-persistence tests, which are
 /// now in `TxBroadcasterStoreTests.swift`), `TxBroadcaster backoff schedule`
-/// and `Fee filter announcements`. Only the last of the three carried a suite
+/// and `Fee filter announcements`. The relay-only sessions at the end came
+/// from none of them: they are this fork's mode for a payment still going out
+/// while nothing is being read. Only the last of the three carried a suite
 /// trait, `.timeLimit(.minutes(2))`; it is the stricter of the three and so it
 /// is the trait this suite keeps.
 @Suite("TxBroadcaster", .timeLimit(.minutes(2)))
@@ -112,26 +114,17 @@ struct TxBroadcasterTests {
 
     @Test("a served peer that goes away stays served, and served survives a reload")
     func servedIsSticky() async throws {
-        let params = NetworkParams.signet
-        let node = LoopbackNode(params: params, autoRequestDelay: .milliseconds(50))
-        try await node.start()
-        defer { Task { await node.stop() } }
         let store = FileManager.default.temporaryDirectory
             .appending(path: "broadcaster-served-\(UUID().uuidString)/broadcast.json")
         try FileManager.default.createDirectory(at: store.deletingLastPathComponent(), withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: store.deletingLastPathComponent()) }
-
-        let pool = PeerPool(params: params, peerCount: 1, manualPeers: [await node.endpoint])
-        await pool.start()
-        let broadcaster = try TxBroadcaster(pool: pool, storageURL: store, rebroadcastBaseInterval: .seconds(3_600))
-        let seen = EventCollector<TxBroadcaster.Event>()
-        let events = await broadcaster.events()
-        let consumer = Task { for await event in events { seen.add(event) } }
-        defer { consumer.cancel() }
+        let fixture = try await BroadcasterFixture.make(autoRequestDelay: .milliseconds(50), storageURL: store)
+        defer { fixture.stop() }
+        let (node, pool, broadcaster, seen) = (fixture.node, fixture.pool, fixture.broadcaster, fixture.seen)
 
         let tx = makeFakeSegwitTx()
         let txid = try await broadcaster.broadcast(tx.serialized(includeWitness: true))
-        let endpoint = await node.endpoint
+        let endpoint = fixture.endpoint
         #expect(await pollUntil { seen.events.contains { $0 == .served(txid: txid, peer: endpoint) } })
         #expect(await broadcaster.wasServed(txid))
 
@@ -172,23 +165,13 @@ struct TxBroadcasterTests {
 
     @Test("serves a delayed getdata and tracks per-peer state")
     func delayedGetdata() async throws {
-        let params = NetworkParams.signet
-        let node = LoopbackNode(params: params, autoRequestDelay: .milliseconds(100))
-        try await node.start()
-        defer { Task { await node.stop() } }
-
-        let pool = PeerPool(params: params, peerCount: 1, manualPeers: [await node.endpoint])
-        await pool.start()
-
-        let broadcaster = try TxBroadcaster(pool: pool, rebroadcastBaseInterval: .seconds(3_600))
-        let seen = EventCollector<TxBroadcaster.Event>()
-        let events = await broadcaster.events()
-        let consumer = Task { for await event in events { seen.add(event) } }
-        defer { consumer.cancel() }
+        let fixture = try await BroadcasterFixture.make(autoRequestDelay: .milliseconds(100))
+        defer { fixture.stop() }
+        let (node, broadcaster, seen) = (fixture.node, fixture.broadcaster, fixture.seen)
 
         let tx = makeFakeSegwitTx()
         let txid = try await broadcaster.broadcast(tx.serialized(includeWitness: true))
-        let endpoint = await node.endpoint
+        let endpoint = fixture.endpoint
 
         // The node requests after its delay and is then served the tx.
         let served = await pollUntil {
@@ -203,8 +186,6 @@ struct TxBroadcasterTests {
             return
         }
         #expect(servedTx == tx)
-
-        await pool.stop()
     }
 
     @Test("deprioritizes a peer that never answers invs with getdata")
@@ -257,19 +238,13 @@ struct TxBroadcasterTests {
 
     @Test("rebroadcast backs off exponentially, capped, with injected intervals")
     func exponentialBackoff() async throws {
-        let params = NetworkParams.signet
-        let node = LoopbackNode(params: params, autoRequestDelay: .milliseconds(20))
-        try await node.start()
-        defer { Task { await node.stop() } }
-
-        let pool = PeerPool(params: params, peerCount: 1, manualPeers: [await node.endpoint])
-        await pool.start()
-
         // 100ms base, doubling, capped at 250ms → gaps 100, 200, 250, 250.
-        let broadcaster = try TxBroadcaster(pool: pool,
-                                        rebroadcastBaseInterval: .milliseconds(100),
-                                        maxRebroadcastInterval: .milliseconds(250),
-                                        announcementTimeout: .seconds(30))
+        let fixture = try await BroadcasterFixture.make(
+            autoRequestDelay: .milliseconds(20),
+            rebroadcastBase: .milliseconds(100), maxRebroadcast: .milliseconds(250),
+            announcementTimeout: .seconds(30))
+        defer { fixture.stop() }
+        let broadcaster = fixture.broadcaster
         let txid = try await broadcaster.broadcast(makeFakeSegwitTx().serialized(includeWitness: true))
 
         var schedule: [Date] = []
@@ -305,28 +280,15 @@ struct TxBroadcasterTests {
         #expect(gaps.allSatisfy { $0 >= 0 }, "the schedule must never move backwards")
         #expect(schedule.last! > schedule.first!, "three attempts must push the schedule forward")
         #expect(await broadcaster.attemptCount(txid) ?? 0 >= 3, "three attempts must have fired")
-
-        await pool.stop()
     }
 
     @Test("stops rebroadcasting on confirmation and on explicit cancel")
     func stopOnConfirmationAndCancel() async throws {
-        let params = NetworkParams.signet
-        let node = LoopbackNode(params: params)
-        try await node.start()
-        defer { Task { await node.stop() } }
-
-        let pool = PeerPool(params: params, peerCount: 1, manualPeers: [await node.endpoint])
-        await pool.start()
-
-        let broadcaster = try TxBroadcaster(pool: pool,
-                                        rebroadcastBaseInterval: .milliseconds(150),
-                                        maxRebroadcastInterval: .milliseconds(600),
-                                        announcementTimeout: .seconds(30))
-        let seen = EventCollector<TxBroadcaster.Event>()
-        let events = await broadcaster.events()
-        let consumer = Task { for await event in events { seen.add(event) } }
-        defer { consumer.cancel() }
+        let fixture = try await BroadcasterFixture.make(
+            rebroadcastBase: .milliseconds(150), maxRebroadcast: .milliseconds(600),
+            announcementTimeout: .seconds(30))
+        defer { fixture.stop() }
+        let (node, broadcaster, seen) = (fixture.node, fixture.broadcaster, fixture.seen)
 
         // Confirmed tx: no further invs.
         let txid1 = try await broadcaster.broadcast(makeFakeSegwitTx().serialized(includeWitness: true))
@@ -358,8 +320,6 @@ struct TxBroadcasterTests {
         try await stragglersFlushed(node)
         #expect(await node.nextMessage(command: "inv", timeout: .milliseconds(700)) == nil)
         #expect(seen.events.contains { $0 == .cancelled(txid: txid2) })
-
-        await pool.stop()
     }
 
     @Test("emits feeFloorExceeded when every peer's feefilter exceeds the tx feerate")
@@ -574,13 +534,11 @@ struct TxBroadcasterTests {
 
     @Test("a peer whose fee filter refuses the transaction is not announced to until the filter drops")
     func feeFilterSkipsPeer() async throws {
-        let params = NetworkParams.signet
-        let node = LoopbackNode(params: params)
-        try await node.start()
-        defer { Task { await node.stop() } }
-        let pool = PeerPool(params: params, peerCount: 1, manualPeers: [await node.endpoint])
-        await pool.start()
-        defer { Task { await pool.stop() } }
+        let fixture = try await BroadcasterFixture.make(
+            rebroadcastBase: .milliseconds(300), maxRebroadcast: .milliseconds(600),
+            announcementTimeout: .seconds(30))
+        defer { fixture.stop() }
+        let (node, pool, broadcaster) = (fixture.node, fixture.pool, fixture.broadcaster)
         _ = await node.nextMessage(command: "verack", timeout: .seconds(10))
 
         // 100 sat/vB: nothing this test sends clears it.
@@ -591,11 +549,6 @@ struct TxBroadcasterTests {
         }
         #expect(await peer.feeFilter == 100_000)
 
-        let broadcaster = try TxBroadcaster(pool: pool,
-                                            rebroadcastBaseInterval: .milliseconds(300),
-                                            maxRebroadcastInterval: .milliseconds(600),
-                                            announcementTimeout: .seconds(30))
-        defer { Task { await broadcaster.shutdown() } }
         let txid = try await broadcaster.broadcast(
             makeFakeSegwitTx().serialized(includeWitness: true), feeRateSatPerVByte: 2)
         #expect(await node.nextMessage(command: "inv", timeout: .seconds(1)) == nil,
@@ -608,6 +561,642 @@ struct TxBroadcasterTests {
         #expect(await node.nextMessage(command: "inv", timeout: .seconds(10)) != nil,
                 "a filter that later allows the transaction lets the peer back in")
     }
+
+    // MARK: - Relay-only sessions
+    //
+    // A wallet that goes idle with a payment in flight has two bad options and
+    // one good one. Stopping the pool disconnects the peers announcements go
+    // over, so the transaction stops being relayed until the app is opened
+    // again; keeping the full pool up pays for a sync pool nobody is reading.
+    // `enterRelayOnly` is the third: a seat held for the announcements, and a
+    // pool that stops itself when there is nothing left to announce.
+
+    @Test("a relay-only session keeps a pending payment announcing and being served")
+    func relayOnlyKeepsRelaying() async throws {
+        let params = NetworkParams.signet
+        var nodes: [LoopbackNode] = []
+        var endpoints: [PeerEndpoint] = []
+        var byEndpoint: [PeerEndpoint: LoopbackNode] = [:]
+        for _ in 0 ..< 3 {
+            let node = LoopbackNode(params: params)
+            try await node.start()
+            nodes.append(node)
+            endpoints.append(await node.endpoint)
+            byEndpoint[await node.endpoint] = node
+        }
+        defer { for node in nodes { Task { await node.stop() } } }
+
+        let pool = PeerPool(params: params, peerCount: 3, manualPeers: endpoints)
+        await pool.start()
+        #expect(await pool.connectedPeers().count == 3)
+
+        // A high per-peer announcement ceiling: this is about relay surviving
+        // the narrowing, not about the peer that never answers.
+        let broadcaster = try TxBroadcaster(pool: pool,
+                                            rebroadcastBaseInterval: .milliseconds(500),
+                                            maxRebroadcastInterval: .seconds(1),
+                                            maxAnnouncementsPerPeer: 20,
+                                            announcementTimeout: .seconds(30))
+        defer { Task { await broadcaster.shutdown() } }
+        let tx = makeFakeSegwitTx()
+        let txid = try await broadcaster.broadcast(tx.serialized(includeWitness: true))
+        for node in nodes {
+            #expect(await node.nextMessage(command: "inv") != nil, "every peer hears the first inv")
+        }
+
+        let opened = try await broadcaster.enterRelayOnly(seats: 1)
+        #expect(opened, "a pending payment is what a session is opened for")
+        #expect(await broadcaster.isRelayOnly)
+        #expect(await pool.mode == .relayOnly)
+        let seat = try #require(await pool.connectedPeers().first)
+        let kept = try #require(byEndpoint[await seat.endpoint])
+
+        // The seat that stayed goes on hearing rebroadcasts. Drained first, so
+        // this is an announcement scheduled after the narrowing rather than
+        // one that was already in flight when it happened.
+        await drainQueuedInvs(from: kept)
+        #expect(await kept.nextMessage(command: "inv", timeout: .seconds(10)) != nil,
+                "the backoff loop must keep announcing over the seat that stayed")
+
+        // And the bytes still go out when that peer asks for them, which is
+        // the half of relay that actually puts the transaction on the network.
+        try await kept.send(.getdata(InventoryPayload([
+            InventoryVector(type: .witnessTx, hash: txid)])))
+        guard case let .tx(served) = await kept.nextMessage(command: "tx") else {
+            Issue.record("a relay-only session did not answer getdata")
+            return
+        }
+        #expect(served == tx)
+        #expect(await pool.isRunning, "the session holds the pool open while the payment is pending")
+        await pool.stop()
+    }
+
+    @Test("the pool stops itself once the relay-only session has nothing pending")
+    func relayOnlyStopsWhenDrained() async throws {
+        let fixture = try await BroadcasterFixture.make()
+        defer { fixture.stop() }
+        let (pool, broadcaster) = (fixture.pool, fixture.broadcaster)
+
+        let confirmed = try await broadcaster.broadcast(
+            makeFakeSegwitTx().serialized(includeWitness: true))
+        var opened = try await broadcaster.enterRelayOnly()
+        #expect(opened)
+        #expect(await pool.connectedPeers().count == 1)
+
+        // The confirmation is the drain, and nothing external watches for it:
+        // the broadcaster owns the pending set, so it is the thing that can
+        // say the pool has no work left.
+        try await broadcaster.markConfirmed(confirmed, atHeight: 1)
+        #expect(await pollUntil(.seconds(10)) { await poolIsStopped(pool) },
+                "a drained session must stop its pool without being asked")
+        #expect(await broadcaster.isRelayOnly == false)
+
+        // The same for a cancellation, which is what a fee bump does to the
+        // transaction it replaces — and `start()` is all it takes to come back
+        // from a stopped pool.
+        await pool.start()
+        #expect(await pool.connectedPeers().count == 1)
+        let cancelled = try await broadcaster.broadcast(
+            makeFakeSegwitTx(value: 40_000).serialized(includeWitness: true))
+        opened = try await broadcaster.enterRelayOnly()
+        #expect(opened)
+        try await broadcaster.cancel(cancelled)
+        #expect(await pollUntil(.seconds(10)) { await poolIsStopped(pool) })
+    }
+
+    @Test("a session whose pool went back to full service does not stop it on the drain")
+    func relayOnlyYieldsToAResumedPool() async throws {
+        let fixture = try await BroadcasterFixture.make()
+        defer { fixture.stop() }
+        let (pool, broadcaster) = (fixture.pool, fixture.broadcaster)
+        let txid = try await broadcaster.broadcast(
+            makeFakeSegwitTx().serialized(includeWitness: true))
+        _ = try await broadcaster.enterRelayOnly()
+
+        // The app comes back and resumes full service, so the pool is being
+        // synced over again. The payment confirming a moment later must end
+        // the session without taking those peers away.
+        await pool.start()
+        try await broadcaster.markConfirmed(txid, atHeight: 1)
+        #expect(await pollUntil(.seconds(10)) { await broadcaster.isRelayOnly == false })
+        try await Task.sleep(for: .milliseconds(200))
+        #expect(await pool.isRunning, "a resumed pool belongs to its caller again")
+        #expect(await pool.connectedPeers().count == 1)
+    }
+
+    @Test("a relay-only session with nothing pending stops the pool instead of holding it")
+    func relayOnlyWithNothingPending() async throws {
+        let fixture = try await BroadcasterFixture.make()
+        defer { fixture.stop() }
+        let (pool, broadcaster) = (fixture.pool, fixture.broadcaster)
+
+        // Nothing is in flight, so there is nothing to stay up for: the caller
+        // asked to go quiet and quiet is available immediately.
+        let opened = try await broadcaster.enterRelayOnly()
+        #expect(opened == false)
+        #expect(await broadcaster.isRelayOnly == false)
+        #expect(await pool.isRunning == false)
+        #expect(await pool.connectedPeers().isEmpty)
+
+        // A finished relay session cannot open one, exactly as it cannot
+        // broadcast, confirm or cancel.
+        await broadcaster.shutdown()
+        await #expect(throws: TxBroadcasterError.stopped) {
+            _ = try await broadcaster.enterRelayOnly()
+        }
+    }
+
+    /// A session with no seat is no session, and is reported as none.
+    ///
+    /// The pool refuses to narrow a pool it cannot narrow — one already
+    /// stopped, or one whose peers have all gone — and a broadcaster that
+    /// recorded a session anyway would tell the caller "relaying in the
+    /// background" over zero connections. Nothing would ever announce, and
+    /// nothing could ever end it either: the drain that closes a session
+    /// arrives with a confirmation, and a confirmation needs the filter sync
+    /// the mode refuses.
+    @Test("a session that could keep no seat reports none and stops the pool")
+    func relayOnlyWithNoSeats() async throws {
+        // A pool with a peer, so the transaction can be broadcast, and then no
+        // pool at all: the peer is gone by the time the session is asked for.
+        let fixture = try await BroadcasterFixture.make()
+        defer { fixture.stop() }
+        let (pool, broadcaster) = (fixture.pool, fixture.broadcaster)
+        _ = try await broadcaster.broadcast(makeFakeSegwitTx().serialized(includeWitness: true))
+        #expect(await broadcaster.pendingTxids.count == 1, "there is something to relay")
+        await pool.stop()
+
+        let opened = try await broadcaster.enterRelayOnly()
+        #expect(opened == false, "a payment is pending, but nothing is connected to relay it over")
+        #expect(await broadcaster.isRelayOnly == false)
+        #expect(await pool.isRunning == false)
+        #expect(await pool.mode == .full, "no session was left open on a pool holding nothing")
+    }
+
+    /// The drain's stop and a caller resuming the pool are the same instant on
+    /// iOS — the suspended task and the app's foreground `start()` become
+    /// runnable together at the unfreeze boundary — so the end state must not
+    /// depend on which of them the scheduler runs first.
+    ///
+    /// It did. `closeRelayOnlySession` re-read `pool.mode` and then called
+    /// `pool.stop()` as two jobs on the pool, so a `start()` landing in the
+    /// gap ran first and was silently undone: zero peers, `started == false`,
+    /// and `retry()` a no-op (it is gated on `started`), until the user
+    /// backgrounded and foregrounded the app again. `stopIfRelayOnly` makes
+    /// the question and the answer one job, and then the order stops
+    /// mattering: run first, it stops a pool the caller had not yet taken
+    /// back and the `start()` that follows brings it up; run second, it finds
+    /// full service and expires.
+    ///
+    /// Which is the invariant asserted every round: after a drain and a
+    /// resume, the pool is running and seated, whatever the interleaving.
+    @Test("a drain that races the caller resuming the pool never leaves it stopped")
+    func relayOnlyDrainDoesNotUndoAResume() async throws {
+        let fixture = try await BroadcasterFixture.make()
+        defer { fixture.stop() }
+        let (pool, broadcaster) = (fixture.pool, fixture.broadcaster)
+
+        for round in 0 ..< 30 {
+            // A distinct txid per round, so each is a real pending payment
+            // that drains on its own confirmation.
+            let txid = try await broadcaster.broadcast(
+                makeFakeSegwitTx(value: 50_000 - Int64(round)).serialized(includeWitness: true))
+            #expect(try await broadcaster.enterRelayOnly(seats: 1), "round \(round)")
+
+            // The confirmation spawns the session's stop; the resume is the
+            // app coming back. Varying how much of the stop's first hop gets
+            // to run before the resume is enqueued walks the window rather
+            // than sampling one point in it.
+            try await broadcaster.markConfirmed(txid, atHeight: UInt32(round + 1))
+            for _ in 0 ..< (round % 3) { await Task.yield() }
+            await pool.start()
+
+            #expect(await pollUntil(.seconds(10)) { await broadcaster.isRelayOnly == false },
+                    "round \(round): the session must close on the drain")
+            // Give a stop that is still queued time to land, then read the
+            // pool: a resumed pool is running and seated.
+            try await Task.sleep(for: .milliseconds(50))
+            #expect(await pool.isRunning,
+                    "round \(round): a resumed pool must not be stopped by the drain it raced")
+            #expect(await pool.connectedPeers().count == 1, "round \(round)")
+            try await broadcaster.cancel(txid)
+        }
+    }
+
+    /// `enterRelayOnly` checks that something is pending, narrows the pool,
+    /// and records the session. The narrowing is a suspension, and the
+    /// broadcaster runs other work inside it. A confirmation landing there is
+    /// the drain: it empties the pending set and calls the close, which finds
+    /// no session to close and does nothing. The session recorded on the far
+    /// side is then a session over nothing, and nothing is left to end it: the
+    /// pool is held open for a payment that already confirmed, with the
+    /// caller told "relaying in the background".
+    ///
+    /// The pool is parked inside its narrowing so the confirmation lands
+    /// while the broadcaster is genuinely suspended on that call, not
+    /// sometime near it.
+    @Test("a drain that lands while the pool is being narrowed opens no session")
+    func relayOnlyDrainDuringNarrowingOpensNoSession() async throws {
+        let fixture = try await BroadcasterFixture.make()
+        defer { fixture.stop() }
+        let (pool, broadcaster) = (fixture.pool, fixture.broadcaster)
+        let txid = try await broadcaster.broadcast(
+            makeFakeSegwitTx().serialized(includeWitness: true))
+
+        let gate = ParkGate()
+        await pool.holdNarrowing { await gate.reach(); await gate.waitForRelease() }
+        // A call that returns without ever narrowing the pool opens the gate
+        // too, so a broken path fails on an assertion instead of parking the
+        // test on a wait that will never be resumed.
+        let opening = gate.settling { try await broadcaster.enterRelayOnly(seats: 1) }
+        await gate.waitForReach()
+        #expect(await pool.mode == .relayOnly, "the pool is mid-narrowing")
+        #expect(await broadcaster.isRelayOnly == false, "and no session is recorded yet")
+
+        // The confirmation is the drain, landing inside the suspension.
+        try await broadcaster.markConfirmed(txid, atHeight: 1)
+        #expect(await broadcaster.pendingTxids.isEmpty)
+        await gate.release()
+
+        let opened = try await opening.value.get()
+        #expect(opened == false, "nothing is pending, so there is nothing to hold a session for")
+        #expect(await broadcaster.isRelayOnly == false,
+                "a session recorded over a drained set has no drain left to end it")
+        #expect(await poolIsStopped(pool),
+                "the pool must go quiet, which is what the caller asked for")
+    }
+
+    /// The other thing that can land inside the narrowing is `shutdown()`.
+    /// It ends every session and, by its own contract, leaves the pool to the
+    /// caller. A session recorded after it would have a finished broadcaster
+    /// reporting "relaying in the background" over a pool it had narrowed and
+    /// can never drain.
+    @Test("a shutdown that lands while the pool is being narrowed opens no session")
+    func relayOnlyShutdownDuringNarrowingOpensNoSession() async throws {
+        let fixture = try await BroadcasterFixture.make()
+        defer { fixture.stop() }
+        let (pool, broadcaster) = (fixture.pool, fixture.broadcaster)
+        _ = try await broadcaster.broadcast(makeFakeSegwitTx().serialized(includeWitness: true))
+
+        let gate = ParkGate()
+        await pool.holdNarrowing { await gate.reach(); await gate.waitForRelease() }
+        // A call that returns without ever narrowing the pool opens the gate
+        // too, so a broken path fails on an assertion instead of parking the
+        // test on a wait that will never be resumed.
+        let opening = gate.settling { try await broadcaster.enterRelayOnly(seats: 1) }
+        await gate.waitForReach()
+        #expect(await pool.mode == .relayOnly, "the pool is mid-narrowing")
+
+        await broadcaster.shutdown()
+        await gate.release()
+
+        let opened = try await opening.value.get()
+        #expect(opened == false, "a finished broadcaster owns no session")
+        #expect(await broadcaster.isRelayOnly == false)
+        #expect(await poolIsStopped(pool),
+                "a pool narrowed for a broadcaster that is gone would be held open forever")
+        #expect(await pool.mode == .full, "no session was left open on it")
+    }
+
+    /// The zero-seat branch sits on the far side of the same suspension, and
+    /// a `start()` can land inside it: the kept seat fails while the pool is
+    /// tearing down the rest, the app comes back to the foreground and takes
+    /// the pool back, and its dialling has seated nobody by the time the
+    /// narrowing reports its count. A plain `stop()` on that count tore down
+    /// the pool the caller had just resumed, which is the race
+    /// `stopIfRelayOnly` was made for, reached through a different branch.
+    ///
+    /// The seeds are stubbed to nothing and the one manual peer is cooling
+    /// after its failure, so the resume finds nothing to dial and the count
+    /// is genuinely zero when the narrowing returns. The pool is parked
+    /// inside the narrowing, as above, so the failure and the resume land
+    /// while the broadcaster is suspended on that call rather than near it.
+    @Test("a resume that lands while the pool is being narrowed is not undone by a zero seat count")
+    func relayOnlyZeroSeatsDoesNotUndoAResume() async throws {
+        let fixture = try await BroadcasterFixture.make(
+            dialTimeout: .milliseconds(500), seedResolver: SeedResolver { _, _, _ in [] })
+        defer { fixture.stop() }
+        let (pool, broadcaster) = (fixture.pool, fixture.broadcaster)
+        _ = try await broadcaster.broadcast(makeFakeSegwitTx().serialized(includeWitness: true))
+        let kept = try #require(await pool.connectedPeers().first)
+
+        let gate = ParkGate()
+        await pool.holdNarrowing { await gate.reach(); await gate.waitForRelease() }
+        // A call that returns without ever narrowing the pool opens the gate
+        // too, so a broken path fails on an assertion instead of parking the
+        // test on a wait that will never be resumed.
+        let opening = gate.settling { try await broadcaster.enterRelayOnly(seats: 1) }
+        await gate.waitForReach()
+        #expect(await pool.mode == .relayOnly, "the pool is mid-narrowing")
+
+        // The kept seat goes, and the app comes back, both inside the narrowing.
+        await pool.transportFailure(kept, reason: "test: the kept seat fails while the pool narrows")
+        await pool.start()
+        #expect(await pool.isRunning, "the resume has taken the pool back")
+        #expect(await pool.mode == .full)
+        #expect(await pool.connectedPeers().isEmpty,
+                "nothing to dial yet, so the narrowing will report zero seats")
+        await gate.release()
+
+        let opened = try await opening.value.get()
+        #expect(opened == false, "no seat was held, so there is no session")
+        #expect(await broadcaster.isRelayOnly == false)
+        #expect(await pool.isRunning,
+                "a pool the caller resumed must be left as they put it, not stopped for the seat it lost")
+        #expect(await pool.mode == .full)
+    }
+
+    /// A session ends when its seats are gone, and says so.
+    ///
+    /// The mode dials no replacement, which is the point of it, and the pool
+    /// now drops a seat whose connection has closed rather than reporting one
+    /// that is not there. What was left was a session over an empty pool:
+    /// `announce` reached nobody on every attempt, and no confirmation could
+    /// arrive either, because a confirmation comes through the filter sync
+    /// the mode refuses. The peers were held open and the caller was told the
+    /// payment was relaying in the background, for as long as the app stayed
+    /// closed. The backoff attempt is where it is noticed, and the session
+    /// ends there: the pool stops, the caller is told which way it went, and
+    /// the payment stays saved for the next start.
+    @Test("a relay-only session whose seat is gone ends, and stops the pool")
+    func relayOnlyEndsWhenItsSeatIsGone() async throws {
+        // The prune and the backoff attempt are what notice, in that order, so
+        // both run on the test's timescale instead of the wallet's.
+        let fixture = try await BroadcasterFixture.make(
+            monitorInterval: .milliseconds(50),
+            rebroadcastBase: .milliseconds(200), maxRebroadcast: .milliseconds(200))
+        defer { fixture.stop() }
+        let (node, pool, broadcaster, seen) = (fixture.node, fixture.pool, fixture.broadcaster, fixture.seen)
+
+        let txid = try await broadcaster.broadcast(
+            makeFakeSegwitTx().serialized(includeWitness: true))
+        #expect(try await broadcaster.enterRelayOnly(seats: 1))
+        #expect(await pool.connectedPeers().count == 1)
+
+        // The remote goes away, which is how a mobile connection usually ends.
+        await node.stop()
+
+        #expect(await pollUntil(.seconds(15)) {
+            seen.events.contains(.relaySessionEnded(reason: .seatsGone))
+        }, "a session with nothing left to announce over must end, not wait forever")
+        #expect(await broadcaster.isRelayOnly == false)
+        #expect(await poolIsStopped(pool), "the peers it was holding go with it")
+        #expect(await broadcaster.pendingTxids == [txid],
+                "the payment is still pending and still saved: it goes out on the next start")
+    }
+
+    /// The other way the last seat goes: a data fault unseats it. `misbehaving`
+    /// removes the peer and calls `replenish`, which a relay-only session
+    /// refuses, so the pool is simply empty — and that is the state a scan
+    /// still unwinding leaves behind when an app narrows the pool on going
+    /// idle, which is exactly when this session is opened.
+    @Test("a fault that takes the last seat ends the session on the next attempt")
+    func relayOnlyEndsWhenAFaultTakesTheLastSeat() async throws {
+        let fixture = try await BroadcasterFixture.make(
+            rebroadcastBase: .milliseconds(200), maxRebroadcast: .milliseconds(200))
+        defer { fixture.stop() }
+        let (pool, broadcaster, seen) = (fixture.pool, fixture.broadcaster, fixture.seen)
+
+        _ = try await broadcaster.broadcast(makeFakeSegwitTx().serialized(includeWitness: true))
+        #expect(try await broadcaster.enterRelayOnly(seats: 1))
+        let seat = try #require(await pool.connectedPeers().first)
+
+        await pool.misbehaving(seat, reason: "test: a filter commitment from a scan still unwinding")
+        #expect(await pool.connectedPeers().isEmpty)
+        #expect(await pool.mode == .relayOnly, "nothing dials a replacement, which is the mode")
+
+        #expect(await pollUntil(.seconds(15)) {
+            seen.events.contains(.relaySessionEnded(reason: .seatsGone))
+        })
+        #expect(await broadcaster.isRelayOnly == false)
+        #expect(await poolIsStopped(pool))
+    }
+
+    /// Ending a session must not take a pool the caller has resumed. The
+    /// session's seats can be gone and the pool be in full service at the same
+    /// instant — the app comes back while its last seat is being unseated —
+    /// and the end is then only the session's: `stopIfRelayOnly` re-reads the
+    /// mode as one job on the pool, finds full service, and declines.
+    @Test("seats gone on a pool the caller resumed ends the session and keeps the pool")
+    func relayOnlySeatsGoneLeavesAResumedPoolAlone() async throws {
+        // The seeds resolve to nothing and the one manual peer is refused for
+        // the rest of the run by the fault below, so the resume finds nothing
+        // to dial and the attempt lands on a pool that is empty and in full
+        // service, which is the case being pinned.
+        let fixture = try await BroadcasterFixture.make(
+            dialTimeout: .milliseconds(500), seedResolver: SeedResolver { _, _, _ in [] },
+            rebroadcastBase: .milliseconds(200), maxRebroadcast: .milliseconds(200))
+        defer { fixture.stop() }
+        let (pool, broadcaster, seen) = (fixture.pool, fixture.broadcaster, fixture.seen)
+
+        _ = try await broadcaster.broadcast(makeFakeSegwitTx().serialized(includeWitness: true))
+        #expect(try await broadcaster.enterRelayOnly(seats: 1))
+        let seat = try #require(await pool.connectedPeers().first)
+        await pool.misbehaving(seat, reason: "test: a data fault takes the last seat")
+        await pool.start()
+        #expect(await pool.isRunning, "the app is back, and the pool is its caller's again")
+        #expect(await pool.connectedPeers().isEmpty, "with nothing left to dial")
+
+        #expect(await pollUntil(.seconds(15)) {
+            seen.events.contains(.relaySessionEnded(reason: .seatsGone))
+        })
+        #expect(await broadcaster.isRelayOnly == false)
+        // Give a stop that was queued anyway time to land before reading.
+        try await Task.sleep(for: .milliseconds(100))
+        #expect(await pool.isRunning, "a resumed pool is not stopped by a session ending over it")
+        #expect(await pool.mode == .full)
+    }
+
+    /// A halted retry loop is the zero-seat state reached before the pool is
+    /// even narrowed. `fireDueAttempts` stops after a failed write, so nothing
+    /// is announced again; a confirmation cannot arrive over a narrowed pool;
+    /// and the session would have been peers held open with the caller told
+    /// the payment was relaying. It is refused instead, and the pool goes
+    /// quiet, which is what the caller asked for.
+    @Test("a session is refused while retries cannot be saved")
+    func relayOnlyRefusedWhileRetriesCannotBeSaved() async throws {
+        let store = tempFileURL("pending-relay-blocked.json")
+        defer { try? FileManager.default.removeItem(at: store.deletingLastPathComponent()) }
+        let fixture = try await BroadcasterFixture.make(storageURL: store,
+                                                        rebroadcastBase: .milliseconds(100))
+        defer { fixture.stop() }
+        let (pool, broadcaster, seen) = (fixture.pool, fixture.broadcaster, fixture.seen)
+
+        let txid = try await broadcaster.broadcast(
+            makeFakeSegwitTx().serialized(includeWitness: true))
+        try FileManager.default.removeItem(at: store.deletingLastPathComponent())
+        #expect(await pollUntil(.seconds(15)) {
+            seen.events.contains { if case .persistenceFailed = $0 { return true }; return false }
+        }, "the retry loop has to halt before there is anything to refuse")
+
+        let opened = try await broadcaster.enterRelayOnly(seats: 1)
+        #expect(opened == false, "a session that can never announce is not a session")
+        #expect(await broadcaster.isRelayOnly == false)
+        #expect(await poolIsStopped(pool))
+        #expect(await pool.mode == .full, "no session was left open on it")
+        #expect(await broadcaster.pendingTxids == [txid])
+    }
+
+    /// The same halt reached from inside a session. The write fails on a
+    /// backoff attempt this time, so the loop stops with the pool already
+    /// narrowed: nothing is announced again, and nothing could end the session
+    /// either. It ends here, and names the reason it did.
+    @Test("a session whose retries stop being saved ends instead of holding the pool")
+    func relayOnlyEndsWhenARetryCannotBeSaved() async throws {
+        let store = tempFileURL("pending-relay-halted.json")
+        defer { try? FileManager.default.removeItem(at: store.deletingLastPathComponent()) }
+        let fixture = try await BroadcasterFixture.make(
+            storageURL: store, rebroadcastBase: .milliseconds(200), maxRebroadcast: .milliseconds(200))
+        defer { fixture.stop() }
+        let (pool, broadcaster, seen) = (fixture.pool, fixture.broadcaster, fixture.seen)
+
+        let txid = try await broadcaster.broadcast(
+            makeFakeSegwitTx().serialized(includeWitness: true))
+        #expect(try await broadcaster.enterRelayOnly(seats: 1))
+
+        // The store goes out from under the retry loop, which is what a device
+        // that has run out of room does to it.
+        try FileManager.default.removeItem(at: store.deletingLastPathComponent())
+        #expect(await pollUntil(.seconds(15)) {
+            seen.events.contains(.relaySessionEnded(reason: .persistenceBlocked))
+        }, "a session that will never announce again must not hold the peers")
+        #expect(await broadcaster.isRelayOnly == false)
+        #expect(await poolIsStopped(pool))
+        #expect(await broadcaster.pendingTxids == [txid])
+    }
+
+    /// The halt can also land inside the narrowing: the write fails on an
+    /// attempt that fires while the pool is being narrowed, so the end it
+    /// calls finds no session yet, and the loop is dead by the time the
+    /// narrowing reports its seats. The re-check on the far side has to see
+    /// that, or the session the check before the narrowing refuses is
+    /// recorded anyway, over a loop that will never announce.
+    @Test("a write that fails while the pool is being narrowed opens no session")
+    func relayOnlyPersistenceFailureDuringNarrowingOpensNoSession() async throws {
+        let store = tempFileURL("pending-relay-narrowing.json")
+        defer { try? FileManager.default.removeItem(at: store.deletingLastPathComponent()) }
+        let fixture = try await BroadcasterFixture.make(
+            storageURL: store, rebroadcastBase: .milliseconds(100), maxRebroadcast: .milliseconds(100))
+        defer { fixture.stop() }
+        let (pool, broadcaster, seen) = (fixture.pool, fixture.broadcaster, fixture.seen)
+        let txid = try await broadcaster.broadcast(
+            makeFakeSegwitTx().serialized(includeWitness: true))
+
+        let gate = ParkGate()
+        await pool.holdNarrowing { await gate.reach(); await gate.waitForRelease() }
+        // A call that returns without ever narrowing the pool opens the gate
+        // too, so a broken path fails on an assertion instead of parking the
+        // test on a wait that will never be resumed.
+        let opening = gate.settling { try await broadcaster.enterRelayOnly(seats: 1) }
+        await gate.waitForReach()
+        #expect(await pool.mode == .relayOnly, "the pool is mid-narrowing")
+
+        // The store goes out from under the retry loop while the broadcaster
+        // is suspended on the narrowing; the next attempt halts the loop.
+        try FileManager.default.removeItem(at: store.deletingLastPathComponent())
+        #expect(await pollUntil(.seconds(15)) {
+            seen.events.contains { if case .persistenceFailed = $0 { return true }; return false }
+        }, "the loop has to halt inside the narrowing for the case to exist")
+        await gate.release()
+
+        let opened = try await opening.value.get()
+        #expect(opened == false, "a session over a halted loop is refused on the far side too")
+        #expect(await broadcaster.isRelayOnly == false)
+        #expect(await poolIsStopped(pool), "the pool goes quiet, which is what the caller asked for")
+        #expect(await broadcaster.pendingTxids == [txid])
+    }
+
+    /// A seat can be present and useless: a peer announced to the maximum
+    /// number of times without ever asking for the payment is skipped for
+    /// good, and a relay-only session kept over nothing but such seats is
+    /// peers held open for a relay that has already stopped. The attempt
+    /// that finds no seat it can announce to ends the session, as a lost
+    /// seat would.
+    @Test("a session whose only seat will never hear about the payment ends")
+    func relayOnlyEndsWhenItsSeatIsDeprioritized() async throws {
+        // The node never requests: it is silent about every inv.
+        let fixture = try await BroadcasterFixture.make(
+            rebroadcastBase: .milliseconds(150), maxRebroadcast: .milliseconds(200),
+            maxAnnouncementsPerPeer: 2, announcementTimeout: .milliseconds(100))
+        defer { fixture.stop() }
+        let (pool, broadcaster, seen) = (fixture.pool, fixture.broadcaster, fixture.seen)
+        let silentEndpoint = fixture.endpoint
+
+        let txid = try await broadcaster.broadcast(makeFakeSegwitTx().serialized(includeWitness: true))
+        #expect(await pollUntil {
+            seen.events.contains { $0 == .deprioritized(txid: txid, peer: silentEndpoint) }
+        }, "the only seat has stopped being worth announcing to")
+
+        // The session opens over the seat it has, and the next attempt finds
+        // that seat cannot be announced to for anything still pending.
+        #expect(try await broadcaster.enterRelayOnly(seats: 1))
+        #expect(await pollUntil(.seconds(15)) {
+            seen.events.contains(.relaySessionEnded(reason: .seatsGone))
+        }, "a seat that will never hear about the payment is a seat that is gone")
+        #expect(await broadcaster.isRelayOnly == false)
+        #expect(await poolIsStopped(pool))
+        #expect(await broadcaster.pendingTxids == [txid], "the payment stays saved for the next start()")
+    }
+}
+
+/// The scaffold most cases here open with: one loopback node, a started pool
+/// of one seated on it, a broadcaster over that pool, and a collector draining
+/// the broadcaster's events. `stop()` is for the `defer`: it ends the
+/// broadcaster, the pool and the node, in that order, off the test's thread.
+private struct BroadcasterFixture {
+    let node: LoopbackNode
+    let endpoint: PeerEndpoint
+    let pool: PeerPool
+    let broadcaster: TxBroadcaster
+    let seen: EventCollector<TxBroadcaster.Event>
+    private let consumer: Task<Void, Never>
+
+    static func make(autoRequestDelay: Duration? = nil, storageURL: URL? = nil,
+                     dialTimeout: Duration = .seconds(5),
+                     seedResolver: SeedResolver? = nil,
+                     monitorInterval: Duration = .seconds(30),
+                     rebroadcastBase: Duration = .seconds(3_600),
+                     maxRebroadcast: Duration = .seconds(3_600),
+                     maxAnnouncementsPerPeer: Int = 3,
+                     announcementTimeout: Duration = .seconds(120)) async throws -> BroadcasterFixture {
+        let params = NetworkParams.signet
+        let node = LoopbackNode(params: params, autoRequestDelay: autoRequestDelay)
+        try await node.start()
+        let endpoint = await node.endpoint
+        let pool = PeerPool(params: params, peerCount: 1, manualPeers: [endpoint],
+                            dialTimeout: dialTimeout, seedResolver: seedResolver,
+                            monitorInterval: monitorInterval)
+        await pool.start()
+        let broadcaster = try TxBroadcaster(pool: pool, storageURL: storageURL,
+                                            rebroadcastBaseInterval: rebroadcastBase,
+                                            maxRebroadcastInterval: maxRebroadcast,
+                                            maxAnnouncementsPerPeer: maxAnnouncementsPerPeer,
+                                            announcementTimeout: announcementTimeout)
+        let seen = EventCollector<TxBroadcaster.Event>()
+        let events = await broadcaster.events()
+        let consumer = Task { for await event in events { seen.add(event) } }
+        return BroadcasterFixture(node: node, endpoint: endpoint, pool: pool,
+                                  broadcaster: broadcaster, seen: seen, consumer: consumer)
+    }
+
+    func stop() {
+        consumer.cancel()
+        let (broadcaster, pool, node) = (broadcaster, pool, node)
+        Task {
+            await broadcaster.shutdown()
+            await pool.stop()
+            await node.stop()
+        }
+    }
+}
+
+/// Whether the pool has finished stopping: not running *and* with no peer
+/// left. Both halves, because `stop()` clears the running flag before it
+/// awaits each disconnect, so a pool can be observed stopped with its last
+/// peer still on the way down.
+private func poolIsStopped(_ pool: PeerPool) async -> Bool {
+    guard await pool.isRunning == false else { return false }
+    return await pool.connectedPeers().isEmpty
 }
 
 /// Consumes every inv already queued on `node`, so a following assertion is
