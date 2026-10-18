@@ -1,6 +1,9 @@
-name: Fuzz sanitizers
+name: Fuzz
 
 on:
+  pull_request:
+  push:
+    branches: [main]
   schedule:
     - cron: "17 4 * * 1"
   workflow_dispatch:
@@ -13,14 +16,55 @@ on:
 permissions:
   contents: read
 
-concurrency:
-  group: fuzz-${{ github.ref }}
-  cancel-in-progress: false
-
 jobs:
+  # The development harness exercises the local Bitcoin modules. Deliberately
+  # a FIXED seed, unlike the sustained job. This is the regression evidence:
+  # every pull request fuzzes the identical 14,000 cases, so a newly
+  # introduced parser bug shows up as this check turning red rather than as a
+  # corpus that happened to wander somewhere new. Rotation belongs in the
+  # sustained job; do not "fix" this one too.
+  smoke:
+    if: github.event_name == 'pull_request' || github.event_name == 'push'
+    runs-on: macos-26
+    timeout-minutes: 30
+    concurrency:
+      group: fuzz-smoke-${{ github.event.pull_request.number || github.run_id }}
+      cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Bounded deterministic fuzz smoke
+        env:
+          FUZZ_DIR: ${{ runner.temp }}/winnow-fuzz-smoke
+        run: |
+          mkdir -p "$FUZZ_DIR"
+          set -o pipefail
+          swift run \
+            --configuration release WinnowFuzz \
+            --iterations 1000 \
+            --seed 0x57494e4e4f575055 \
+            --max-input 16384 \
+            --artifact-dir "$FUZZ_DIR" \
+            2>&1 | tee "$FUZZ_DIR/run.log"
+
+      - name: Upload fuzz log and reproducer
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: fuzz-smoke-${{ github.run_id }}-${{ github.run_attempt }}
+          path: ${{ runner.temp }}/winnow-fuzz-smoke/
+          if-no-files-found: warn
+          retention-days: 7
+
   sustained-fuzz:
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
     runs-on: macos-26
     timeout-minutes: 60
+    concurrency:
+      group: fuzz-${{ github.ref }}
+      cancel-in-progress: false
     strategy:
       fail-fast: false
       matrix:

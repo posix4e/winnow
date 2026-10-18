@@ -18,11 +18,18 @@ validation result:
 
 Parallel build prepares Debug app/test products once and also checks an ARM64
 Release build. Units and journey download the hash-checked Debug artifact and
-run on separate runners and simulators. Package runs SwiftPM tests, fuzz smoke,
-lint, dependency and production-warning checks, debugging smoke and provenance
+run on separate runners and simulators. Package runs SwiftPM tests, lint,
+dependency and production-warning checks, debugging smoke and provenance
 generation. Journey uses a fresh disposable signet fixture. Tailnet builds a
 controlled Headscale/gateway environment for routing tests; it does not verify
 live public Tor or I2P access.
+
+[Fuzz](../workflows/fuzz.yml) is a separate check with its own artifacts. Its
+`smoke` job runs the fixed-seed campaign (14,000 deterministic cases) on every
+pull request and main push; its `sustained-fuzz` job runs the weekly and manual
+sanitizer matrix with a seed rotated from the run id, replayable through the
+`replay_seed` input. See [deterministic fuzzing](../../Tools/Fuzz/README.md).
+Validation evidence never includes fuzz results.
 
 The parallel scripts currently require Xcode 26.6 build 17F113 and select iOS
 26.5. Runner, runtime, architecture and test inventory are recorded in lane

@@ -64,7 +64,6 @@ jobs:
             ${{ runner.temp }}/winnow-ci/results/*.log
             ${{ runner.temp }}/winnow-ci/results/app/
             ${{ runner.temp }}/winnow-ci/results/media/
-            ${{ runner.temp }}/winnow-ci/results/fuzz/
             ${{ runner.temp }}/winnow-ci/results/supply-chain/
             !${{ runner.temp }}/winnow-ci/results/app/signet/
           if-no-files-found: error
@@ -118,7 +117,6 @@ jobs:
             ${{ runner.temp }}/winnow-ci/results/*.log
             ${{ runner.temp }}/winnow-ci/results/app/
             ${{ runner.temp }}/winnow-ci/results/media/
-            ${{ runner.temp }}/winnow-ci/results/fuzz/
             ${{ runner.temp }}/winnow-ci/results/supply-chain/
             !${{ runner.temp }}/winnow-ci/results/app/signet/
           if-no-files-found: error
@@ -150,7 +148,6 @@ jobs:
             ${{ runner.temp }}/winnow-ci/results/*.log
             ${{ runner.temp }}/winnow-ci/results/app/
             ${{ runner.temp }}/winnow-ci/results/media/
-            ${{ runner.temp }}/winnow-ci/results/fuzz/
             ${{ runner.temp }}/winnow-ci/results/supply-chain/
             !${{ runner.temp }}/winnow-ci/results/app/signet/
           if-no-files-found: error
@@ -188,7 +185,6 @@ jobs:
             ${{ runner.temp }}/winnow-ci/results/*.log
             ${{ runner.temp }}/winnow-ci/results/app/
             ${{ runner.temp }}/winnow-ci/results/media/
-            ${{ runner.temp }}/winnow-ci/results/fuzz/
             ${{ runner.temp }}/winnow-ci/results/supply-chain/
             !${{ runner.temp }}/winnow-ci/results/app/signet/
           if-no-files-found: error

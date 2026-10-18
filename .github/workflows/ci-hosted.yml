@@ -139,34 +139,6 @@ jobs:
           if-no-files-found: warn
           retention-days: 14
 
-      # The development harness exercises the local Bitcoin modules.
-      # Deliberately a FIXED seed, unlike the sustained lane. This is the
-      # regression evidence: every pull request fuzzes the identical 14,000
-      # cases, so a newly-introduced parser bug shows up as this job turning
-      # red rather than as a corpus that happened to wander somewhere new.
-      # Rotation belongs in the scheduled lane; do not "fix" this one too.
-      - name: Bounded deterministic fuzz smoke
-        if: steps.validate_media.outcome != 'success'
-        run: |
-          mkdir -p "$CI_RESULTS/fuzz-smoke"
-          set -o pipefail
-          swift run --scratch-path "$CI_RESULTS/production-build" \
-            --configuration release WinnowFuzz \
-            --iterations 1000 \
-            --seed 0x57494e4e4f575055 \
-            --max-input 16384 \
-            --artifact-dir "$CI_RESULTS/fuzz-smoke" \
-            2>&1 | tee "$CI_RESULTS/fuzz-smoke/run.log"
-
-      - name: Upload fuzz log and reproducer
-        if: always() && steps.validate_media.outcome != 'success'
-        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
-        with:
-          name: fuzz-smoke-${{ github.run_id }}-${{ github.run_attempt }}
-          path: ${{ env.CI_RESULTS }}/fuzz-smoke/
-          if-no-files-found: warn
-          retention-days: 7
-
       - name: Install pinned XcodeGen
         if: steps.validate_media.outcome != 'success'
         run: scripts/install-xcodegen

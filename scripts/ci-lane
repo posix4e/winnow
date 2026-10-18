@@ -82,7 +82,6 @@ case "$lane" in
   scripts/ci-debug
   scripts/ci-production-warnings "$CI_RESULTS/production-build" "$CI_RESULTS/production-build.log"
   for command in inspect generate soak; do "$CI_RESULTS/production-build/release/winnow-debug" "$command" --help; done
-  swift run --scratch-path "$CI_RESULTS/production-build" -c release WinnowFuzz --iterations 1000 --seed 0x57494e4e4f575055 --max-input 16384 --artifact-dir "$CI_RESULTS/fuzz" 2>&1 | tee "$CI_RESULTS/fuzz.log"
   for dir in supply-chain supply-chain-replay; do
     scripts/generate-supply-chain-metadata --output-dir "$CI_RESULTS/$dir" --subject "$CI_RESULTS/production-build/release/winnow-debug" --subject-name winnow-debug --builder-id "https://github.com/$GITHUB_REPOSITORY/.github/workflows/ci-parallel.yml@$GITHUB_SHA"
   done

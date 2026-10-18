@@ -24,8 +24,10 @@ Every iteration exercises all fourteen targets, so this runs 14,000 deterministi
 cases. Use `--target psbt` (or another target name) to focus a run. Keep the
 target selection, seed, input limit, and iteration count when replaying.
 
-CI runs the fixed-seed campaign for PRs, main, and Winnow releases. The separate weekly
-and manually dispatched lanes run 25,000 iterations per sanitizer with
+[fuzz.yml](../../.github/workflows/fuzz.yml) is the one fuzz workflow. Its `smoke`
+job runs this fixed-seed campaign on every pull request and push to main, as a
+check of its own with its own artifact. Its `sustained-fuzz` job, weekly and on
+manual dispatch, runs 25,000 iterations per sanitizer with
 distinct rotating seeds: 350,000 cases under Address Sanitizer and another
 350,000 under Thread Sanitizer (25,000 × 14 targets). A manual `replay_seed` input reproduces a
 recorded seed. For example, replay an address-sanitized run locally with:
