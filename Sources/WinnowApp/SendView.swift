@@ -297,6 +297,14 @@ struct SendView: View {
                         .accessibilityIdentifier("reviewRecipient")
                 }
                 ReviewAddress(address: preview.destination)
+                if !preview.silentPayments.isEmpty {
+                    // The one visible difference of a BIP352 send: the chain
+                    // will show an address the user never typed.
+                    Text("Silent payment: the Bitcoin address this pays is created for this transaction only.")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                        .accessibilityIdentifier("silentPaymentNote")
+                }
             }
             paymentAmounts(preview)
             reviewWarnings(preview)
@@ -386,6 +394,19 @@ struct SendView: View {
                 }
             }
             if let preview { paymentAmounts(preview) }
+            if let preview, !preview.silentPayments.isEmpty,
+               let entry = model.status.history.first(where: { $0.txid == txid }) {
+                // Activity and explorers show the derived address, not the
+                // code, so the receipt is where the two meet.
+                Section("Paid on chain to") {
+                    ForEach(model.paymentRecipients(entry).filter { $0.silentPaymentAddress != nil }) { recipient in
+                        Text(recipient.address)
+                            .font(.system(.footnote, design: .monospaced))
+                            .textSelection(.enabled)
+                            .accessibilityIdentifier("derivedOutputAddress")
+                    }
+                }
+            }
             Section {
                 Button("New payment") { reset() }
                     .accessibilityIdentifier("newPaymentButton")

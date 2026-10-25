@@ -275,6 +275,9 @@ struct PaymentDetailView: View {
                 ForEach(model.paymentRecipients(entry)) { recipient in
                     Section {
                         if let person = recipient.person { Text(person.name).font(.headline) }
+                        if let code = recipient.silentPaymentAddress {
+                            technical("Silent payment code") { CopyableTextBlock(text: code) }
+                        }
                         technical("Address") { CopyableTextBlock(text: recipient.address) }
                         Text(satsText(recipient.amount))
                         Button(recipient.person?.isSavedRecipient == true ? "Rename recipient" : "Save recipient") {

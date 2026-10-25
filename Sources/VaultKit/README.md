@@ -3,7 +3,8 @@
 # Vaults and shared savings
 
 Shared-savings vaults and the people and contact cards they are built from, on
-WalletCore's public interface. A card names a person and how to pay them; a vault is a MuSig2 or
+WalletCore's public interface. A card names a person and how to pay them — a
+descriptor, one address, or a BIP352 silent payment code; a vault is a MuSig2 or
 script-path multisig account with its cosigner keys, spends and approvals.
 WalletCore never imports this library, so a client of the core does not carry it.
 The [architecture guide](../../docs/architecture.md) describes the app and package

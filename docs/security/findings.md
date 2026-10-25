@@ -4,8 +4,12 @@ For current selectors corresponding to historical evidence, see the
 [test-suite map](test-suite-map.md). Dated runs retain their original names.
 
 This is an August 2026 audit record. References to Silent Payments and its tweak
-index describe the implementation reviewed then; those features have since been
-removed. Historical findings and their evidence are retained below.
+index describe the implementation reviewed then. The tweak index and receiving
+were removed at v0.5.0 and have not returned; sending to a silent payment code
+was reinstated in October 2026 (`Sources/WalletCore/SilentPayments`), so the
+SEC-018 control — the review gate binding the wallet-derived scripts — describes
+live code again. Its reinstatement evidence is in the validation record below.
+Historical findings and their evidence are retained.
 
 Current reporting policy (September 18, 2026): report bugs, including security
 vulnerabilities, in [public GitHub issues](https://github.com/winnowwallet/winnow/issues/new),
@@ -198,3 +202,8 @@ for comparison with the dated validation rows below:
 | 2026-08-21 | PR #125 review | `ci-production-warnings` | correct design — path-scoped to `Sources/` with symlinks resolved, so a dependency warning cannot masquerade as first-party; runs on an ephemeral runner with a fresh scratch path, so it cannot pass vacuously on an incremental build; also fails if `Package.resolved` drifts during the build |
 | 2026-08-21 | PR #125 review | `generate-supply-chain-metadata` | deterministic by construction: timestamp taken from the commit rather than wall clock, all collections sorted, canonical JSON. CI proves it by generating twice and diffing |
 | 2026-08-21 | PR #125 review | provenance subject check | `security.yml` attests `WinnowFuzz`, but `release.yml` attests the shipped `WinnowApp.app` from the archive and attaches the SBOM to the release, so the artifact that ships is covered |
+| 2026-10-25 | BIP352 sending reinstated | `swift test` | 600 tests / 52 suites, 73 / 4, 23 / 6 and 83 / 18 passed, including `SilentPaymentTests` (every official sending vector, the code parser's negatives), `SilentPaymentSendTests` (the wallet's own inputs, an independent re-derivation from `m/86'/1'/0'/0/0`, the history annotation), the flipped `UnsupportedWalletDataTests` and `PeopleTests` cases |
+| 2026-10-25 | BIP352 sending reinstated | `swift run --configuration release WinnowFuzz --target silent-payment-address --iterations 1000 --seed 0x57494e4e4f575055 --max-input 16384` | 1,000 cases passed: a code that parses carries two 33-byte keys and re-encodes to itself |
+| 2026-10-25 | BIP352 sending reinstated | invariant, residual risk, rollback | S2: the review binds amount, the wallet-derived script and output exhaustion (`SendPreview.authorizes(_:resolvedSilentPayments:)`). Residual: the app still cannot prove a derived script belongs to the on-screen code without the input keys; `SilentPaymentSendFlowTests` and the journey compensate with a receiver written from the BIP. Rollback: revert; the only state change is an optional `silentPaymentAddress` on history outputs, which older builds ignore |
+| 2026-10-25 | BIP352 sending reinstated | `scripts/ci-app-tests` | 249 XCTest units and 19 swift-testing cases passed, including the five `SendPreviewAuthorizationTests` silent cases (SEC-018: redirected, reduced, omitted and unresolved silent outputs refused; a mixed send needs both halves) and `SilentPaymentSendFlowTests` (the model pays a `tsp1…` code to the output an independent BIP352 receiver derives, pays the same code twice to two addresses, refuses a mainnet code and a shared-account source, and pays a person saved from a code without moving their address counter) |
+| 2026-10-25 | BIP352 sending reinstated | `scripts/ci-ui-journey` on the local signet fixture, twice | The new silent leg passed both times: the app paid a `tsp1…` code held by the test, the mined transaction's one derived output matched the receiver's own BIP352 derivation, the receipt showed that address under the code, and a key-less Core wallet watching `rawtr(<derived key>)` listed the coin after the next block. The run then stopped in the unchanged MuSig2 leg at `saveVaultButton`; an unmodified `origin/main` checkout stops at the same step on this machine (the simulator's software keyboard covers the form's lower half, so the test's swipes never scroll), so that is the local simulator, not this change. CI's journey lane is the evidence for the whole journey |

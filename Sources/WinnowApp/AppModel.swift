@@ -72,6 +72,10 @@ final class AppModel {
         case paymentDetailsUnavailable
         case personCannotBePaid
         case personCannotCoOwn(String)
+        /// BIP352 derives the output from the paying inputs' keys; a vault's
+        /// script-path inputs are not eligible, so only the everyday wallet
+        /// can make a silent payment.
+        case silentPaymentNeedsEverydayWallet
 
         var errorDescription: String? {
             switch self {
@@ -85,6 +89,7 @@ final class AppModel {
             // MARK: Payments
             case .paymentDetailsUnavailable: "Payment details aren’t available on this phone."
             case .personCannotBePaid: "This person has no pay-to key or address yet. Ask them for their Winnow card."
+            case .silentPaymentNeedsEverydayWallet: "Silent payment codes can only be paid from the everyday wallet. Shared accounts spend through scripts the silent payment protocol excludes."
             case let .personCannotCoOwn(name): "\(name) has no signer key yet. Ask them for their Winnow card before creating savings together."
             case let .feeDecisionRequired(rate, floor):
                 "Connected peers require at least \(floor) sat/vB to relay this payment, above the selected \(rate) sat/vB. "
@@ -308,9 +313,16 @@ final class AppModel {
                 let scripts = try? person.payTo?.scripts(upTo: person.nextPaymentIndex + Wallet.gapLimit, network: network)
                 for script in scripts ?? [] where result[script] == nil { result[script] = person }
             }
+            recipientBySilentPaymentCode = people.reduce(into: [:]) { result, person in
+                if case let .silentPayment(code) = person.payTo, result[code] == nil { result[code] = person }
+            }
         }
     }
     private(set) var recipientByScript: [Data: PersonRecord] = [:]
+    /// Silent payment code → person: a BIP352 output's script is unique to
+    /// its transaction, so the history names the recipient by the code the
+    /// send recorded instead.
+    private(set) var recipientBySilentPaymentCode: [String: PersonRecord] = [:]
     /// Txid display hex → person id, mirrored from the people store so a
     /// received payment can name its sender without an actor hop.
     private(set) var senderByTxid: [String: String] = [:]
@@ -1832,6 +1844,11 @@ final class AppModel {
         /// Review UI renders this immutable value, never live text-field state.
         var destination: String
         var payments: [Payment]
+        /// BIP352 destinations. Their P2TR scripts do not exist at review
+        /// time — derivation needs the selected inputs' private keys — so the
+        /// review holds amount and code, and `authorizes` is handed the
+        /// scripts the wallet derived (SEC-018).
+        var silentPayments: [SilentPayment] = []
         var feeRateSatPerVByte: Double
         var fee: Int64
         var changeAmount: Int64?
@@ -1861,8 +1878,10 @@ final class AppModel {
         }
 
         /// The total leaving the wallet as payment, excluding change and fee.
+        /// Silent payments count: their amount is known at review time even
+        /// though their script is not.
         var amountSent: Int64 {
-            payments.map(\.amount).reduce(0, +)
+            payments.map(\.amount).reduce(0, +) + silentPayments.map(\.amount).reduce(0, +)
         }
 
         /// How large the fee is next to what is actually being sent, when that
@@ -1879,12 +1898,21 @@ final class AppModel {
 
         /// Whether `built` is the transaction that was reviewed.
         ///
-        func authorizes(_ built: BuiltTransaction) -> Bool {
+        /// `resolvedSilentPayments` has to come from the wallet: a BIP352
+        /// output script is derived from the selected inputs' private keys,
+        /// which the review layer never holds. One resolved payment per
+        /// reviewed silent payment, same order, same amount; the script is
+        /// then matched against the outputs like any reviewed payment, and
+        /// the count pin below means nothing else may be there (SEC-018).
+        func authorizes(_ built: BuiltTransaction, resolvedSilentPayments: [Payment] = []) -> Bool {
             guard built.fee == fee,
                   built.changeAmount == changeAmount,
                   built.transaction.inputs.map({
                       ReviewedOutpoint(txid: $0.previousOutput.txid, vout: $0.previousOutput.vout)
                   }) == selectedOutpoints
+            else { return false }
+            guard resolvedSilentPayments.count == silentPayments.count,
+                  zip(silentPayments, resolvedSilentPayments).allSatisfy({ $0.amount == $1.amount })
             else { return false }
 
             // The reviewed outputs must account for the transaction exactly:
@@ -1902,7 +1930,7 @@ final class AppModel {
             // Matching is order-independent throughout: `TransactionBuilder`
             // inserts change at a random position to avoid a chain-analysis
             // fingerprint, so nothing may assume payments-then-change.
-            var expected = payments
+            var expected = payments + resolvedSilentPayments
             if let change { expected.append(change) }
             guard built.transaction.outputs.count == expected.count else { return false }
 
@@ -1918,8 +1946,10 @@ final class AppModel {
         }
     }
 
-    /// Parses the destination (any standard address) and previews coin
-    /// selection at the resolved feerate.
+    /// Parses the destination (any standard address, or an `sp1…`/`tsp1…`
+    /// silent payment code) and previews coin selection at the resolved
+    /// feerate. A silent payment is sized with a same-length placeholder: its
+    /// real script only exists once the wallet signs.
     func previewSend(destination: String, amount: Int64, priority: FeePolicy.Priority,
                      override: Double?, accountID: String? = nil) async throws -> SendPreview {
         try Self.requireUsableOverride(override)
@@ -1928,25 +1958,40 @@ final class AppModel {
         try await requireRelayFloors(rate: resolution.rate)
         let feeRate = resolution.rate
         let trimmed = destination.trimmingCharacters(in: .whitespacesAndNewlines)
-        let payments = [try Payment(amount: amount, address: trimmed, network: network)]
+        let (payments, silentPayments) = try Self.parseDestination(trimmed, amount: amount, network: network)
         if let accountID {
+            guard silentPayments.isEmpty else { throw AppError.silentPaymentNeedsEverydayWallet }
             guard let record = vaults.first(where: { $0.id == accountID }) else { throw VaultSpendError.unknownVault }
             return try previewVaultSend(record: record, destination: trimmed, payment: payments[0], feeRate: feeRate)
         }
         guard let wallet else { throw AppError.noWallet }
         let utxos = await wallet.spendableUtxos
         let changeScript = try await wallet.scriptPubKey(chain: .change, index: wallet.nextChangeIndex)
-        let selection = try CoinSelection.select(utxos: utxos, payments: payments,
+        let sizingPayments = payments + silentPayments.map {
+            Payment(amount: $0.amount, scriptPubKey: SilentPayment.sizingScriptPubKey)
+        }
+        let selection = try CoinSelection.select(utxos: utxos, payments: sizingPayments,
                                                  changeScriptPubKey: changeScript,
                                                  feeRateSatPerVByte: feeRate)
         let change = selection.changeAmount.map { Payment(amount: $0, scriptPubKey: changeScript) }
-        return SendPreview(destination: trimmed, payments: payments,
+        return SendPreview(destination: trimmed, payments: payments, silentPayments: silentPayments,
                            feeRateSatPerVByte: feeRate, fee: selection.fee,
                            changeAmount: selection.changeAmount, inputCount: selection.selected.count,
                            selectedOutpoints: selection.selected.map {
                                .init(txid: $0.txid, vout: $0.vout)
                            }, change: change,
                            locktimeLagsTip: syncPhase.headerTipMayLagNetwork)
+    }
+
+    /// One destination string, sorted into the payment kind it names: a
+    /// silent payment code becomes a `SilentPayment` (its HRP checked against
+    /// this network), anything else must be an address this wallet pays.
+    static func parseDestination(_ destination: String, amount: Int64,
+                                 network: BitcoinNetwork) throws -> (payments: [Payment], silentPayments: [SilentPayment]) {
+        if SilentPaymentAddress.looksLikeCode(destination) {
+            return ([], [try SilentPayment(amount: amount, address: destination, network: network)])
+        }
+        return ([try Payment(amount: amount, address: destination, network: network)], [])
     }
 
     /// A payment to a person in the address book: the next fresh address is
@@ -2042,8 +2087,10 @@ final class AppModel {
         // (no stack, disk error), nothing was spent locally — no stranded UTXOs.
         let prepared = try await wallet.buildSend(payments: preview.payments,
                                                   feeRateSatPerVByte: preview.feeRateSatPerVByte,
+                                                  silentPayments: preview.silentPayments,
                                                   chainTip: await chainTipHeight)
-        guard preview.authorizes(prepared.built) else { throw AppError.sendReviewChanged }
+        guard preview.authorizes(prepared.built, resolvedSilentPayments: prepared.resolvedSilentPayments)
+        else { throw AppError.sendReviewChanged }
         let txid = try await broadcast(prepared.built.transaction,
                                        feeRateSatPerVByte: preview.feeRateSatPerVByte)
         try await wallet.commit(prepared)
@@ -2061,6 +2108,8 @@ final class AppModel {
         e2e?.journal("transaction.sent", fields: [
             "txid": txid.displayHex,
             "raw": prepared.built.transaction.serialized(includeWitness: true).hex,
+            "silent": String(!preview.silentPayments.isEmpty),
+            "silentOutputs": prepared.resolvedSilentPayments.map(\.scriptPubKey.hex).joined(separator: ","),
         ])
         return txid
         }
@@ -2339,7 +2388,9 @@ final class AppModel {
         people = await peopleStore.all
         e2e?.journal("person.added", fields: [
             "name": record.name,
-            "payToKind": record.payTo.map { $0.derivesFreshAddresses ? "descriptor" : "address" } ?? "none",
+            "payToKind": record.payTo.map {
+                $0.isSilentPayment ? "silentPayment" : $0.derivesFreshAddresses ? "descriptor" : "address"
+            } ?? "none",
             "hasSignerKey": String(record.canCoOwnSavings),
         ])
         return record
@@ -2409,21 +2460,33 @@ final class AppModel {
         var address: String
         var amount: Int64
         var person: PersonRecord?
+        /// The silent payment code this output was derived for, when the send
+        /// paid one; `address` is then the per-transaction address.
+        var silentPaymentAddress: String?
     }
 
     func paymentRecipients(_ entry: HistoryEntry) -> [PaymentRecipient] {
         Self.paymentRecipients(entry, owned: ownWatchScripts.union(ownedVaultScripts),
-                               people: recipientByScript, network: network)
+                               people: recipientByScript, peopleByCode: recipientBySilentPaymentCode,
+                               network: network)
     }
 
     static func paymentRecipients(_ entry: HistoryEntry, owned: Set<Data>,
-                                  people: [Data: PersonRecord], network: BitcoinNetwork) -> [PaymentRecipient] {
+                                  people: [Data: PersonRecord], peopleByCode: [String: PersonRecord] = [:],
+                                  network: BitcoinNetwork) -> [PaymentRecipient] {
         guard entry.spent > 0, let transaction = try? entry.transaction() else { return [] }
+        let codes = (entry.outputs?.external ?? []).reduce(into: [UInt32: String]()) { result, output in
+            if let code = output.silentPaymentAddress { result[output.vout] = code }
+        }
         return transaction.outputs.enumerated().compactMap { index, output in
             guard !owned.contains(output.scriptPubKey),
                   let address = AddressDecoder.address(for: output.scriptPubKey, network: network) else { return nil }
+            let code = codes[UInt32(index)]
+            // A silent payment's person is found by code, since the script is
+            // unique to this transaction and in no one's watch list.
+            let person = people[output.scriptPubKey] ?? code.flatMap { peopleByCode[$0] }
             return PaymentRecipient(id: index, address: address, amount: output.value,
-                                    person: people[output.scriptPubKey])
+                                    person: person, silentPaymentAddress: code)
         }
     }
 

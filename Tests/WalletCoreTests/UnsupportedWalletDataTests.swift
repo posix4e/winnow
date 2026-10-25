@@ -56,14 +56,37 @@ struct UnsupportedWalletDataTests {
     }
 
     @Test("unsupported destinations cannot become payment scripts",
-          arguments: ["sp1qqgste7k9hx0qftg6qmwlkqtwuy6cycyavzmzj85c6qdfhjdpdjtdgqjuexzk6murw56suy3e0rd2cgqvycxttddwsvgxe2usfpxumr70xc9pkqwv",
-                      "tsp1qqgste7k9hx0qftg6qmwlkqtwuy6cycyavzmzj85c6qdfhjdpdjtdgqjuexzk6murw56suy3e0rd2cgqvycxttddwsvgxe2usfpxumr70xc9pkqwv",
-                      "bc1qnotarealaddress", "not-an-address"])
+          arguments: ["bc1qnotarealaddress", "not-an-address"])
     func unsupportedDestinationIsRefused(address: String) throws {
         for network in [BitcoinNetwork.mainnet, .signet] {
             #expect(throws: AddressError.self) {
                 _ = try Payment(amount: 1_000, address: address, network: network)
             }
+        }
+    }
+
+    /// A silent payment code is not an address: `Payment` still refuses it,
+    /// because its script does not exist until the paying inputs are chosen.
+    /// It is a `SilentPayment`, on the network its prefix names.
+    @Test("a silent payment code is a silent payment, not an address")
+    func silentPaymentCodeIsASilentPayment() throws {
+        let mainnet = "sp1qqgste7k9hx0qftg6qmwlkqtwuy6cycyavzmzj85c6qdfhjdpdjtdgqjuexzk6murw56suy3e0rd2cgqvycxttddwsvgxe2usfpxumr70xc9pkqwv"
+        let signet = "tsp1qqgste7k9hx0qftg6qmwlkqtwuy6cycyavzmzj85c6qdfhjdpdjtdgqjuexzk6murw56suy3e0rd2cgqvycxttddwsvgxe2usfpxumr70xc9pkqwv"
+        for code in [mainnet, signet] {
+            for network in [BitcoinNetwork.mainnet, .signet] {
+                #expect(throws: AddressError.self) {
+                    _ = try Payment(amount: 1_000, address: code, network: network)
+                }
+            }
+        }
+        #expect(try SilentPayment(amount: 1_000, address: mainnet, network: .mainnet).amount == 1_000)
+        #expect(throws: SilentPaymentAddressError.wrongHRP(expected: "tsp", actual: "sp")) {
+            _ = try SilentPayment(amount: 1_000, address: mainnet, network: .signet)
+        }
+        // The test code's checksum is for a different HRP: a code that does not
+        // verify is refused before any key is read.
+        #expect(throws: SilentPaymentAddressError.self) {
+            _ = try SilentPayment(amount: 1_000, address: signet, network: .signet)
         }
     }
 }

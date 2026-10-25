@@ -35,8 +35,17 @@ imports, and reorg recovery. [App tests](../../../AppTests/README.md)
 check persistence and protected actions; [UI journeys](../../../UITests/README.md)
 check the complete user flow.
 
+`Wallet.buildSend` takes silent payments beside ordinary ones: coin selection
+sees a same-size placeholder, then the chosen inputs' tweaked keys derive the
+real BIP352 scripts ([SilentPayments](../SilentPayments/README.md)) before the
+transaction is built and signed. The prepared send hands those scripts back so
+the app's review gate can bind them (SEC-018). A fee bump keeps the same inputs,
+so the derived scripts stay valid without re-derivation.
+
 Known send recipients are recorded in `HistoryEntry.outputs`, alongside existing
-transaction bytes and confirmation hashes. Missing metadata stays unknown; an
+transaction bytes and confirmation hashes. An output derived for a silent
+payment also records the code it was paid for; without that the history could
+only show a one-time address. Missing metadata stays unknown; an
 empty external list means the known send paid no external recipient. Receive
 outputs owned by the wallet are excluded, change vouts are separate, and the
 breakdown survives confirmation, fee bumps, reopening and public backup import.

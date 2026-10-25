@@ -5,6 +5,9 @@
 These tests exercise the app's state transitions, persistence, privacy, and
 authorization boundaries without driving every case through screen taps.
 They protect the decisions behind payment review, recovery, and shared savings.
+[Silent payment flow tests](SilentPaymentSendFlowTests.swift) pay a BIP352 code
+through the model and check the derived output against a receiver written from
+the BIP in TestSupport.
 
 The tests run in the [iOS app host](../Sources/WinnowApp/README.md) and share
 fixtures from [TestSupport](../Tests/Support/README.md).

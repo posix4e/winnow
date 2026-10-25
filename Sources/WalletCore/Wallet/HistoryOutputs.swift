@@ -33,6 +33,40 @@ extension HistoryEntry {
                       !output.scriptPubKey.isEmpty
                 else { throw WalletError.invalidBundle("history output has an invalid amount or script") }
                 total += output.amount
+                if let code = output.silentPaymentAddress {
+                    // Display metadata, but bounded like everything else a
+                    // bundle carries: a code that does not parse is refused
+                    // rather than shown.
+                    guard (try? SilentPaymentAddress(code)) != nil else {
+                        throw WalletError.invalidBundle("history output names an invalid silent payment code")
+                    }
+                }
+            }
+        }
+
+        /// Records which external outputs were derived for a silent payment
+        /// code, matched by amount and script against the wallet's resolved
+        /// payments. Each resolved payment claims one output.
+        mutating func annotateSilentPayments(_ resolved: [Payment], codes: [String]) {
+            var claimed: Set<Int> = []
+            for (payment, code) in zip(resolved, codes) {
+                guard let index = external.indices.first(where: {
+                    !claimed.contains($0) && external[$0].amount == payment.amount
+                        && external[$0].scriptPubKey == payment.scriptPubKey
+                }) else { continue }
+                external[index].silentPaymentAddress = code
+                claimed.insert(index)
+            }
+        }
+
+        /// Copies silent payment codes from a replaced transaction's outputs
+        /// onto the outputs of its replacement that carry the same script.
+        mutating func inheritSilentPayments(from previous: Outputs) {
+            let codes = previous.external.reduce(into: [Data: String]()) { result, output in
+                if let code = output.silentPaymentAddress { result[output.scriptPubKey] = code }
+            }
+            for index in external.indices {
+                external[index].silentPaymentAddress = codes[external[index].scriptPubKey]
             }
         }
 
@@ -56,14 +90,21 @@ extension HistoryEntry {
         public var amount: Int64
         /// JSON uses hexadecimal, matching wallet coin scripts.
         public var scriptPubKey: Data
+        /// The BIP352 silent payment code this output was derived for, when
+        /// the send paid one: the on-chain script is unique to the transaction,
+        /// so without this the history could not say who was paid. Optional
+        /// in the JSON, so wallet files and bundles written before it decode
+        /// unchanged.
+        public var silentPaymentAddress: String?
 
-        public init(vout: UInt32, amount: Int64, scriptPubKey: Data) {
+        public init(vout: UInt32, amount: Int64, scriptPubKey: Data, silentPaymentAddress: String? = nil) {
             self.vout = vout
             self.amount = amount
             self.scriptPubKey = scriptPubKey
+            self.silentPaymentAddress = silentPaymentAddress
         }
 
-        private enum CodingKeys: String, CodingKey { case vout, amount, scriptPubKey }
+        private enum CodingKeys: String, CodingKey { case vout, amount, scriptPubKey, silentPaymentAddress }
 
         public init(from decoder: any Decoder) throws {
             let container = try decoder.container(keyedBy: CodingKeys.self)
@@ -72,7 +113,8 @@ extension HistoryEntry {
                                                        debugDescription: "bad recipient script hex")
             }
             self.init(vout: try container.decode(UInt32.self, forKey: .vout),
-                      amount: try container.decode(Int64.self, forKey: .amount), scriptPubKey: script)
+                      amount: try container.decode(Int64.self, forKey: .amount), scriptPubKey: script,
+                      silentPaymentAddress: try container.decodeIfPresent(String.self, forKey: .silentPaymentAddress))
         }
 
         public func encode(to encoder: any Encoder) throws {
@@ -80,6 +122,7 @@ extension HistoryEntry {
             try container.encode(vout, forKey: .vout)
             try container.encode(amount, forKey: .amount)
             try container.encode(scriptPubKey.hex, forKey: .scriptPubKey)
+            try container.encodeIfPresent(silentPaymentAddress, forKey: .silentPaymentAddress)
         }
     }
 }

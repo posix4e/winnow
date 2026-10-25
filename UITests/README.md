@@ -6,7 +6,11 @@
 journey, recorded continuously on iPhone. It covers three payments in order:
 
 1. Create a wallet in Simple mode, receive test coins, review and send an
-   ordinary payment, and see its receipt confirm.
+   ordinary payment, and see its receipt confirm. Then pay a BIP352 silent
+   payment code from the change: the test holds the receiver's keys (Core has
+   no BIP352 support), derives the one address that receiver would scan for
+   from the mined transaction, requires the app to have paid exactly that, and
+   has a watch-only Core wallet confirm the coin by that address.
 2. Turn on Advanced mode, create a 2-of-2 MuSig2 account with the phone and one
    Bitcoin Core cosigner, receive into it, exchange approvals, and send.
 3. Create script-path 2-of-3 savings with the phone and two Core cosigners,

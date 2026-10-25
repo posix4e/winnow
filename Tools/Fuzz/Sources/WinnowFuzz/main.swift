@@ -102,6 +102,10 @@ private func binaryCorpus(for target: FuzzTarget) -> [Data] {
     case .address:
         let address = try? Descriptor("tr(\(generatorXOnly.hex))").derived(index: 0).first?.address
         return [Data(), Data((address ?? "bc1p").utf8)]
+    case .silentPaymentAddress:
+        // The first official BIP352 sending vector's recipient.
+        return [Data(), Data("sp1qqgste7k9hx0qftg6qmwlkqtwuy6cycyavzmzj85c6qdfhjdpdjtdgqjuexzk6murw56suy3e0rd2cgqvycxttddwsvgxe2usfpxumr70xc9pkqwv".utf8),
+                Data("tsp1q".utf8)]
     case .importBundle:
         return [Data(), Data("{\"version\":2,\"network\":\"signet\",\"lastKnownHeight\":0,\"utxos\":[],\"transactions\":[]}".utf8)]
     case .census:

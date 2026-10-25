@@ -24,6 +24,8 @@ public enum FuzzTarget: String, CaseIterable, Sendable {
     case fundingSources = "funding-sources"
     case controlBlock = "control-block"
     case personPaste = "person-paste"
+    /// BIP352 codes: bech32m up to 1023 characters, two compressed keys.
+    case silentPaymentAddress = "silent-payment-address"
 }
 
 /// The harness's generator. `exercise` draws from it too, to vary how the
@@ -138,6 +140,17 @@ public func exercise(_ target: FuzzTarget, data: Data, rng: inout SplitMix64) th
             if let script = try? AddressDecoder.scriptPubKey(for: string, network: network) {
                 try require(script.count <= 42, "address produced an oversized standard script")
             }
+        }
+    case .silentPaymentAddress:
+        // A code that parses must re-encode to itself (lower-cased: bech32m
+        // accepts either case) and carry two 33-byte keys; the decoder's
+        // length bound is the BIP352 one, not BIP173's 90 characters.
+        let text = String(decoding: data, as: UTF8.self)
+        if let parsed = try? SilentPaymentAddress(text) {
+            try require(parsed.scanKey.count == 33 && parsed.spendKey.count == 33, "silent payment code with malformed keys")
+            try require(try parsed.encoded == text.trimmingCharacters(in: .whitespacesAndNewlines).lowercased(),
+                        "silent payment code did not round-trip")
+            try require(text.count <= SilentPaymentAddress.maxAddressLength, "silent payment code over the length bound")
         }
     case .importBundle:
         guard data.count <= 4_000_000, let bundle = try? JSONDecoder().decode(ImportBundle.self, from: data) else { return }
