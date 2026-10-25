@@ -14,7 +14,7 @@ Developer guides in this repository:
   validation still needed on devices.
 - [Security records](security/README.md): dated reports, claims and evidence.
 
-The app bundles `mobile.html`, `read-side.html`, `write-side.html`, `vaults.html`,
+The app bundles `mobile.html`, `read-side.html`, `write-side.html`,
 `import.html` and `site.css` for offline use. Changes here affect that app copy.
 
 The public website, blog, generator and deployment are maintained in

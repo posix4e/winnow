@@ -1,9 +1,8 @@
 @testable import WinnowApp
-import VaultKit
 import WalletCore
 import XCTest
 
-/// The people and vault stores measure their file before reading it and
+/// The people store measures their file before reading it and
 /// refuse a name that is not short and single-line — the two bounds the
 /// independent review of 2026-09-14 found missing (IR-016, IR-031).
 final class StoreBoundsTests: XCTestCase {
@@ -29,19 +28,6 @@ final class StoreBoundsTests: XCTestCase {
         let people = await store.all
         XCTAssertTrue(people.isEmpty)
     }
-
-    func testOversizedVaultFileFailsClosed() async throws {
-        let keys = InMemoryStoreKeyVault()
-        let url = try sparseFile(bytes: VaultStore.maximumFileBytes + 1)
-        defer { try? FileManager.default.removeItem(at: url) }
-        let store = VaultStore(keys: keys)
-        guard case .damaged = await store.configure(storageURL: url, network: .signet) else {
-            return XCTFail("an oversized vault file was read")
-        }
-        let vaults = await store.all
-        XCTAssertTrue(vaults.isEmpty)
-    }
-
     func testPersonNameMustBeShortAndSingleLine() async throws {
         let keys = InMemoryStoreKeyVault()
         let url = FileManager.default.temporaryDirectory
@@ -49,15 +35,15 @@ final class StoreBoundsTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: url) }
         let store = PeopleStore(keys: keys)
         _ = await store.configure(storageURL: url, network: .signet)
-        let person = try await store.add(name: "  Ada  ", payTo: nil, signerKey: nil)
+        let person = try await store.add(name: "  Ada  ", payTo: nil)
         XCTAssertEqual(person.name, "Ada")
         do {
-            _ = try await store.add(name: "Ada\nPay bc1q…", payTo: nil, signerKey: nil)
+            _ = try await store.add(name: "Ada\nPay bc1q…", payTo: nil)
             XCTFail("a multi-line name was accepted")
         } catch PeopleStorageError.invalidState {}
         do {
             _ = try await store.add(name: String(repeating: "a", count: DisplayName.maximumLength + 1),
-                                    payTo: nil, signerKey: nil)
+                                    payTo: nil)
             XCTFail("an over-long name was accepted")
         } catch PeopleStorageError.invalidState {}
         do {

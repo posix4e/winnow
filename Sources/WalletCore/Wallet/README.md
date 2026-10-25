@@ -2,18 +2,30 @@
 
 # Wallet state and spending policy
 
-Balances, coin selection, fees, and recovery imports live here. They supply the
-state and decisions behind receiving, sending, and recovery; the GUI should not
-carry a second wallet implementation. Shared-savings vaults and people are in
-[VaultKit](../../VaultKit/README.md). The
+Balances, coin selection, fees, recovery imports and people live here. They
+supply the state and decisions behind receiving, sending and recovery; the
+GUI should not carry a second wallet implementation. The
 [architecture guide](../../../docs/architecture.md) maps the rest of WalletCore.
 
 [AppModel](../../WinnowApp/AppModel.swift) coordinates these rules with
 WalletCore networking, [key storage](../Keys/README.md), and
-[signing](../Transactions/README.md).
-VaultRecord stays here: it is shared by app persistence and the optional accounts
-in a wallet backup, so there is one representation to restore. Signing keys and live
-MuSig2 nonce sessions are not part of an account record.
+[signing](../Transactions/README.md). `MultisigAccount` holds the rules for a
+raw k-of-n `tr(NUMS, sortedmulti_a(k, …))` account, optionally with a second,
+timelocked recovery leaf `and_v(v:pk(K),older(N))` or
+`and_v(v:multi_a(m,…),older(N))` for N of 1 to 65535 blocks, whose keys are
+either the same signers on their `/<2;3>/*` path or other keys on `/<0;1>/*`.
+A recovery spend sets each input's sequence to N and selects only coins at
+least N blocks deep; when every input's sequence meets the lock, either leaf
+may finish the spend, and the finalizer puts exactly k signatures in the
+witness. The account holds the shape and signer checks
+from the shared-account Winnow's audit (SEC-009, SEC-019, SEC-020), spend
+creation, the review every signer repeats before signing (SEC-004),
+signing and finalization. New accounts write the internal key as an xpub on
+the NUMS point, which BIP388 signers such as a Ledger can register; accounts
+with the bare NUMS key still load. Import bundles carry these accounts under `vaults`;
+a bundle carrying any other kind of account is refused rather than restored
+without it. [Account tests](../../../Tests/WalletCoreTests/MultisigAccountTests.swift)
+cover each rule.
 
 An embedding application can restore its reserved address ranges with
 `Wallet.advanceCursors(nextReceiveIndex:nextChangeIndex:)`. Each cursor is the
@@ -31,9 +43,9 @@ reserved ranges. No recovery record or new cursor is proof that those addresses
 have been scanned.
 
 [WalletCore tests](../../../Tests/WalletCoreTests/README.md) cover balances, selection,
-imports, and reorg recovery. [App tests](../../../AppTests/README.md)
-check persistence and protected actions; [UI journeys](../../../UITests/README.md)
-check the complete user flow.
+imports, people, and reorg recovery. [App tests](../../../AppTests/README.md)
+check persistence and protected actions; the [UI journey](../../../UITests/README.md)
+checks the complete user flow.
 
 `Wallet.buildSend` takes silent payments beside ordinary ones: coin selection
 sees a same-size placeholder, then the chosen inputs' tweaked keys derive the

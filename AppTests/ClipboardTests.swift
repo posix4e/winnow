@@ -36,7 +36,7 @@ final class ClipboardPolicyTests: XCTestCase {
                             ["public.utf8-plain-text": "another old item"]]
 
         let copies: [(ClipboardPolicy, String)] = [
-            (.interchange, "tr(musig(a,b))/<0;1>/*"),
+            (.interchange, "tr(xpubA/<0;1>/*)"),
             (.interchange, String(repeating: "ab", count: 32)), // Full transaction ID.
             (.interchange, String(repeating: "0a", count: 250)), // Raw transaction hex.
             (.recoveryPhrase, "test recovery phrase"),

@@ -1,8 +1,9 @@
 # Winnow
 
 Winnow is a Bitcoin wallet for iPhone and iPad, also available on Apple silicon
-Mac as an iPad app. It receives and sends bitcoin, saves recipients, and supports
-shared accounts with more than one signing key.
+Mac as an iPad app. It receives and sends bitcoin and saves recipients. This
+build signs with this phone's key, alone or as one signer of a k-of-n multisig
+account, and the curve arithmetic behind every signature is Winnow's own Swift.
 
 [App Store](https://apps.apple.com/app/id6801502501) ·
 [TestFlight](https://testflight.apple.com/join/83djpNE7) ·
@@ -12,19 +13,23 @@ shared accounts with more than one signing key.
 ## Using the wallet
 
 Winnow starts on mainnet in Simple mode. One screen holds your balance,
-Receive, Send, activity, shared savings and backup status. Open a payment to
+Receive, Send, activity and backup status. Open a payment to
 save its recipient; choose saved recipients from the Send form.
 
 Advanced mode adds Wallet, Send and Settings tabs, with signet, manual peers,
-fee controls, recovery words and raw signing exchanges. Switching modes keeps
-your wallet and settings. Use signet and test funds when trying a development
-build or a new signing setup.
+fee controls and recovery words. Switching modes keeps your wallet and
+settings. Use signet and test funds when trying a development build.
 
-Shared savings can require a threshold of keys, such as any two of three.
-Advanced mode also offers MuSig2 accounts requiring every participating key.
-The descriptor determines who can spend: a 1-of-n account needs only one key.
-Keep each signer's backup separately. See the
-[shared-wallet guide](docs/vaults.html) for setup and signing limits.
+Advanced mode adds raw k-of-n multisig accounts: a
+`tr(NUMS, sortedmulti_a(k, …))` descriptor in, addresses and PSBTs out, signed
+by any k signers in any order with no rounds between them. "New multisig
+account" builds one from this phone and other Winnows' keys, for example a
+2-of-3 of three phones, with an optional recovery path: a coin that has not
+moved for a chosen number of blocks can then be spent by fewer of the same
+signers, or by a separate recovery key.
+There are no MuSig2 accounts, cosigner cards or shared-savings screens. A backup carrying a MuSig2
+account from the shared-account Winnow is refused rather than restored without
+those funds.
 
 ## Connections and privacy
 
@@ -50,7 +55,7 @@ height, so words alone do not reconstruct its past transaction history.
 Automatic iCloud backup is enabled by default when available. It saves an
 encrypted copy containing this phone's signing secret and wallet state. A
 successful save date confirms an upload. Keep the manual file and words as
-well, and back up other signers independently. The
+well. The
 [backup guide](docs/import.html) explains the formats and their limits.
 
 ## Development

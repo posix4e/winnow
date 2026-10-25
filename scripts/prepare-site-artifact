@@ -28,8 +28,8 @@ def captures(root):
     names = []
     for path in sorted((root / "UITests").glob("*.swift")):
         names.extend(re.findall(r'Screenshots\.capture\(app, "([a-z0-9-]+)", testCase: self\)', path.read_text()))
-    if len(names) != 16 or len(set(names)) != 16:
-        raise ValueError("expected the focused journey's 16 unique checkpoint captures")
+    if len(names) != 11 or len(set(names)) != 11:
+        raise ValueError("expected the focused journey's 11 unique checkpoint captures")
     return sorted(name + ".png" for name in names)
 
 

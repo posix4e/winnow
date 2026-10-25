@@ -3,8 +3,8 @@
 # The wallet app
 
 SwiftUI screens and AppModel turn wallet and network state into receiving,
-sending, recovery, saved recipients, and shared accounts. The app owns user review,
-authentication, presentation, and lifecycle; WalletCore and VaultKit own the Bitcoin rules.
+sending, recovery, and saved recipients. The app owns user review,
+authentication, presentation, and lifecycle; WalletCore owns the Bitcoin rules.
 The [architecture guide](../../docs/architecture.md) maps these responsibilities.
 The app supports iPhone, iPad, and Apple silicon Mac (Designed for iPad).
 Simple mode uses one screen; Advanced mode adds Wallet, Send, and Settings tabs.
@@ -18,19 +18,22 @@ paths BIP352 excludes — and the review gate binds the scripts the wallet deriv
 (SEC-018). A saved person may be a code too: reusable, never counted.
 
 Wallet is the one account and transaction list. Payment details save or rename a
-recipient; Send holds the account and saved-recipient pickers. Ordinary payments,
-shared savings, and extra-device accounts use the same form and review. The
-reviewed proposal goes directly to the account's approval screen; each signing
-method keeps its own approval rules. Every script-path account uses Approve a
-request, including raw PSBTs and group co-signers; there is no second Advanced
-signing screen for the same account. Advanced mode exposes Raw PSBT for exchanges
-with other wallets. MuSig2 keeps its separate two-round exchange.
-Shared savings and extra-device accounts also use one detail screen for receiving,
-balances, Send, and backup. Their approval actions follow the descriptor's rules;
-co-owner cards belong to shared savings. Advanced mode keeps coins and the raw
-descriptor under Technical details.
+recipient; Send holds the saved-recipient picker and the amount. The reviewed
+proposal is signed with this phone's key after the owner authenticates.
+Advanced mode keeps coins and the raw descriptor under Technical details, and
+its Wallet tab adds a Multisig section. "New multisig account"
+([MultisigBuildView](MultisigBuildView.swift)) builds a k-of-n account from
+this phone's key and other signers' pasted keys, with an
+optional timelocked recovery path, and shows the descriptor for the others to
+join with; the PSBT screen then offers the signers' path or, for coins old
+enough, the recovery path. Or join a k-of-n account by pasting its
+descriptor, receive into it, and create or paste a PSBT that this phone signs,
+combines with other signers' copies, and broadcasts once enough signatures
+verify. Every multisig entry point is in that Advanced-mode section, and the
+model refuses them in Simple mode. Accounts live in the sealed per-wallet `multisig.json`
+([MultisigStore](MultisigStore.swift)), scanned with the wallet's own filters.
 Removing a shortcut preserves
-past labels, signer identities, and fresh-address counters in the existing
+past labels and fresh-address counters in the existing
 people.json store. Receive shares the wallet’s payment card.
 
 [Documented journeys](https://github.com/winnowwallet/website/blob/main/docs/journeys.json) identify the supported experiences.

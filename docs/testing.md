@@ -10,9 +10,8 @@ The [architecture guide](architecture.md) explains source ownership, and the
 
 | Suite | Exercises | Boundaries |
 | --- | --- | --- |
-| [BitcoinCoreTests](../Tests/BitcoinCoreTests/README.md) | Cryptographic and encoding vectors, descriptors, scripts and parser bounds | Vectors and parser checks do not demonstrate a user workflow |
-| [WalletCoreTests](../Tests/WalletCoreTests/README.md) | Coin selection, fees, imports, reorgs, peer behavior and synchronization | Controlled peers and fixtures cover their asserted cases |
-| [VaultKitTests](../Tests/VaultKitTests/README.md) | Contact cards, account admission, threshold rules and vault spends | Keys in a test do not prove independent devices or owners |
+| [BitcoinCoreTests](../Tests/BitcoinCoreTests/README.md) | Cryptographic and encoding vectors, silent payment vectors, descriptors, scripts and parser bounds | Vectors and parser checks do not demonstrate a user workflow |
+| [WalletCoreTests](../Tests/WalletCoreTests/README.md) | Coin selection, fees, imports, people and contact cards, reorgs, peer behavior and synchronization | Controlled peers and fixtures cover their asserted cases |
 | [AppTests](../AppTests/README.md) | Review, authorization, persistence, startup, recipients, backup state and iOS integration | Most cloud cases use in-memory stores; a simulator cannot prove device-lock enforcement |
 | [UITests](../UITests/README.md) | A recorded iPhone payment journey and peer-setting persistence | No automated iPad journey or hardware-wallet matrix |
 | [ToolsTests](../Tests/ToolsTests/README.md) and [fuzzing](../Tools/Fuzz/README.md) | Debugging commands, generators, parser regressions and hostile inputs | A bounded corpus or fuzz run establishes only its own executed coverage |
@@ -25,8 +24,7 @@ App tests also cover backup defaults, retries, opt-out, account changes and
 cancellation using injected stores.
 
 Keep signing-policy and hostile-input regressions close to the code they test.
-Descriptor changes, forged PSBT metadata, signature validation, nonce reuse,
-amount bounds and storage integrity need focused assertions. A UI journey
+Descriptor changes, forged PSBT metadata, signature validation, amount bounds and storage integrity need focused assertions. A UI journey
 cannot substitute for those checks.
 
 ## Run locally
@@ -37,7 +35,7 @@ Run from the repository root on macOS with Xcode and the Swift toolchain:
 swift test
 ```
 
-This runs the SwiftPM targets, including VaultKitTests and ToolsTests. For iOS
+This runs the SwiftPM targets, including ToolsTests. For iOS
 app tests, generate the project after importing the census:
 
 ```sh
@@ -65,19 +63,17 @@ local entry points on a development Mac.
 
 ## The payment journey
 
-`WinnowAppUITests.test01CreateReceiveSendConfirm` receives, reviews, sends and
-confirms four payments in one app session: an ordinary wallet payment, a BIP352
-silent payment to a code whose receiver the test plays (Core cannot), a 2-of-2
-MuSig2 account with one Bitcoin Core cosigner, and a script-path 2-of-3 account
-with two Core cosigners available. The phone and one Core key approve the final payment.
-A disposable private signet fixture funds app addresses, accepts transactions
-and mines confirmations. The test checks both the app's outcomes and the
-node's accepted payments.
+`WinnowAppUITests.test01CreateReceiveSendConfirm` creates a wallet, receives,
+reviews, sends and confirms an ordinary payment, then a BIP352 silent payment
+to a code whose receiver the test plays (Core cannot), then the multisig
+account journey. A disposable private signet fixture funds the app's address,
+accepts the transactions and mines confirmations. The test checks both the
+app's outcomes and the node's accepted payments.
 
 The host records one continuous video and retains checkpoint screenshots with
 the test log and Xcode result bundle. Those assertions establish the result;
-media helps review the interaction. This journey supplies evidence for those
-flows on an iPhone simulator. Other signing orders, hardware, recovery paths
+media helps review the interaction. This journey supplies evidence for that
+flow on an iPhone simulator. Other signing orders, hardware, recovery paths
 and network environments need their own checks.
 
 ## CI and reused evidence

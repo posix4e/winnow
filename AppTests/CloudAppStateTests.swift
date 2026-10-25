@@ -15,7 +15,7 @@ final class CloudAppStateTests: XCTestCase {
         let bundle = try await wallet.exportBundle(includeMnemonic: true)
         let person = PersonRecord(id: UUID().uuidString, name: "Saved friend",
                                   payTo: .address("1BoatSLRHtKNngkdXEeobR76b53LETtpyT"),
-                                  signerKey: nil, nextPaymentIndex: 17)
+                                  nextPaymentIndex: 17)
         let script = try AddressDecoder.scriptPubKey(for: "1BoatSLRHtKNngkdXEeobR76b53LETtpyT", network: .mainnet)
         let state = CloudAppState(network: bundle.network, descriptor: bundle.descriptor,
                                   people: .init(people: [person], senderByTxid: [String(repeating: "01", count: 32): person.id]),

@@ -9,7 +9,7 @@ import WalletCore
 /// One key per file (store name and network), and the key's existence is the
 /// record that the file has been sealed once. From then on the file is refused
 /// unless it verifies, so a file dropped into the container — a substituted
-/// signer key that validates perfectly, the case IR-010 describes — reads as
+/// pay-to key that validates perfectly, the case IR-010 describes — reads as
 /// damage rather than as data.
 protocol StoreKeyVault: Sendable {
     /// The key established for `account`, or nil while none has been.
@@ -96,8 +96,8 @@ struct KeychainStoreKeyVault: StoreKeyVault {
 ///
 /// The payload stays readable and byte-exact, so the code is over the bytes
 /// the store wrote rather than over a re-encoding. The code also covers the
-/// store's name and network, so a sealed `people.json` cannot be dropped in as
-/// `vaults.json`, nor a signet file presented as mainnet.
+/// store's name and network, so a sealed file cannot be dropped in under
+/// another store's name, nor a signet file presented as mainnet.
 enum SealedStoreFile {
     static let header = "winnow-store-mac-v1"
     private static let prefix = Data("\(header) ".utf8)

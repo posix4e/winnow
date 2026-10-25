@@ -790,7 +790,7 @@ public actor Wallet {
         let descriptor = try Descriptor(state.descriptor)
         _ = try Self.origin(of: descriptor) // validates the wallet descriptor shape
         // The account key is recoverable from the descriptor's xpub.
-        guard case let .tr(.single(key), nil) = descriptor.expression,
+        guard case let .tr(key) = descriptor.expression,
               case let .extended(accountKey, _) = key.base
         else { throw WalletError.invalidDescriptor(state.descriptor) }
         return try Wallet(network: network, descriptor: descriptor, accountKey: accountKey.neutered,
@@ -800,15 +800,15 @@ public actor Wallet {
     /// Builds the canonical multipath tr() descriptor for an account key.
     static func makeDescriptor(accountKey: HDKey, origin: Descriptor.KeyOrigin,
                                network: BitcoinNetwork) -> Descriptor {
-        Descriptor(expression: .tr(.single(Descriptor.SingleKey(
+        Descriptor(expression: .tr(Descriptor.SingleKey(
             origin: origin,
             base: .extended(accountKey.neutered, network: hdNetwork(for: network)),
-            derivation: Descriptor.Derivation([.multipath([0, 1]), .wildcard(hardened: false)]))), nil))
+            derivation: Descriptor.Derivation([.multipath([0, 1]), .wildcard(hardened: false)]))))
     }
 
     /// Validates the wallet descriptor shape and returns its key origin.
     static func origin(of descriptor: Descriptor) throws -> Descriptor.KeyOrigin {
-        guard case let .tr(.single(key), nil) = descriptor.expression,
+        guard case let .tr(key) = descriptor.expression,
               let origin = key.origin,
               key.derivation.elements == [.multipath([0, 1]), .wildcard(hardened: false)]
         else { throw WalletError.invalidDescriptor("expected tr([fp/86'/c'/a']xpub/<0;1>/*)") }
@@ -1800,7 +1800,7 @@ public actor Wallet {
     }
 
     private static func originUnchecked(of descriptor: Descriptor) -> Descriptor.KeyOrigin {
-        guard case let .tr(.single(key), nil) = descriptor.expression, let origin = key.origin else {
+        guard case let .tr(key) = descriptor.expression, let origin = key.origin else {
             preconditionFailure("wallet descriptor always carries origin info")
         }
         return origin
@@ -1825,6 +1825,15 @@ public actor Wallet {
         }
         guard resolved.isPrivate, resolved.neutered == accountKey else { throw WalletError.accountKeyMismatch }
         return resolved
+    }
+
+    /// The account private key, checked against this wallet's descriptor, for
+    /// signing as a multisig signer: the account xpub is the signer key the
+    /// wallet shares, so one key signs whether the wallet holds a seed, a
+    /// master key or only its account key. The caller authenticates first and
+    /// holds the key for one signing operation only.
+    public func multisigSigningKey() throws -> HDKey {
+        try accountPrivateKey()
     }
 
     /// BIP86 key-path spend, below the account already checked for this wallet.

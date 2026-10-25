@@ -21,7 +21,7 @@ struct CloudBackupView: View {
                     }
                     if let message = model.cloudBackups.message { Text(message).foregroundStyle(.secondary) }
                 } footer: {
-                    Text("Includes this phone’s signing key, wallet history, shared accounts, saved people and labels. Updates while Winnow is open, after pending payments confirm. Other owners need their own key backups.")
+                    Text("Includes this phone’s signing key, wallet history, saved people and labels. Updates while Winnow is open, after pending payments confirm.")
                 }
                 Section {
                     Text("Restore using the same Apple Account with iCloud and Passwords & Keychain enabled. Access to the cloud backup and its synchronized key can restore spending access.")

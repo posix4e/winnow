@@ -41,12 +41,12 @@ struct ClipboardPolicy: Equatable {
     static let recoveryPhrase = ClipboardPolicy(localOnly: true, lifetime: 120)
 
     /// Descriptors, PSBTs and addresses may cross to a desktop, because that
-    /// is a real workflow — a k-of-n vault's watch-only descriptor is meant to
-    /// be pasted into Bitcoin Core, and a PSBT travels between cosigners.
+    /// is a real workflow — a watch-only descriptor is meant to be pasted into
+    /// Bitcoin Core, and a payment card travels to the person who pays you.
     ///
     /// The accepted risk is therefore Universal Clipboard, not the copy
-    /// itself: a descriptor carries xpubs, so whoever holds it can derive
-    /// every address the vault will ever use. Blocking that sync would break
+    /// itself: a descriptor carries an xpub, so whoever holds it can derive
+    /// every address the wallet will ever use. Blocking that sync would break
     /// the workflow the feature exists for, so the item still expires rather
     /// than sitting on the pasteboard until something else overwrites it.
     static let interchange = ClipboardPolicy(localOnly: false, lifetime: 300)
@@ -333,8 +333,6 @@ struct DesignPapersView: View {
               blurb: "How the phone learns which coins are its own."),
         Paper(resource: "write-side", title: "The write side",
               blurb: "Build, price, sign, and get a transaction out."),
-        Paper(resource: "vaults", title: "Vaults",
-              blurb: "Shared custody without a coordinator server."),
         Paper(resource: "import", title: "Import",
               blurb: "The bundle is the history. There is no back-scan."),
     ]

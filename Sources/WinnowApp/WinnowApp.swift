@@ -181,7 +181,6 @@ struct MainTabView: View {
     }
 
     @State private var selection: Tab
-    @State private var sendAccountID: String?
     @State private var sendPersonID: String?
 
     init() {
@@ -191,19 +190,13 @@ struct MainTabView: View {
 
     var body: some View {
         TabView(selection: $selection) {
-            HomeView(
-                sendFrom: { accountID in
-                    sendAccountID = accountID
-                    selection = .send
-                },
-                sendToPerson: { personID in
-                    sendPersonID = personID
-                    selection = .send
-                }
-            )
+            HomeView(sendToPerson: { personID in
+                sendPersonID = personID
+                selection = .send
+            })
                 .tabItem { Label("Wallet", systemImage: "bitcoinsign.circle") }
                 .tag(Tab.wallet)
-            SendView(accountID: $sendAccountID, personID: $sendPersonID)
+            SendView(personID: $sendPersonID)
                 .tabItem { Label("Send", systemImage: "arrow.up.circle") }
                 .tag(Tab.send)
             SettingsView()

@@ -29,8 +29,8 @@ target selection, seed, input limit, and iteration count when replaying.
 job runs this fixed-seed campaign on every pull request and push to main, as a
 check of its own with its own artifact. Its `sustained-fuzz` job, weekly and on
 manual dispatch, runs 25,000 iterations per sanitizer with
-distinct rotating seeds: 350,000 cases under Address Sanitizer and another
-350,000 under Thread Sanitizer (25,000 × 14 targets). A manual `replay_seed` input reproduces a
+distinct rotating seeds: 400,000 cases under Address Sanitizer and another
+400,000 under Thread Sanitizer (25,000 × 16 targets). A manual `replay_seed` input reproduces a
 recorded seed. For example, replay an address-sanitized run locally with:
 
 ```sh

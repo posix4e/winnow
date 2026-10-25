@@ -15,10 +15,9 @@ and its limits.
 ## Contents and ownership
 
 The backup includes this phone's recovery phrase, wallet descriptor, tracked
-funds, payment history, address counters and shared accounts. Its app context
+funds, payment history and address counters. Its app context
 also includes saved people and payment cards, sender names, receive-address
-labels, display name and interface mode. Other signers' keys are absent and
-need separate backups. Watch-only and xprv-only wallets use manual files because
+labels, display name and interface mode. Watch-only and xprv-only wallets use manual files because
 this automatic format requires a mnemonic. Peer and explorer endpoints stay
 device-local. Manual file export does not include the extra app context.
 
@@ -31,9 +30,8 @@ The implementation lives in the app:
 - [ICloudBackupStore](../Sources/WinnowApp/ICloudBackupStore.swift) writes private
   CloudKit records and provides a separate wrapping-key store.
 
-WalletCore owns the wallet import format; it has no CloudKit dependency.
-VaultKit owns shared-account and contact-card rules, independently of cloud
-transport.
+WalletCore owns the wallet import format and the contact-card rules; it has no
+CloudKit dependency.
 
 ## Encryption and update behavior
 

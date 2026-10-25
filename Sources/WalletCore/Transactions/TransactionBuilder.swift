@@ -152,7 +152,7 @@ public enum TransactionBuilder {
     /// key-path spend: witness = one stack item of 64 bytes (SIGHASH_DEFAULT
     /// signature). weight = 3·base + total; vsize = ⌈weight / 4⌉ (BIP141).
     /// `witnessBytesPerInput` overrides the per-input witness byte count for
-    /// other spend shapes (e.g. multi_a script-path vault inputs).
+    /// other spend shapes, such as script-path inputs carrying a leaf script.
     public static func signedVSize(inputCount: Int, outputs: [Transaction.Output],
                                    witnessBytesPerInput: Int = 66) -> Int {
         let inputCountSize = compactSizeLength(UInt64(inputCount))

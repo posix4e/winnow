@@ -93,39 +93,6 @@ final class SpendExclusionTests: XCTestCase {
         let second = try await model.exclusively(.spending) { 2 }
         XCTAssertEqual(second, 2)
     }
-
-    /// The vault paths sit under the same gate as a wallet send: with a
-    /// spend in flight, signing or broadcasting from a vault is refused
-    /// before any secret, peer or store is touched. Before this only the
-    /// single-signature send and the fee bump held the gate.
-    func testVaultSpendPathsHoldTheGate() async throws {
-        let model = makeModel(network: .signet)
-        let gate = Gate()
-        let entered = expectation(description: "first spend entered the gate")
-        let first = Task { @MainActor in
-            try await model.exclusively(.spending) {
-                entered.fulfill()
-                await gate.wait()
-                return 1
-            }
-        }
-        await fulfillment(of: [entered], timeout: 5)
-
-        let (vault, _) = try TestVaults.multiAVault()
-        let record = VaultRecord(id: "gate", name: "Savings", descriptor: vault.descriptor.serialized(),
-                                 createdAtHeight: 0)
-        let transaction = Transaction(version: 2, inputs: [], outputs: [], locktime: 0)
-        do {
-            _ = try await model.broadcastVaultSpend(transaction, vault: vault, record: record)
-            XCTFail("a vault broadcast was allowed while a spend was in flight")
-        } catch AppModel.AppError.spendAlreadyInFlight {
-            // expected
-        }
-
-        gate.open()
-        _ = try await first.value
-    }
-
     /// A failed payment must not wedge the wallet. The claim is released on
     /// the throwing path too, so the user can retry.
     func testTheGateIsReleasedWhenTheOperationThrows() async throws {

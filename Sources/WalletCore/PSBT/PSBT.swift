@@ -36,7 +36,8 @@ public enum PSBTError: Error, Equatable, LocalizedError {
 }
 
 /// PSBTv2 in memory, with BIP174 v0 import/export for external signers.
-/// Unknown fields survive conversion and the BIP371/373 signing exchange.
+/// Unknown fields survive conversion; script-path and MuSig2 fields are
+/// carried as unknown pairs, never interpreted.
 public struct PSBT: Equatable, Sendable {
     /// A PSBT is an interchange document, not an arbitrary file container.
     /// Four megabytes matches Winnow's P2P payload budget and is an explicit
@@ -57,7 +58,7 @@ public struct PSBT: Equatable, Sendable {
         public static let version: UInt8 = 0xFB
     }
 
-    /// BIP174/370/371/373 input key types.
+    /// BIP174/370/371 input key types.
     public enum InType {
         public static let witnessUTXO: UInt8 = 0x01
         public static let sighashType: UInt8 = 0x03
@@ -70,9 +71,6 @@ public struct PSBT: Equatable, Sendable {
         public static let tapLeafScript: UInt8 = 0x15
         public static let tapBIP32Derivation: UInt8 = 0x16
         public static let tapInternalKey: UInt8 = 0x17
-        public static let musig2ParticipantPubKeys: UInt8 = 0x1A
-        public static let musig2PubNonce: UInt8 = 0x1B
-        public static let musig2PartialSig: UInt8 = 0x1C
     }
 
     /// BIP370/371 output key types.
@@ -146,36 +144,6 @@ public struct PSBT: Equatable, Sendable {
         /// H_TapLeaf for this leaf (BIP341).
         public var leafHash: Data {
             Taproot.leafHash(version: leafVersion, script: Script(script))
-        }
-    }
-
-    /// Identifies a BIP373 MuSig2 nonce / partial-signature entry: the
-    /// contributing participant and final signing keys (both compressed) plus the
-    /// tapleaf hash when the aggregate key sits in a script (omitted for the
-    /// key-path vault flow).
-    public struct MuSig2KeyID: Hashable, Sendable {
-        public var participant: Data // 33-byte compressed
-        public var aggregate: Data // 33-byte compressed
-        public var leafHash: Data?
-
-        public init(participant: Data, aggregate: Data, leafHash: Data? = nil) {
-            self.participant = participant
-            self.aggregate = aggregate
-            self.leafHash = leafHash
-        }
-
-        var keyData: Data {
-            var data = participant + aggregate
-            if let leafHash { data.append(leafHash) }
-            return data
-        }
-
-        init?(keyData: Data) {
-            let keyData = Data(keyData) // rebase slice indices to 0
-            guard keyData.count == 66 || keyData.count == 98 else { return nil }
-            participant = keyData.prefix(33)
-            aggregate = keyData.subdata(in: 33 ..< 66)
-            leafHash = keyData.count == 98 ? keyData.suffix(32) : nil
         }
     }
 
@@ -408,59 +376,6 @@ public struct PSBT: Equatable, Sendable {
                 }
             }
         }
-
-        /// PSBT_IN_MUSIG2_PARTICIPANT_PUBKEYS — keyed by the 33-byte
-        /// compressed aggregate key; the value is the concatenated compressed
-        /// participant keys in aggregation order (BIP373).
-        public var musig2ParticipantPubKeys: [Data: [Data]] {
-            get {
-                var result: [Data: [Data]] = [:]
-                for pair in pairs where pair.type == InType.musig2ParticipantPubKeys {
-                    let aggregate = Data(pair.keyData)
-                    guard aggregate.count == 33, pair.value.count % 33 == 0, !pair.value.isEmpty else { continue }
-                    result[aggregate] = stride(from: pair.value.startIndex, to: pair.value.endIndex, by: 33)
-                        .map { pair.value.subdata(in: $0 ..< $0 + 33) }
-                }
-                return result
-            }
-            set {
-                pairs.removeAll { $0.type == InType.musig2ParticipantPubKeys }
-                for (aggregate, participants) in newValue.sorted(by: { $0.key.lexicographicallyPrecedes($1.key) }) {
-                    set(KeyValue(type: InType.musig2ParticipantPubKeys, keyData: aggregate,
-                                 value: participants.reduce(Data(), +)))
-                }
-            }
-        }
-
-        /// PSBT_IN_MUSIG2_PUB_NONCE — 66-byte public nonces keyed by
-        /// participant ‖ aggregate (‖ optional tapleaf hash) (BIP373).
-        public var musig2PubNonces: [MuSig2KeyID: Data] {
-            get { muSig2Values(type: InType.musig2PubNonce) }
-            set { setMuSig2Values(type: InType.musig2PubNonce, newValue) }
-        }
-
-        /// PSBT_IN_MUSIG2_PARTIAL_SIG — 32-byte partial signatures keyed by
-        /// participant ‖ aggregate (‖ optional tapleaf hash) (BIP373).
-        public var musig2PartialSigs: [MuSig2KeyID: Data] {
-            get { muSig2Values(type: InType.musig2PartialSig) }
-            set { setMuSig2Values(type: InType.musig2PartialSig, newValue) }
-        }
-
-        private func muSig2Values(type: UInt8) -> [MuSig2KeyID: Data] {
-            var result: [MuSig2KeyID: Data] = [:]
-            for pair in pairs where pair.type == type {
-                guard let id = MuSig2KeyID(keyData: pair.keyData) else { continue }
-                result[id] = pair.value
-            }
-            return result
-        }
-
-        private mutating func setMuSig2Values(type: UInt8, _ values: [MuSig2KeyID: Data]) {
-            pairs.removeAll { $0.type == type }
-            for (id, value) in values.sorted(by: { $0.key.keyData.lexicographicallyPrecedes($1.key.keyData) }) {
-                set(KeyValue(type: type, keyData: id.keyData, value: value))
-            }
-        }
     }
 
     public struct Output: Equatable, Sendable {
@@ -565,7 +480,7 @@ public struct PSBT: Equatable, Sendable {
 
         /// PSBT_OUT_TAP_TREE — the output's script tree as a sequence of
         /// depth ‖ leaf version ‖ compactSize length ‖ script tuples (BIP371),
-        /// letting recipients verify the output commits to the vault's leaves.
+        /// letting recipients verify the output commits to the account's leaves.
         public var tapTree: [(depth: UInt8, leafVersion: UInt8, script: Data)]? {
             get {
                 guard let value = pair(type: OutType.tapTree)?.value else { return nil }

@@ -170,8 +170,8 @@ final class E2EEntropyPinningTests: XCTestCase {
 ///
 /// `story-events.jsonl` is published as part of the story evidence, so its
 /// contents have the same blast radius as the screenshots. The journal
-/// documents itself as holding no mnemonics, private keys, entropy or MuSig2
-/// secret nonces — but a field-name denylist only catches the mistakes someone
+/// documents itself as holding no mnemonics, private keys or entropy — but
+/// a field-name denylist only catches the mistakes someone
 /// labelled honestly. A seed filed under `"note"` passes every name check ever
 /// written.
 ///
@@ -282,12 +282,6 @@ final class ErrorSurfaceTests: XCTestCase {
     /// Every user-facing message produced from *externally supplied* text. If
     /// an error type starts interpolating something a user or a file can
     /// control, it belongs here.
-    ///
-    /// `VaultError.invalidDescriptor` is deliberately absent: it interpolates
-    /// too, but its payload is contractually a developer-authored literal
-    /// naming the shape that failed, and every caller passes one. Planting a
-    /// secret in it would test a call that cannot happen; the contract is
-    /// stated at the case instead.
     private func messages(embedding secret: String) -> [(label: String, text: String)] {
         [
             ("WalletError.invalidDescriptor",

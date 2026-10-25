@@ -74,8 +74,9 @@ ensure_miner_wallet() {
   if cli listwallets | grep -q '"miner"'; then return 0; fi
   cli loadwallet miner >/dev/null 2>&1 && return 0
   cli -named createwallet wallet_name=miner blank=true >/dev/null
-  # SignetMiner reads descriptors[0].desc and takes the last comma-separated
-  # field as the WIF, so this exact shape matters.
+  # SignetMiner has this wallet sign every block's challenge over RPC
+  # (signrawtransactionwithwallet), so the descriptor must be the challenge
+  # script itself, with its private key.
   local checksum
   checksum=$(cli getdescriptorinfo "multi(1,$WIF)" \
     | python3 -c "import sys,json;print(json.load(sys.stdin)['checksum'])")

@@ -26,8 +26,8 @@ local development can use an optional prepared-bank snapshot.
 products for local use. Their `--skip-build` mode requires `SIMULATOR_ID` and
 `DERIVED_DATA` pointing to prepared products. The journey prepares the native
 fixture bank before XCTest, records one continuous `journey.mp4`, and retains
-checkpoint screenshots, logs and the result bundle. It covers ordinary-wallet,
-MuSig2 and 2-of-3 payments with Core cosigner keys. See the
+checkpoint screenshots, logs and the result bundle. It covers one ordinary
+receive, send and confirmation. See the
 [UI test guide](../UITests/README.md) for timing fields and fixture setup.
 
 [prepare-site-artifact](prepare-site-artifact) normalizes a successful journey
@@ -52,12 +52,13 @@ and [native fixture](../Tools/Fixture/README.md) are the three Swift executables
 
 | Entry point | Inputs and purpose | Effects / caller |
 | --- | --- | --- |
-| [check-dependencies](check-dependencies) | Optional `--xcode DERIVED_DATA`; compare package and Xcode resolutions with the root lockfile. | Reads manifests/build state; CI and release. |
+| [check-dependencies](check-dependencies) | Optional `--xcode DERIVED_DATA`; require the local package only: no manifest dependencies, no lockfile pins, no Xcode package checkouts. | Reads manifests/build state; CI and release. |
+| [check-multisig-core](check-multisig-core) | Optional `--cases N --seed HEX`; hold the Taproot script-path multisig to Bitcoin Core on a disposable regtest node: addresses, signatures, every k-of-n subset, finalizer bytes, mempool and mining, recovery locks at the boundary height. See [the fixture tool](../Tools/Fixture/README.md#the-multisig-differential). | Starts and deletes its own regtest `bitcoind` (RPC 38710 by default); needs bitcoind. Local, not in CI. |
 | [check-live-gateways](check-live-gateways) | No arguments; live discovery and Bitcoin handshakes through the tailnet gateways with peers from the shipped census list. | Manual, from a Mac on the live gateway tailnet; CI uses a separate controlled simulation. Sends no wallet data. See [peer gateways](../docs/peer-gateways.md). |
 | [check-live-gateways-ui](check-live-gateways-ui) | `<Xcode destination> <new evidence directory>`; live gateway journey on a device or simulator on the tailnet. | Manual; records `LiveGateways.xcresult` screenshots. Disposable mainnet wallet, nothing sent. |
 | [check-test-gates](check-test-gates) | No arguments; check environment gates, deliberate skips, and retired flags. | Source check in CI; does not execute tests. |
 | [check-swift-warnings](check-swift-warnings) | `BUILD_LOG`; reject compiler warnings under `Sources/` and `SoakCommand.swift`. | Reads a log; it does not compile or prove a build succeeded. |
-| [ci-production-warnings](ci-production-warnings) | Optional `SCRATCH_PATH [LOG_PATH]`; Release-build `winnow-debug`, check warnings and lockfile drift. | Compiles package code. Use a fresh scratch path for meaningful warning evidence. |
+| [ci-production-warnings](ci-production-warnings) | Optional `SCRATCH_PATH [LOG_PATH]`; Release-build `winnow-debug`, check warnings and that no lockfile appeared. | Compiles package code. Use a fresh scratch path for meaningful warning evidence. |
 | [ci-tailnet](ci-tailnet) | No arguments; builds a private tailnet (Headscale, a TUN client, two userspace gateway nodes) and runs `TailnetSimulationTests` against it. | Needs Go and sudo; the parallel CI's `tailnet` lane on a disposable macOS runner. Disturbs Tailscale on a developer Mac. |
 | [ci-debug](ci-debug) | No arguments; exercise wrapper help and environment checks from outside the checkout. | Builds/runs the debug CLI; lists simulators without launching one. |
 | [ci-app-tests](ci-app-tests) | `FRESH_RESULTS_DIR [--skip-build]`; app tests in the iOS host. | Builds/uses a simulator; see shared-build setup above. |

@@ -17,7 +17,7 @@ site = importlib.util.module_from_spec(spec)
 loader.exec_module(site)
 
 # Historical checkpoint fixture, validated against capture names independently.
-CHECKPOINTS = ['01-onboarding', '03-receive', '56-home-beginner', '06-send-review', '08-send-confirmed', '09-home-after-send', '35-extra-device-policy', '36-extra-device-review', '37-extra-device-waiting', '39-extra-device-sent', '40-extra-device-confirmed', '26-savings-share', '27-savings-funded', '14-approval-waiting', '15-approval-sent', '28-savings-confirmed']
+CHECKPOINTS = ['01-onboarding', '03-receive', '56-home-beginner', '06-send-review', '08-send-confirmed', '09-home-after-send', '26-savings-share', '27-savings-funded', '14-approval-waiting', '15-approval-sent', '28-savings-confirmed']
 
 class SiteArtifactTests(unittest.TestCase):
     def setUp(self):
@@ -36,7 +36,7 @@ class SiteArtifactTests(unittest.TestCase):
         (self.docs / "journeys.json").write_text(json.dumps([
             {"id": "setup", "section": "everyday", "title": "Start", "description": "Create a wallet.",
              "tests": [site.TEST], "journey": ["Create a wallet."]}]))
-        for name in ["privacy", "architecture", "roadmap", "vaults", "archive"]:
+        for name in ["privacy", "architecture", "roadmap", "archive"]:
             (self.docs / f"{name}.html").write_text("<html></html>")
         (self.docs / "site.css").write_text("body { color: black }")
         (self.docs / "home.css").write_text("body { color: black }")
@@ -210,5 +210,5 @@ class NormalizeOnlyTests(unittest.TestCase):
             site.main(['--normalize-journey',str(journey),'--media-output',str(output),
                        '--source-sha','a'*40,'--run-url',self.evidence['run_url']])
             encoder.assert_called_once()
-            self.assertEqual(len(list((output/'screenshots').glob('*.png'))),16)
+            self.assertEqual(len(list((output/'screenshots').glob('*.png'))),11)
             self.assertEqual(site.validate_media(output,self.names)['source_sha'],'a'*40)

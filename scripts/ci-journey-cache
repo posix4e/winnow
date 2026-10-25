@@ -15,7 +15,7 @@ from urllib.parse import urlencode
 
 BUNDLED_PAGES = {
     "docs/site.css", "docs/mobile.html", "docs/read-side.html",
-    "docs/write-side.html", "docs/vaults.html", "docs/import.html",
+    "docs/write-side.html", "docs/import.html",
 }
 SITE_ONLY = {
     ".github/workflows/site.yml",

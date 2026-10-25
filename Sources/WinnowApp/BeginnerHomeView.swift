@@ -1,20 +1,16 @@
-import VaultKit
 import WalletCore
 import SwiftUI
 
 /// The whole of beginner mode: one screen, no settings. Balance and whether
-/// the wallet is up to date, Receive and Send, what happened, shared savings
-/// once there are any, and the backup. Everything technical — fees, peers,
-/// block heights, signing tools, every setting — is Advanced mode, which is
-/// the three-tab interface behind the toolbar button. Settings made there
-/// stay in effect here; they are just not shown.
+/// the wallet is up to date, Receive and Send, what happened, and the backup.
+/// Everything technical — fees, peers, block heights, every setting — is
+/// Advanced mode, which is the three-tab interface behind the toolbar button.
+/// Settings made there stay in effect here; they are just not shown.
 struct BeginnerHomeView: View {
     @Environment(AppModel.self) private var model
     @State private var showReceive = false
     @State private var showSend = false
-    @State private var sendAccountID: String?
     @State private var sendPersonID: String?
-    @State private var showSavingsChooser = false
     @State private var confirmAdvanced = false
 
     var body: some View {
@@ -89,33 +85,6 @@ struct BeginnerHomeView: View {
                     }
                 }
 
-                Section {
-                    ForEach(model.vaults) { record in
-                        if let vault = try? model.vault(for: record) {
-                            NavigationLink {
-                                AccountDetailView(recordID: record.id) { sendFrom(record.id) }
-                            } label: {
-                                HStack(alignment: .firstTextBaseline) {
-                                    VStack(alignment: .leading, spacing: 2) {
-                                        Text(record.name)
-                                        Text(rule(of: vault))
-                                            .font(.caption)
-                                            .foregroundStyle(.secondary)
-                                    }
-                                    Spacer()
-                                    Text(satsText(record.balance))
-                                        .foregroundStyle(.secondary)
-                                }
-                            }
-                            .accessibilityIdentifier("walletSavings-\(record.name)")
-                        }
-                    }
-                    Button("Save with someone…") { showSavingsChooser = true }
-                        .accessibilityIdentifier("saveWithSomeoneButton")
-                } header: {
-                    if !model.vaults.isEmpty { Text("Shared savings") }
-                }
-
                 Section("Backup") {
                     Label(model.cloudBackups.statusTitle, systemImage: model.cloudBackups.statusTitle == "Backed up" ? "checkmark.icloud" : "icloud")
                         .accessibilityIdentifier("cloudBackupStatus")
@@ -145,16 +114,12 @@ struct BeginnerHomeView: View {
                 Button("Turn on") { model.setAdvancedMode(true) }
                 Button("Cancel", role: .cancel) {}
             } message: {
-                Text("The app changes to three tabs — Wallet, Send and Settings — with fee controls, network settings, signing tools and technical details. Simple, on the Wallet tab, brings this screen back and keeps every setting you changed.")
+                Text("The app changes to three tabs — Wallet, Send and Settings — with fee controls, network settings and technical details. Simple, on the Wallet tab, brings this screen back and keeps every setting you changed.")
             }
             .sheet(isPresented: $showReceive) { ReceiveView() }
-            .sheet(isPresented: $showSend, onDismiss: {
-                sendAccountID = nil
-                sendPersonID = nil
-            }) {
-                SendView(accountID: $sendAccountID, personID: $sendPersonID, presentedAsSheet: true)
+            .sheet(isPresented: $showSend, onDismiss: { sendPersonID = nil }) {
+                SendView(personID: $sendPersonID, presentedAsSheet: true)
             }
-            .sheet(isPresented: $showSavingsChooser) { SavingsChooserView() }
             .refreshable { await model.syncNow() }
         }
     }
@@ -177,60 +142,9 @@ struct BeginnerHomeView: View {
         }
     }
 
-    /// Who can spend, in words: the descriptor's threshold, not a label.
-    private func rule(of vault: Vault) -> String {
-        guard vault.isScriptPath else { return "All \(vault.signerCount) signers must approve" }
-        if vault.threshold == 1 { return "Any one of \(vault.signerCount) owners can spend" }
-        return "Any \(vault.threshold) of \(vault.signerCount) owners can spend"
-    }
-
-    private func sendFrom(_ accountID: String) {
-        sendAccountID = accountID
-        sendPersonID = nil
-        showSend = true
-    }
-
     private func sendToPerson(_ personID: String) {
-        sendAccountID = nil
         sendPersonID = personID
         showSend = true
-    }
-}
-
-/// The two ways into shared savings, one sheet. Choosing swaps the sheet's
-/// content for the flow itself, so its Cancel and Done close the sheet.
-struct SavingsChooserView: View {
-    private enum Choice { case start, join }
-    @State private var choice: Choice?
-    @Environment(\.dismiss) private var dismiss
-
-    var body: some View {
-        switch choice {
-        case .start:
-            SharedSavingsCreateView()
-        case .join:
-            AddSharedSavingsView()
-        case nil:
-            NavigationStack {
-                List {
-                    Section {
-                        Button("Start savings with people you’ve added") { choice = .start }
-                            .accessibilityIdentifier("walletSharedSavingsButton")
-                        Button("Join savings someone shared with you") { choice = .join }
-                            .accessibilityIdentifier("addSharedSavingsButton")
-                    } footer: {
-                        Text("Shared savings need more than one of you to approve a payment. Whoever starts them shares a card; everyone else joins from it.")
-                    }
-                }
-                .navigationTitle("Save with someone")
-                .navigationBarTitleDisplayMode(.inline)
-                .toolbar {
-                    ToolbarItem(placement: .cancellationAction) {
-                        Button("Cancel") { dismiss() }
-                    }
-                }
-            }
-        }
     }
 }
 

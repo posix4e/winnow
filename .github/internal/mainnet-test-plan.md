@@ -8,7 +8,7 @@ recording or physical-device measurement is required by that workflow.
 The old plan assumed one particular development node, promised unconfirmed
 payment timings, and overstated recovery from words alone. Those instructions
 must not be reused. Winnow recovery needs both recovery words and the wallet
-backup file; shared accounts also need their required cosigner keys. See the
+backup file. See the
 [current backup guide](../../docs/import.html).
 
 [CI and release operations](ci-release.md) is the current runbook. The

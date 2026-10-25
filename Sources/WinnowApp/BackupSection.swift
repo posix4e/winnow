@@ -53,7 +53,7 @@ struct BackupSection: View {
         } header: {
             Text("Backup")
         } footer: {
-            Text("Keep both your recovery words and a backup file. Winnow restores from the file: it brings back your history and shared accounts, and this phone's signing key only if the file includes the words.")
+            Text("Keep both your recovery words and a backup file. Winnow restores from the file: it brings back your history, and this phone's signing key only if the file includes the words.")
         }
     }
 
@@ -142,7 +142,7 @@ struct RevealPhraseView: View {
                         .accessibilityIdentifier("revealedPhraseGrid")
                     }
                 } footer: {
-                    Text("These words are this phone's signing key. Keep them private. Winnow cannot restore from the words alone; save a backup file for your history and shared accounts.")
+                    Text("These words are this phone's signing key. Keep them private. Winnow cannot restore from the words alone; save a backup file for your history.")
                 }
                 Section {
                     RecoveryPhraseCopyButton(

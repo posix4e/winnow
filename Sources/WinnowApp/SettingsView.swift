@@ -281,7 +281,7 @@ struct SettingsView: View {
             } header: {
                 Text("Danger zone")
             } footer: {
-                Text("Removes this \(model.network.rawValue) wallet and its shared savings so you can create or import another. The key is deleted from this device; restore it from your iCloud backup or a backup file that includes the recovery phrase, or the money is gone. People you added stay on this phone, and block headers are kept, so the next wallet does not re-sync the chain.")
+                Text("Removes this \(model.network.rawValue) wallet so you can create or import another. The key is deleted from this device; restore it from your iCloud backup or a backup file that includes the recovery phrase, or the money is gone. People you added stay on this phone, and block headers are kept, so the next wallet does not re-sync the chain.")
             }
         }
     }
@@ -345,7 +345,7 @@ struct ExportBundleView: View {
                             .font(.footnote)
                     }
                 } footer: {
-                    Text("The file saves your history and shared accounts. Each signer needs their own key backup.")
+                    Text("The file saves your history and address counters, not the recovery phrase unless you include it.")
                 }
                 if let error {
                     Section { Text(error).foregroundStyle(.red).font(.footnote) }
