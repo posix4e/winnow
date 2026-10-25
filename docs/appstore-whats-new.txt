@@ -1,4 +1,3 @@
-• Every Tor and I2P peer the daily census verifies is now kept, instead of a sample of 2,000 per network.
-• Background checks. When iOS allows, Winnow checks the chain for new payments while it is closed, through the same peers and routing it uses when open. Advanced → Sync shows when the chain was last checked.
-• If Automatic routing last used your Tor or I2P gateways and none answer in the background, Winnow skips that check instead of connecting directly.
-• Simple mode no longer shows an error each time a peer drops mid-sync. It speaks up only if the connection keeps failing.
+• Silent payment codes. Send accepts a BIP352 code (sp1…) and pays it to an address made for that transaction alone. The receipt shows the code beside the address it paid. A person can be saved from a code and paid again and again, with a fresh address each time.
+• Multisig accounts in Advanced mode. Build a k-of-n Taproot account from this phone's key and other signers' keys, or join one by pasting its descriptor. Any k signers spend it by passing a PSBT between them. An optional recovery path lets fewer signers, or a separate key, spend a coin that has not moved for a set number of blocks.
+• Shared savings, cosigner cards and payment approvals are retired, and MuSig2 accounts along with them. Simple mode is the everyday wallet: balance, receive, send, activity and backup. A backup that carries a MuSig2 account is refused rather than restored without it.
