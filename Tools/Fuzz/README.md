@@ -2,10 +2,11 @@
 
 # Deterministic fuzzing
 
-The harness covers fourteen parsing surfaces: PSBT, descriptors, transactions,
+The harness covers fifteen parsing surfaces: PSBT, descriptors, transactions,
 blocks, wire messages (including `addr`), framing, filters, addresses, import
 bundles, the census catalog, DNS-over-HTTPS answers, funding
-sources, Taproot control blocks, and person cards and pastes. It
+sources, Taproot control blocks, person cards and pastes, and BIP352 silent
+payment codes. It
 uses the local Bitcoin modules as a development target in the root package.
 Parsers in the app target (`PeopleStore`, `ReceiveAddressLabelStore`,
 `SealedStoreFile`) and WalletCore's internal `PersistedPeers` are out of its
@@ -20,7 +21,7 @@ swift run --configuration release WinnowFuzz \
   --artifact-dir /tmp/fuzz-smoke
 ```
 
-Every iteration exercises all fourteen targets, so this runs 14,000 deterministic
+Every iteration exercises all fifteen targets, so this runs 15,000 deterministic
 cases. Use `--target psbt` (or another target name) to focus a run. Keep the
 target selection, seed, input limit, and iteration count when replaying.
 

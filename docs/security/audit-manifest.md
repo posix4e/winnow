@@ -205,7 +205,8 @@ export staging files. Primary test owners: `BitcoinCoreTests`,
 - `Network/Transport/NetworkRoute.swift`, `Network/Transport/PeerConnection.swift`
 - `PSBT/PSBT.swift`, `PSBT/PSBTRoles.swift`
 - `Script/Multisig.swift`, `Script/Script.swift`, `Script/Taproot.swift`
-- `Transactions/AddressDecoder.swift`, `Transactions/FundingSources.swift`, `Transactions/SighashBIP341.swift`, `Transactions/Signer.swift`, `Transactions/TransactionBuilder.swift`
+- `SilentPayments/Sending.swift`, `SilentPayments/SilentPaymentAddress.swift` (BIP352 sending, reinstated October 2026)
+- `Transactions/AddressDecoder.swift`, `Transactions/FundingSources.swift`, `Transactions/SighashBIP341.swift`, `Transactions/SilentPayment.swift`, `Transactions/Signer.swift`, `Transactions/TransactionBuilder.swift`
 - `Wallet/CoinSelection.swift`, `Wallet/ExportStagingFile.swift`, `Wallet/FeePolicy.swift`, `Wallet/ImportBundle.swift`, `Wallet/People.swift`
 - `Wallet/Vault.swift`, `Wallet/VaultRecord.swift`, `Wallet/VaultSetup.swift`, `Wallet/Wallet.swift`
 

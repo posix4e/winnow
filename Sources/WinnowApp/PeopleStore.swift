@@ -486,6 +486,7 @@ actor PeopleStore {
         switch payTo {
         case let .descriptor(text): canonical = try PersonPayTo.descriptor(text, network: network)
         case let .address(text): canonical = try PersonPayTo.address(text, network: network)
+        case let .silentPayment(text): canonical = try PersonPayTo.silentPayment(text, network: network)
         }
         guard canonical == payTo else {
             throw PeopleStorageError.invalidState("pay-to key is not in canonical form")

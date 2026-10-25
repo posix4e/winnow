@@ -154,6 +154,34 @@ struct PeopleTests {
         }
     }
 
+    /// A silent payment code is a reusable pay-to of its own kind: accepted on
+    /// its network in canonical lower case, refused on another network with a
+    /// message that says so, and identified by its keys rather than a script.
+    @Test("a pasted silent payment code becomes a reusable pay-to")
+    func silentPaymentCodePaste() throws {
+        let master = try HDKey(seed: Data(repeating: 0x5A, count: 32))
+        let scan = try master.derived(path: "m/352'/1'/0'/1'/0").neutered.publicKey
+        let spend = try master.derived(path: "m/352'/1'/0'/0'/0").neutered.publicKey
+        let signet = try SilentPaymentAddress(scanKey: scan, spendKey: spend, hrp: "tsp").encoded
+        let mainnet = try SilentPaymentAddress(scanKey: scan, spendKey: spend, hrp: "sp").encoded
+
+        let imported = try PersonPaste.parse(" \(signet.uppercased())\n", network: .signet)
+        #expect(imported == PersonImport(name: nil, payTo: .silentPayment(signet), signerKey: nil, source: .address))
+        let payTo = try #require(imported.payTo)
+        #expect(payTo.isSilentPayment)
+        #expect(!payTo.derivesFreshAddresses)
+        #expect(try payTo.address(index: 7, network: .signet) == signet)
+        #expect(try payTo.scripts(upTo: 20, network: .signet).isEmpty)
+        #expect(try payTo.identity(network: .signet) == scan + spend)
+        #expect(throws: PersonPayToError.noFixedScript) { _ = try payTo.scriptPubKey(index: 0, network: .signet) }
+
+        #expect(throws: SilentPaymentAddressError.wrongHRP(expected: "tsp", actual: "sp")) {
+            _ = try PersonPaste.parse(mainnet, network: .signet)
+        }
+        let card = PersonCard(network: .signet, name: "Robin", payTo: signet, signerKey: nil)
+        #expect(try PersonPaste.parse(card.serialized(), network: .signet).payTo == .silentPayment(signet))
+    }
+
     @Test("the same signer under a relabelled origin is one identity")
     func signerIdentityIgnoresLabels() throws {
         let apostrophe = VaultAdmissionTests.scriptPath(

@@ -10,6 +10,13 @@ The app supports iPhone, iPad, and Apple silicon Mac (Designed for iPad).
 Simple mode uses one screen; Advanced mode adds Wallet, Send, and Settings tabs.
 The automated UI journey currently covers iPhone only.
 
+The Send field takes any address or a BIP352 silent payment code
+(`sp1…`/`tsp1…`); the review names the code, notes that the on-chain address
+is made for this transaction, and the receipt and payment details show both.
+Only the everyday wallet can pay a code — shared accounts spend through script
+paths BIP352 excludes — and the review gate binds the scripts the wallet derived
+(SEC-018). A saved person may be a code too: reusable, never counted.
+
 Wallet is the one account and transaction list. Payment details save or rename a
 recipient; Send holds the account and saved-recipient pickers. Ordinary payments,
 shared savings, and extra-device accounts use the same form and review. The
@@ -27,7 +34,8 @@ past labels, signer identities, and fresh-address counters in the existing
 people.json store. Receive shares the wallet’s payment card.
 
 [Documented journeys](https://github.com/winnowwallet/website/blob/main/docs/journeys.json) identify the supported experiences.
-[App tests](../../AppTests/README.md) check state and protected actions;
+[App tests](../../AppTests/README.md) check state and protected actions,
+including [paying a silent payment code](../../AppTests/SilentPaymentSendFlowTests.swift);
 [UI tests](../../UITests/README.md) drive the simulator against a disposable node.
 Simulator tests do not establish physical-device lock behavior or battery life.
 

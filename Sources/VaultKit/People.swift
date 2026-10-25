@@ -12,6 +12,11 @@ public enum PersonPayTo: Equatable, Sendable {
     /// Payments always take the receive chain (choice 0).
     case descriptor(String)
     case address(String)
+    /// A BIP352 silent payment code (`sp1…`/`tsp1…`), canonical lower case.
+    /// Reusable like a descriptor — every payment lands on a fresh on-chain
+    /// address — but the address is derived from the sender's inputs, so
+    /// there is no script to watch for or match against.
+    case silentPayment(String)
 }
 
 extension PersonPayTo: Codable {
@@ -24,6 +29,7 @@ extension PersonPayTo: Codable {
         switch kind {
         case "descriptor": self = .descriptor(value)
         case "address": self = .address(value)
+        case "silentPayment": self = .silentPayment(value)
         default:
             throw DecodingError.dataCorruptedError(forKey: .kind, in: container,
                                                    debugDescription: "unknown pay-to kind")
@@ -38,6 +44,9 @@ extension PersonPayTo: Codable {
             try container.encode(value, forKey: .value)
         case let .address(value):
             try container.encode("address", forKey: .kind)
+            try container.encode(value, forKey: .value)
+        case let .silentPayment(value):
+            try container.encode("silentPayment", forKey: .kind)
             try container.encode(value, forKey: .value)
         }
     }
@@ -54,9 +63,14 @@ public enum PersonPayToError: Error, Equatable, LocalizedError {
     case wrongNetwork(expected: BitcoinNetwork)
     /// Ranged, but not the receive/change shape Winnow derives from.
     case unsupportedDerivation
+    /// A silent payment code has no script of its own: the address is made
+    /// from the paying transaction's inputs.
+    case noFixedScript
 
     public var errorDescription: String? {
         switch self {
+        case .noFixedScript:
+            "A silent payment code has no fixed address; its payments are derived when they are sent."
         case .malformed:
             "That isn't a valid pay-to key. Paste the person's Winnow card or their public account key."
         case .privateKey:
@@ -128,20 +142,36 @@ extension PersonPayTo {
         return .address(trimmed)
     }
 
+    /// Validates a silent payment code on `network` and returns it in canonical
+    /// (lower-case) form. `SilentPaymentAddressError` carries its own wording.
+    public static func silentPayment(_ text: String, network: BitcoinNetwork) throws -> PersonPayTo {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        let code = try SilentPaymentAddress(trimmed, expectedHRP: SilentPayment.hrp(for: network))
+        return .silentPayment(try code.encoded)
+    }
+
+    /// Whether the person's payment index moves with each payment. A silent
+    /// payment code is reusable too, but by derivation, not by counting.
     public var derivesFreshAddresses: Bool {
         if case .descriptor = self { true } else { false }
     }
 
+    public var isSilentPayment: Bool {
+        if case .silentPayment = self { true } else { false }
+    }
+
     public var text: String {
         switch self {
-        case let .descriptor(value), let .address(value): value
+        case let .descriptor(value), let .address(value), let .silentPayment(value): value
         }
     }
 
-    /// The address a payment at `index` goes to. A fixed address ignores the index.
+    /// The address a payment at `index` goes to. A fixed address ignores the
+    /// index; so does a silent payment code, which is what the send screen
+    /// is handed and resolves to an output at signing time.
     public func address(index: UInt32, network: BitcoinNetwork) throws -> String {
         switch self {
-        case let .address(address):
+        case let .address(address), let .silentPayment(address):
             return address
         case let .descriptor(text):
             return try Descriptor(text).derived(index: index, bitcoinNetwork: network)[0].address
@@ -154,24 +184,35 @@ extension PersonPayTo {
             return try AddressDecoder.scriptPubKey(for: address, network: network)
         case let .descriptor(text):
             return try Descriptor(text).derived(index: index, bitcoinNetwork: network)[0].scriptPubKey
+        case .silentPayment:
+            throw PersonPayToError.noFixedScript
         }
     }
 
     /// Every script this person could have been paid at so far: indices
-    /// `0 ..< count` of a descriptor, or the one address.
+    /// `0 ..< count` of a descriptor, or the one address. A silent payment
+    /// code has none — its outputs are labelled from the send that made them.
     public func scripts(upTo count: UInt32, network: BitcoinNetwork) throws -> [Data] {
         switch self {
         case .address:
             return [try scriptPubKey(index: 0, network: network)]
         case .descriptor:
             return try (0 ..< count).map { try scriptPubKey(index: $0, network: network) }
+        case .silentPayment:
+            return []
         }
     }
 
     /// What makes two pay-to keys the same person's: the script at index 0,
-    /// so relabelling an origin cannot make a second entry.
+    /// so relabelling an origin cannot make a second entry. A silent payment
+    /// code is identified by its two keys (66 bytes, longer than any
+    /// scriptPubKey Winnow pays, so the two kinds cannot collide).
     public func identity(network: BitcoinNetwork) throws -> Data {
-        try scriptPubKey(index: 0, network: network)
+        if case let .silentPayment(code) = self {
+            let address = try SilentPaymentAddress(code)
+            return address.scanKey + address.spendKey
+        }
+        return try scriptPubKey(index: 0, network: network)
     }
 }
 
@@ -439,6 +480,9 @@ public enum PersonPaste {
         if trimmed.hasPrefix("tr(") || trimmed.hasPrefix("rawtr(") {
             return try parseDescriptor(trimmed, network: network)
         }
+        if SilentPaymentAddress.looksLikeCode(trimmed) {
+            return try parseSilentPayment(trimmed, network: network)
+        }
         if let payTo = try? PersonPayTo.address(trimmed, network: network) {
             return PersonImport(name: nil, payTo: payTo, signerKey: nil, source: .address)
         }
@@ -446,6 +490,18 @@ public enum PersonPaste {
             throw error
         }
         return try parseKeyExpression(trimmed, network: network)
+    }
+
+    /// An `sp1…`/`tsp1…` code. A wrong network is worth saying; anything else
+    /// that merely looks like a code is unrecognised, like any other paste.
+    private static func parseSilentPayment(_ text: String, network: BitcoinNetwork) throws -> PersonImport {
+        do {
+            let payTo = try PersonPayTo.silentPayment(text, network: network)
+            return PersonImport(name: nil, payTo: payTo, signerKey: nil, source: .address)
+        } catch let error as SilentPaymentAddressError {
+            if case .wrongHRP = error { throw error }
+            throw PersonPasteError.unrecognised
+        }
     }
 
     /// Preserve address-specific errors such as a wrong network.
@@ -471,9 +527,13 @@ public enum PersonPaste {
         }
         var payTo: PersonPayTo?
         if let raw = card.payTo?.trimmingCharacters(in: .whitespacesAndNewlines), !raw.isEmpty {
-            payTo = raw.hasPrefix("tr(")
-                ? try PersonPayTo.descriptor(raw, network: network)
-                : try PersonPayTo.address(raw, network: network)
+            if raw.hasPrefix("tr(") {
+                payTo = try PersonPayTo.descriptor(raw, network: network)
+            } else if SilentPaymentAddress.looksLikeCode(raw) {
+                payTo = try PersonPayTo.silentPayment(raw, network: network)
+            } else {
+                payTo = try PersonPayTo.address(raw, network: network)
+            }
         }
         var signerKey: String?
         if let raw = card.signerKey?.trimmingCharacters(in: .whitespacesAndNewlines), !raw.isEmpty {

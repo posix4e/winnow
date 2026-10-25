@@ -66,9 +66,10 @@ local entry points on a development Mac.
 ## The payment journey
 
 `WinnowAppUITests.test01CreateReceiveSendConfirm` receives, reviews, sends and
-confirms three payments in one app session: an ordinary wallet, a 2-of-2 MuSig2
-account with one Bitcoin Core cosigner, and a script-path 2-of-3 account with two
-Core cosigners available. The phone and one Core key approve the final payment.
+confirms four payments in one app session: an ordinary wallet payment, a BIP352
+silent payment to a code whose receiver the test plays (Core cannot), a 2-of-2
+MuSig2 account with one Bitcoin Core cosigner, and a script-path 2-of-3 account
+with two Core cosigners available. The phone and one Core key approve the final payment.
 A disposable private signet fixture funds app addresses, accepts transactions
 and mines confirmations. The test checks both the app's outcomes and the
 node's accepted payments.

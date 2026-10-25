@@ -34,6 +34,7 @@ let package = Package(
                 "Network/Protocol/README.md",
                 "Network/Transport/README.md",
                 "PSBT/README.md",
+                "SilentPayments/README.md",
                 "Transactions/README.md",
                 "Wallet/README.md",
             ]

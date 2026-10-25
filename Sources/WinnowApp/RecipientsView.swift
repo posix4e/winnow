@@ -186,7 +186,7 @@ struct AddPersonView: View {
                 if let parsed, person == nil {
                     Section {
                         if let payTo = parsed.payTo {
-                            Text(payTo.derivesFreshAddresses ? "Fresh address each payment" : "Uses this same address each time")
+                            Text(Self.payToSummary(payTo))
                                 .accessibilityIdentifier("personPayToSummary")
                         }
                         if forSigning {
@@ -230,6 +230,13 @@ struct AddPersonView: View {
     }
 
     /// Shown wherever a guessed funding address could be attached.
+
+    /// What paying this person does on chain, in one line.
+    static func payToSummary(_ payTo: PersonPayTo) -> String {
+        if payTo.isSilentPayment { return "One reusable code; each payment gets its own address on chain" }
+        return payTo.derivesFreshAddresses ? "Fresh address each payment" : "Uses this same address each time"
+    }
+
     private static let fundingWarning =
         "A funding address is unverified as a destination for this person. Exchanges, coinjoins and shared wallets can make it misleading. Select one only after checking with the person. Sending to it reuses an address; ask for a fresh address or payment card."
 

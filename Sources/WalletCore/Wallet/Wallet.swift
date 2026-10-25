@@ -1347,6 +1347,16 @@ public actor Wallet {
     /// broadcaster, then call `commit(_:)` — never the other way around.
     public struct PreparedSend: Sendable {
         public let built: BuiltTransaction
+        /// The silent payments of this send with their derived P2TR scripts,
+        /// index-aligned with the `silentPayments` argument that produced
+        /// them. The review layer cannot compute these — derivation needs the
+        /// selected inputs' private keys — so the wallet hands them over and
+        /// the pre-broadcast gate binds them (SEC-018). Empty for an ordinary
+        /// send.
+        public let resolvedSilentPayments: [Payment]
+        /// The silent payment codes behind `resolvedSilentPayments`, encoded,
+        /// so the history can show the code a derived output was paid for.
+        let silentPaymentAddresses: [String]
         let selected: [WalletUTXO]
         let change: Payment?
         let changeIndex: UInt32
@@ -1359,22 +1369,35 @@ public actor Wallet {
     /// PSBT creator → per-input key-path signer → finalizer/extractor. The
     /// change output, when any, goes to the next unused internal address.
     ///
+    /// `silentPayments` are BIP352 destinations: their P2TR output scripts
+    /// are derived after coin selection, when the input set and its keys are
+    /// known (BIP352 §Creating outputs), and replace the same-size
+    /// placeholders the fee estimate used. Signing stays SIGHASH_DEFAULT, the
+    /// BIP352-safe sighash for taproot inputs. Exercised by
+    /// `SilentPaymentSendTests` and the app flow `SilentPaymentSendFlowTests`.
+    ///
     /// `chainTip` is the validated header-chain tip, and carries no default:
     /// omitting it is what stamps a fingerprint onto the chain (#139), so every
     /// call site is made to decide rather than inherit a silent zero.
     public func buildSend(payments: [Payment], feeRateSatPerVByte: Double,
+                          silentPayments: [SilentPayment] = [],
                           chainTip: UInt32,
                           randomness: @Sendable () -> Double = { Double.random(in: 0 ..< 1) }
     ) throws -> PreparedSend {
-        guard !payments.isEmpty else { throw WalletError.noPayments }
+        guard !payments.isEmpty || !silentPayments.isEmpty else { throw WalletError.noPayments }
         let changeIndex = state.nextChangeIndex
         let changeScript = try scriptPubKey(chain: .change, index: changeIndex)
-        let selection = try CoinSelection.select(utxos: spendableUtxos, payments: payments,
+        let sizingPayments = payments + silentPayments.map {
+            Payment(amount: $0.amount, scriptPubKey: SilentPayment.sizingScriptPubKey)
+        }
+        let selection = try CoinSelection.select(utxos: spendableUtxos, payments: sizingPayments,
                                                  changeScriptPubKey: changeScript,
                                                  feeRateSatPerVByte: feeRateSatPerVByte)
+        let resolvedSilentPayments = try resolveSilentPayments(silentPayments, selected: selection.selected)
         let change = selection.changeAmount.map { Payment(amount: $0, scriptPubKey: changeScript) }
         let tx = try TransactionBuilder.build(
-            inputs: selection.selected.map(\.outpoint), payments: payments, change: change,
+            inputs: selection.selected.map(\.outpoint), payments: payments + resolvedSilentPayments,
+            change: change,
             locktime: TransactionBuilder.antiFeeSnipingLocktime(tip: chainTip, randomness: randomness))
         let changeOutputIndex = change.flatMap { change in
             tx.outputs.firstIndex { $0.scriptPubKey == change.scriptPubKey && $0.value == change.amount }
@@ -1386,9 +1409,32 @@ public actor Wallet {
 
         let built = BuiltTransaction(psbt: psbt, transaction: signed, fee: selection.fee,
                                      changeAmount: selection.changeAmount)
-        return PreparedSend(built: built, selected: selection.selected, change: change,
+        return PreparedSend(built: built, resolvedSilentPayments: resolvedSilentPayments,
+                            silentPaymentAddresses: try silentPayments.map { try $0.address.encoded },
+                            selected: selection.selected, change: change,
                             changeIndex: changeIndex,
                             changeOutputIndex: changeOutputIndex.map(UInt32.init), fee: selection.fee)
+    }
+
+    /// The P2TR scripts of a send's silent payments, one per entry and in
+    /// order. The shared secrets commit to the selected inputs, so this runs
+    /// after coin selection with the tweaked input keys in hand — every input
+    /// the wallet spends is its own BIP86 key-path P2TR coin, exactly the
+    /// BIP352 wallet case (and the one where all inputs are eligible). Loads
+    /// the account key, so it belongs inside the same authentication window
+    /// as `sign`; `AppModel.send` authenticates before `buildSend`.
+    private func resolveSilentPayments(_ silentPayments: [SilentPayment],
+                                       selected: [WalletUTXO]) throws -> [Payment] {
+        guard !silentPayments.isEmpty else { return [] }
+        let account = try accountPrivateKey()
+        let inputs = try selected.map { utxo in
+            SilentPaymentSending.Input(
+                txid: utxo.txid, vout: utxo.vout, prevoutScriptPubKey: utxo.scriptPubKey,
+                privateKey: try tweakedPrivateKey(chain: utxo.chain, index: utxo.index, account: account))
+        }
+        let scripts = try SilentPaymentSending.outputScripts(inputs: inputs,
+                                                             recipients: silentPayments.map(\.address))
+        return zip(silentPayments, scripts).map { Payment(amount: $0.amount, scriptPubKey: $1) }
     }
 
     /// Refuses a transaction past Bitcoin Core's standard size limit, measured
@@ -1460,13 +1506,15 @@ public actor Wallet {
                                           index: prepared.changeIndex, height: 0))
             updated.nextChangeIndex += 1
         }
+        var outputs = try classifyOutputs(of: signed)
+        outputs.annotateSilentPayments(prepared.resolvedSilentPayments, codes: prepared.silentPaymentAddresses)
         updated.history.append(HistoryEntry(txid: signed.txid, height: 0,
                                           received: prepared.change?.amount ?? 0,
                                           spent: prepared.selected.reduce(0) { $0 + $1.amount },
                                           fee: prepared.fee,
                                           rawTransaction: signed.serialized(includeWitness: false),
                                           fundingScripts: FundingSources.fundingScripts(of: signed),
-                                          outputs: try classifyOutputs(of: signed)))
+                                          outputs: outputs))
         updated.pendingSends.append(PendingSend(
             rawTransaction: signed.serialized(includeWitness: true), selected: prepared.selected,
             changeIndex: prepared.change == nil ? nil : prepared.changeIndex,
@@ -1529,6 +1577,11 @@ public actor Wallet {
     /// Rebuilds and signs a BIP125 replacement with the same inputs and
     /// recipient outputs. The original change output is shrunk, or removed if
     /// the remainder would be dust. Like `buildSend`, this is mutation-free.
+    ///
+    /// Silent payment outputs need no re-derivation here: BIP352 commits the
+    /// shared secret to the input set and the smallest outpoint, both of which
+    /// a replacement keeps, so the original's derived scripts stay the
+    /// recipient's.
     public func buildFeeBump(txid: Data, feeRateSatPerVByte: Double) throws -> PreparedFeeBump {
         let candidate = try feeBumpCandidate(txid: txid, feeRateSatPerVByte: feeRateSatPerVByte)
         let (psbt, signed) = try sign(
@@ -1574,12 +1627,16 @@ public actor Wallet {
                                           index: prepared.changeIndex, height: 0))
         }
         updated.history[historyIndex].replacedBy = signed.txid
+        // A replacement keeps the original's recipient outputs byte for byte,
+        // so a silent payment's code travels with its derived script.
+        var outputs = try classifyOutputs(of: signed)
+        if let previous = updated.history[historyIndex].outputs { outputs.inheritSilentPayments(from: previous) }
         updated.history.append(HistoryEntry(
             txid: signed.txid, height: 0, received: prepared.change?.amount ?? 0,
             spent: prepared.selected.reduce(0) { $0 + $1.amount }, fee: prepared.built.fee,
             rawTransaction: signed.serialized(includeWitness: false),
             fundingScripts: FundingSources.fundingScripts(of: signed),
-                                          outputs: try classifyOutputs(of: signed)))
+            outputs: outputs))
         updated.pendingSends.remove(at: pendingIndex)
         updated.pendingSends.append(PendingSend(
             rawTransaction: signed.serialized(includeWitness: true), selected: prepared.selected,

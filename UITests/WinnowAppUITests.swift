@@ -119,8 +119,88 @@ final class WinnowAppUITests: XCTestCase {
         XCTAssertTrue(sent.label.contains("Sent"))
         Screenshots.capture(app, "09-home-after-send", testCase: self)
         print("SIGNET_ORDINARY_SECONDS=\(Date().timeIntervalSince(journeyStarted))")
+        try await silentPaymentJourney(in: app, control: control)
+        print("SIGNET_SILENT_SECONDS=\(Date().timeIntervalSince(journeyStarted))")
         try await multisigJourney(in: app, control: control)
     }
+
+    /// Pays a BIP352 silent payment code from the everyday wallet's change.
+    /// Core on the fixture has no BIP352 support, so the test owns the
+    /// receiver: it derives the one address the code's holder would scan for
+    /// from the mined transaction, requires that to be what the app paid, then
+    /// has Core watch that address and confirm the coin.
+    private func silentPaymentJourney(in app: XCUIApplication, control: URL) async throws {
+        let receiver = try SilentPaymentTestReceiver(network: .signet)
+        try JSONEncoder().encode(["clipboard": receiver.code]).write(to: control, options: .atomic)
+
+        app.buttons["openSendButton"].tap()
+        XCTAssertTrue(app.buttons["pasteDestinationButton"].appears(within: 20))
+        app.buttons["pasteDestinationButton"].tap()
+        app.typeInto("amountField", String(Self.silentPaymentAmount))
+        app.buttons["reviewButton"].tap()
+        let send = app.buttons["sendButton"]
+        XCTAssertTrue(send.appears(within: 30), "the silent payment review did not open")
+        XCTAssertEqual(app.staticTexts["reviewDestination"].label, receiver.code)
+        XCTAssertTrue(app.staticTexts["silentPaymentNote"].exists, "the review does not say the address is derived")
+        let amount = try XCTUnwrap(app.staticTexts["reviewAmount"].value as? String)
+        XCTAssertEqual(Int64(amount.filter(\.isNumber)), Self.silentPaymentAmount)
+
+        let before = Set(try BitcoinCLI.mempoolTxids())
+        send.tap()
+        var payment: String?
+        XCTAssertTrue(poll(timeout: 60, interval: 1, "the node receives the silent payment") {
+            payment = (try? Set(BitcoinCLI.mempoolTxids()))?.subtracting(before).first
+            return payment != nil
+        })
+        let txid = try XCTUnwrap(payment)
+        let transaction = try BitcoinCLI.runObject(["getrawtransaction", txid, "true"])
+        let decoded = try Transaction.decode(XCTUnwrap(Data(hex: BitcoinCLI.string(transaction, "hex"))))
+        let prevoutScripts = try decoded.inputs.map { input -> Data in
+            let funding = try BitcoinCLI.runObject(["getrawtransaction", input.previousOutput.txid.displayHex, "true"])
+            let outputs = try XCTUnwrap(funding["vout"] as? [[String: Any]])
+            let script = try XCTUnwrap(outputs[Int(input.previousOutput.vout)]["scriptPubKey"] as? [String: Any])
+            return try XCTUnwrap(Data(hex: BitcoinCLI.string(script, "hex")))
+        }
+        let expected = try receiver.expectedOutputScripts(in: decoded, prevoutScripts: prevoutScripts, count: 1)[0]
+        let paid = try XCTUnwrap(decoded.outputs.first { $0.scriptPubKey == expected },
+                                 "the transaction Core accepted pays no output the code's holder would find")
+        XCTAssertEqual(paid.value, Self.silentPaymentAmount)
+        let derivedAddress = try XCTUnwrap(AddressDecoder.address(for: expected, network: .signet))
+
+        // The receipt shows the derived address under the code.
+        XCTAssertTrue(app.staticTexts["derivedOutputAddress"].appears(within: 20),
+                      "the receipt does not show where the code was paid on chain")
+        XCTAssertEqual(app.staticTexts["derivedOutputAddress"].label, derivedAddress)
+
+        // Core, told only the derived key, sees the coin once it is mined. A
+        // watch-only wallet: a key-less descriptor cannot be imported into one
+        // that holds private keys.
+        if try !BitcoinCLI.run(["listwallets"]).contains("\"\(Self.silentWatchWallet)\""),
+           (try? BitcoinCLI.run(["loadwallet", Self.silentWatchWallet])) == nil {
+            _ = try BitcoinCLI.run(["-named", "createwallet", "wallet_name=\(Self.silentWatchWallet)",
+                                    "disable_private_keys=true", "descriptors=true"])
+        }
+        let descriptor = try BitcoinCLI.runJSON(["getdescriptorinfo", "rawtr(\(expected.dropFirst(2).hex))"])
+        let checksummed = try BitcoinCLI.string(XCTUnwrap(descriptor as? [String: Any]), "descriptor")
+        let request = "[{\"desc\":\"\(checksummed)\",\"timestamp\":\"now\",\"label\":\"silent\"}]"
+        _ = try BitcoinCLI.run(["importdescriptors", request], wallet: Self.silentWatchWallet)
+        try await Self.mineBlock()
+        XCTAssertTrue(app.staticTexts["broadcastConfirmed"].appears(within: 90),
+                      "the open receipt did not notice the silent payment confirming")
+        let coins = try XCTUnwrap(BitcoinCLI.runJSON(["listunspent", "1", "9999999"],
+                                                     wallet: Self.silentWatchWallet) as? [[String: Any]])
+        let found = coins.filter { $0["txid"] as? String == txid }
+        XCTAssertEqual(found.count, 1, "Core's watch wallet did not find the silent payment output")
+        XCTAssertEqual(try BitcoinCLI.string(XCTUnwrap(found.first), "address"), derivedAddress)
+        XCTAssertEqual(try BitcoinCLI.sats(XCTUnwrap(found.first?["amount"])), Self.silentPaymentAmount)
+        app.buttons["closeSendButton"].tap()
+        let sent = app.buttons["historyPayment-\(txid)"]
+        XCTAssertTrue(sent.appears(within: 20), "the silent payment is missing from history")
+        XCTAssertTrue(sent.label.contains("Sent"))
+    }
+
+    static let silentPaymentAmount: Int64 = 150_000
+    static let silentWatchWallet = "ui-silent-watch"
 
     nonisolated static func fundAndConfirm(_ address: String) async throws -> String {
         try await Task.detached(priority: .userInitiated) {
