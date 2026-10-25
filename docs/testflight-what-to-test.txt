@@ -16,6 +16,10 @@ Do not install this build on a phone that holds funds in MuSig2 accounts (build 
 
 Also try: a separate recovery key instead of fewer signers, a 2-of-2 of two phones, and joining the same descriptor twice (the same account comes back, not a copy). None of this appears in Simple mode.
 
+Silent payment codes
+
+In Send, paste a BIP352 code (tsp1… on signet, sp1… on mainnet) from any wallet that gives one out. The review must name the code and say the address is created for this transaction; after sending, the receipt and the payment's details must show the code and the bc1p… address it paid, and the recipient's wallet must find the payment. Paste a mainnet code while on signet: it must be refused where it was typed, naming the network. Save a code as a person and pay them twice: two different on-chain addresses, no address counter. A code cannot be paid from a multisig account.
+
 Ordinary wallet
 
 Receive from a faucet, send a payment and watch it confirm. Restore the same recovery words in the App Store Winnow on another device: the first receive address must match. Pay a saved person and a pasted address. Bump the fee on a pending payment.
