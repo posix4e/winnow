@@ -19,7 +19,7 @@
 </head>
 <body>
 <a class="skip-link" href="#main">Skip to content</a>
-<header class="topbar"><div class="bar"><a class="mark" href="/" aria-label="Winnow home">winnow</a><nav class="links" aria-label="Main"><a href="/architecture">How it works</a><a href="/vaults">Shared wallets</a><a href="https://github.com/winnowwallet/winnow">GitHub ↗</a></nav></div></header>
+<header class="topbar"><div class="bar"><a class="mark" href="/" aria-label="Winnow home">winnow</a><nav class="links" aria-label="Main"><a href="/architecture">How it works</a><a href="https://github.com/winnowwallet/winnow">GitHub ↗</a></nav></div></header>
 <main id="main">
   <h1 id="the-read-side-how-a-private-mobile-bitcoin-wallet-learns-whats-its-own">The Read Side: How a Private Mobile Bitcoin Wallet Learns What’s Its Own</h1>
   <p class="lede">Winnow downloads public block filters and checks them against your wallet on the phone. It fetches matching blocks to find payments without sending peers its watch list.</p>
@@ -232,9 +232,9 @@
   </tr>
   <tr>
   <td>6</td>
-  <td>Multisig vault (k-of-n or MuSig2 n-of-n)</td>
-  <td>Identical machinery — watch list derived from the vault’s <code>tr()</code> descriptor</td>
-  <td>A vault is just a different set of scripts; the read side doesn’t care. Ceremony is <a href="/vaults">vaults</a>.</td>
+  <td>Multisig account (k-of-n)</td>
+  <td>Identical machinery — watch list derived from the account's <code>tr()</code> descriptor</td>
+  <td>An account is just a different set of scripts; the read side doesn’t care. Signing is a PSBT exchange between the signers.</td>
   </tr>
   <tr>
   <td>7</td>
@@ -302,10 +302,9 @@
   <h2 id="appendix-a.-how-the-implementation-is-validated">Appendix A. How the implementation is validated</h2>
   <p>Nothing in this paper asks to be taken on faith — the code is checked against independent ground truth at every layer:</p>
   <ul>
-  <li><strong>Official BIP test vectors</strong> for every cryptographic surface: BIP39/32/86 (keys), BIP340 (Schnorr), BIP341 (Taproot trees, tweaks, control blocks, sighash — script-path vectors generated via Bitcoin Core’s own functional-test framework where the official file is silent), BIP350 (bech32m), BIP158 (GCS filters, byte-for-byte against real blocks), BIP327 (MuSig2), BIP380/387/389/390 (descriptors).</li>
+  <li><strong>Official BIP test vectors</strong> for every cryptographic surface: BIP39/32/86 (keys), BIP340 (Schnorr), BIP341 (Taproot tweaks, control blocks, sighash), BIP350 (bech32m), BIP158 (GCS filters, byte-for-byte against real blocks), BIP380 (descriptors).</li>
   <li><strong>Loopback fake-node tests</strong> for the P2P layer: handshakes, filter sync, lying-filter detection, relay state machine — deterministic, no network.</li>
-  <li><strong>One end-to-end UI test</strong> makes ordinary, MuSig2, and script-path 2-of-3 payments against a private signet node. Core supplies the external cosigners, accepts the transactions, and mines blocks automatically for prompt confirmation in the app. The host records one continuous video; detailed failures stay in focused tests.</li>
-  <li><strong>The crypto boundary:</strong> all secret-key operations delegate to libsecp256k1 (via P256K) — Bitcoin Core’s constant-time, exhaustively tested curve library. No Swift code does raw curve math on secrets.</li>
+  <li><strong>One end-to-end UI test</strong> makes one payment against a private signet node. Core funds the wallet, accepts the transaction, and mines blocks automatically for prompt confirmation in the app. The host records one continuous video; detailed failures stay in focused tests.</li>
   </ul>
   <p>Inspect the <a href="https://github.com/winnowwallet/winnow/actions">current test runs and artifacts</a>. The <a href="/recording">payment recording</a> identifies the source and run behind that journey.</p>
   <hr />
@@ -318,7 +317,7 @@
   <li><a href="https://bips.dev/158/">BIP158: Compact Block Filters for Light Clients</a></li>
   <li><a href="https://www.rfc-editor.org/rfc/rfc9458">RFC 9458: Oblivious HTTP</a></li>
   <li>Neutrino (lightninglabs/neutrino) — reference BIP157/158 light-client implementation</li>
-  <li><a href="https://bips.dev/341/">BIP341: Taproot</a> · <a href="https://bips.dev/340/">BIP340: Schnorr</a> · <a href="https://bips.dev/86/">BIP86</a> · <a href="https://bips.dev/327/">BIP327: MuSig2</a> · <a href="https://bips.dev/388/">BIP388</a> · <a href="https://bips.dev/370/">BIP370: PSBTv2</a></li>
+  <li><a href="https://bips.dev/341/">BIP341: Taproot</a> · <a href="https://bips.dev/340/">BIP340: Schnorr</a> · <a href="https://bips.dev/86/">BIP86</a> · <a href="https://bips.dev/388/">BIP388</a> · <a href="https://bips.dev/370/">BIP370: PSBTv2</a></li>
   </ul>
 </main>
 <footer><div class="bar"><nav aria-label="Footer"><a href="/roadmap">Roadmap</a><a href="/privacy">Privacy</a><a href="/recording">Recording</a></nav></div></footer>

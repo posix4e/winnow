@@ -57,10 +57,10 @@ class FingerprintTests(unittest.TestCase):
     def test_every_bundled_page_and_build_or_test_input_invalidates(self):
         paths = [
             "docs/site.css", "docs/mobile.html", "docs/read-side.html",
-            "docs/write-side.html", "docs/vaults.html", "docs/import.html",
+            "docs/write-side.html", "docs/import.html",
             "Sources/App.swift", "Tools/Debug/Package.swift", "Tests/WalletCoreTests/WalletTests.swift",
-            "AppTests/WalletStartupTests.swift", "UITests/MultisigJourney.swift",
-            "Tests/Support/Node/CoreSigner.swift", "Package.swift", "Package.resolved", "project.yml",
+            "AppTests/WalletStartupTests.swift", "UITests/PeerGatewaySettingsUITests.swift",
+            "Tests/Support/Node/SignetMiner.swift", "Package.swift", "Package.resolved", "project.yml",
             "scripts/ci-ui-journey", "scripts/signet-fixture", "scripts/ci-journey-cache",
             "scripts/tests/test_ci_journey_cache.py", ".github/workflows/ci.yml", ".swiftlint.yml",
             "Tests/WalletCoreTests/Vectors/input.md", "Tools/Tests/fixture.md", "Sources/App/help.md",

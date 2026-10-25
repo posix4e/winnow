@@ -111,10 +111,10 @@ the growth is the network layer's peer-source classes, the census and its
 signature, people and shared savings, the sealed stores and the review's
 fixes.
 
-The only external Swift package is `21-DOT-DEV/swift-secp256k1` version
-`0.23.2`, resolved to commit `e70a10e036a55fffea31568f0af92d69b6d449cd`, and
-`Package.resolved` is in the repository so builds record the reviewed
-revision. The app additionally embeds Arti 0.46.0 built from locked Rust
+The one external Swift package is `21-DOT-DEV/swift-secp256k1` (version
+`0.23.2`, commit `e70a10e036a55fffea31568f0af92d69b6d449cd`, recorded in
+`Package.resolved`): Bitcoin Core's libsecp256k1, behind the `P256K` module,
+for every key, tweak, signature and the BIP352 derivation. The app additionally embeds Arti 0.46.0 built from locked Rust
 source ([TorBridge](https://github.com/winnowwallet/winnow/tree/archive/tor-0.7.0/TorBridge), now on the archive branch); `WalletCore` and the census
 do not link Rust.
 
@@ -141,11 +141,11 @@ and credible prerequisites, not by code location.
    broadcast. Mutation after review must fail closed.
 3. **Untrusted network boundary:** DNS, peers, the census list and, when the
    user opts in, the block explorer supply attacker-controlled bytes or JSON.
-4. **Untrusted interchange boundary:** addresses, descriptors, cosigner keys,
+4. **Untrusted interchange boundary:** addresses, descriptors, people's keys,
    PSBTs, Winnow cards and import bundles are attacker-controlled text/files
    even when they arrive from a known person.
-5. **Persistent-state boundary:** wallet JSON, the sealed people and vault
-   files, headers, filter progress, peer cache, the downloaded census, settings,
+5. **Persistent-state boundary:** wallet JSON, the sealed people
+   file, headers, filter progress, peer cache, the downloaded census, settings,
    export staging files, and E2E journals have different authority and
    confidentiality.
 6. **Build/distribution boundary:** package revisions, GitHub Actions, Xcode,
@@ -185,8 +185,8 @@ report records.
 
 Parsed input and trust boundary: keys, addresses, descriptors, scripts,
 transaction-derived bytes, arbitrary peer and DNS bytes, the census list and
-its signature, persisted wallet state, PSBTs, cosigner keys, Winnow cards and
-import/export bundles. Secrets: BIP39/BIP32 keys, signing tweaks, MuSig2
+its signature, persisted wallet state, PSBTs, people's keys, Winnow cards and
+import/export bundles. Secrets: BIP39/BIP32 keys, signing tweaks, BIP340
 nonces, derived signing keys. Persistence: Keychain, wallet JSON, header
 chain, filter frontier, peer cache, broadcaster state, downloaded census and
 export staging files. Primary test owners: `BitcoinCoreTests`,
@@ -194,7 +194,7 @@ export staging files. Primary test owners: `BitcoinCoreTests`,
 
 - `Crypto/Base58.swift`, `Crypto/Bech32.swift`, `Crypto/GCSFilter.swift`
 - `Crypto/PBKDF2.swift`, `Crypto/RIPEMD160.swift`, `Crypto/SipHash.swift`, `Crypto/TaggedHash.swift`
-- `Descriptors/Descriptor.swift`, `Descriptors/MuSig.swift`, `Descriptors/MuSig2.swift`
+- `Descriptors/Descriptor.swift`
 - `Keys/BIP32.swift`, `Keys/BIP39.swift`, `Keys/BIP39Wordlist.swift`, `Keys/BIP86.swift`, `Keys/KeyStore.swift`, `Keys/KeychainStore.swift`
 - `Network/Broadcast/TxBroadcaster.swift`, `Network/Filters/FilterSync.swift`
 - `Network/Headers/HeaderChain.swift`, `Network/Headers/UInt256.swift`, `Network/Mempool/MempoolWindow.swift`
@@ -208,25 +208,24 @@ export staging files. Primary test owners: `BitcoinCoreTests`,
 - `SilentPayments/Sending.swift`, `SilentPayments/SilentPaymentAddress.swift` (BIP352 sending, reinstated October 2026)
 - `Transactions/AddressDecoder.swift`, `Transactions/FundingSources.swift`, `Transactions/SighashBIP341.swift`, `Transactions/SilentPayment.swift`, `Transactions/Signer.swift`, `Transactions/TransactionBuilder.swift`
 - `Wallet/CoinSelection.swift`, `Wallet/ExportStagingFile.swift`, `Wallet/FeePolicy.swift`, `Wallet/ImportBundle.swift`, `Wallet/People.swift`
-- `Wallet/Vault.swift`, `Wallet/VaultRecord.swift`, `Wallet/VaultSetup.swift`, `Wallet/Wallet.swift`
+- `Wallet/Wallet.swift`
 
 ### WinnowApp — owner: iOS authorization/UI review
 
 Parsed input and trust boundary: user text, clipboard, files, settings, the
-people and vault files, the explorer's answer, app lifecycle, device
+people file, the explorer's answer, app lifecycle, device
 authentication, and the E2E launch environment. Secrets: recovery
-display/copy, wallet creation handoff, seed-bearing export, MuSig2 nonces in
-flight. Persistence: UserDefaults, the sealed people and vault files (HMAC
-under a Keychain-held key), receive labels, the E2E journal. Primary test
+display/copy, wallet creation handoff, seed-bearing export. Persistence:
+UserDefaults, the sealed people file (HMAC under a Keychain-held key), receive labels, the E2E journal. Primary test
 owners: `AppTests` (`WinnowAppTests`), `UITests`, plus library tests for
 logic that remains below the UI.
 
-- `AccountDetailView.swift`, `AppModel.swift`, `Components.swift`, `E2EMode.swift`, `HomeView.swift`
-- `MuSig2SignView.swift`, `OnboardingView.swift`, `PeopleStore.swift`
-- `ReceiveAddressLabelEditor.swift`, `ReceiveAddressLabelStore.swift`, `ReceiveView.swift`, `RecipientsView.swift`
+- `AppModel.swift`, `BackgroundSyncScheduler.swift`, `BackupSection.swift`, `BeginnerHomeView.swift`, `ChainCheckStatus.swift`
+- `CloudAppState.swift`, `CloudBackupController.swift`, `CloudBackupView.swift`, `Components.swift`, `E2EMode.swift`
+- `HomeView.swift`, `ICloudBackupStore.swift`, `OnboardingView.swift`, `PeerGatewaysSection.swift`, `PeerRoutingBanner.swift`
+- `PeopleStore.swift`, `ReceiveAddressLabelEditor.swift`, `ReceiveAddressLabelStore.swift`, `ReceiveView.swift`, `RecipientsView.swift`
 - `ScreenCaptureMonitor.swift`, `SendView.swift`, `SenderLookup.swift`, `SensitivePresentationEpoch.swift`, `SettingsView.swift`
-- `SharedSavingsViews.swift`, `StoreAuthentication.swift`, `TorController.swift`
-- `VaultSpendSession.swift`, `VaultStore.swift`, `VaultsView.swift`, `WinnowApp.swift`
+- `StoreAuthentication.swift`, `WinnowApp.swift`
 - `Assets.xcassets/AppIcon.appiconset/Contents.json`
 
 The Tor bridge (`TorBridge/`, Rust, Arti 0.46.0) is inventoried by its own
@@ -235,12 +234,12 @@ README and lockfile; the census publisher (winnowwallet/census) consumes
 
 ## Baseline evidence and gaps
 
-- Present: BIP/vector suites; parser negatives and the fuzz harness's fifteen
-  targets; wallet create/send/RBF/import; Taproot script-path and MuSig2 flows;
+- Present: BIP/vector suites; parser negatives and the fuzz harness's sixteen
+  targets; wallet create/send/RBF/import;
   peer loopback, failover, filter-consensus and broadcaster tests; header
   rules with a generator-proven checkpoint; sealed-store and census-signature
   tests; story redaction/idempotency checks; Bitcoin Core differential tests
-  and the iPhone journeys on every pull request; Keychain attribute read-back
+  and the iPhone journey on every pull request; Keychain attribute read-back
   (protection class, synchronizable flag, the user-presence access control
   and its in-place upgrade of an earlier version's item) and the privacy
   cover in the app suite.

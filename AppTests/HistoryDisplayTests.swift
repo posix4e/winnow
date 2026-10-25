@@ -51,7 +51,7 @@ final class HistoryDisplayTests: XCTestCase {
             "3J98t1WpEZ73CNmQviecrnyiWrnqRhWNLy",
         ]
         let scripts = try addresses.map { try AddressDecoder.scriptPubKey(for: $0, network: .mainnet) }
-        let alice = PersonRecord(id: "alice", name: "Alice", payTo: .address(addresses[0]), signerKey: nil)
+        let alice = PersonRecord(id: "alice", name: "Alice", payTo: .address(addresses[0]))
         let transaction = Transaction(version: 2, inputs: [Transaction.Input(
             previousOutput: Transaction.Outpoint(txid: Data(repeating: 1, count: 32), vout: 0), scriptSig: Data(), sequence: 0xffff_fffd)],
             outputs: scripts.map { Transaction.Output(value: 1_000, scriptPubKey: $0) }, locktime: 0)

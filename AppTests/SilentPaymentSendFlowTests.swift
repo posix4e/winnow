@@ -1,5 +1,4 @@
 @testable import WinnowApp
-import VaultKit
 import WalletCore
 import TestSupport
 import XCTest
@@ -135,18 +134,6 @@ final class SilentPaymentSendFlowTests: XCTestCase {
         XCTAssertThrowsError(try Payment(amount: 1, address: mainnet.code, network: .signet))
     }
 
-    /// Shared accounts spend through script paths BIP352 excludes, so a code
-    /// cannot be paid from one: the refusal says so before any vault lookup.
-    func testRefusesASilentPaymentFromASharedAccount() async throws {
-        let (model, _) = try await fundedModel(coins: [80_000], name: "sp-vault")
-        let receiver = try SilentPaymentTestReceiver(network: .signet)
-        do {
-            _ = try await model.previewSend(destination: receiver.code, amount: 20_000, priority: .medium,
-                                            override: 2, accountID: "any-account")
-            XCTFail("a shared account reviewed a silent payment")
-        } catch AppModel.AppError.silentPaymentNeedsEverydayWallet {}
-    }
-
     /// A person saved from a pasted code is paid like anyone else, the code is
     /// the review's destination, the counter behind fresh addresses never
     /// moves, and the payment is labelled with their name by code rather than
@@ -155,7 +142,7 @@ final class SilentPaymentSendFlowTests: XCTestCase {
         let (model, fundings) = try await fundedModel(coins: [80_000], name: "sp-person")
         let receiver = try SilentPaymentTestReceiver(network: .signet)
         let imported = try PersonPaste.parse(receiver.code, network: .signet)
-        let robin = try await model.addPerson(name: "Robin", payTo: imported.payTo, signerKey: nil)
+        let robin = try await model.addPerson(name: "Robin", payTo: imported.payTo)
         XCTAssertEqual(robin.payTo, .silentPayment(receiver.code))
 
         let preview = try await model.previewSend(to: robin, amount: 20_000, priority: .medium, override: 2)

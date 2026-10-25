@@ -1,13 +1,14 @@
 import Foundation
-import VaultKit
 import WalletCore
 
 /// A Bitcoin Core signer for disposable node/app tests. Core generates the
-/// key and signs through RPC; only its public expression goes into the app.
-/// The private descriptor is used only to configure the test's Core wallet.
+/// key and signs script-path spends through `walletprocesspsbt`, with its own
+/// libsecp256k1; only its public expression goes into the app. The private
+/// descriptor is used only to configure the test's Core wallet.
 public struct CoreSigner {
     public enum SetupError: Error { case invalid(String) }
     public let wallet: String
+    /// Core's account key `[fp/86'/1'/0']tpub…`, without a suffix.
     public let publicExpression: String
     public let privateExpression: String
 
@@ -32,20 +33,28 @@ public struct CoreSigner {
         privateExpression = try Self.keyExpression(from: descriptor(private: true))
     }
 
-    public func importVault(_ vault: Vault) throws {
-        let text = String(vault.descriptor.serialized().split(separator: "#")[0])
+    /// Core's signer key for a multisig account: its account key with the
+    /// `/<0;1>/*` suffix every signer carries.
+    public var signerExpression: String { publicExpression + "/<0;1>/*" }
+
+    /// Imports the account with Core's own key private, so Core watches the
+    /// same addresses and can sign as one of its signers.
+    public func importMultisigAccount(_ account: MultisigAccount) throws {
+        let text = String(account.descriptor.serialized().split(separator: "#")[0])
         let privateText = text.replacingOccurrences(of: publicExpression, with: privateExpression)
-        guard privateText != text else { throw SetupError.invalid("Core key absent from vault") }
+        guard privateText != text else { throw SetupError.invalid("Core key absent from the account") }
         let checksum = try BitcoinCLI.string(BitcoinCLI.runObject(["getdescriptorinfo", privateText]), "checksum")
         let imported = try BitcoinCLI.runJSON(
             ["importdescriptors",
              #"[{"desc":"\#(privateText)#\#(checksum)","timestamp":"now","active":true,"range":[0,5]}]"#],
             wallet: wallet)
         guard ((imported as? [Any])?.first as? [String: Any])?["success"] as? Bool == true else {
-            throw SetupError.invalid("Core refused the vault descriptor")
+            throw SetupError.invalid("Core refused the account descriptor")
         }
     }
 
+    /// Core signs whatever it can in the PSBT; the result is combined back
+    /// into the original so no field the phone set is lost.
     public func process(_ psbt: PSBT) throws -> PSBT {
         let result = try BitcoinCLI.runObject(
             ["walletprocesspsbt", psbt.base64V0(), "true", "DEFAULT", "true", "false"], wallet: wallet)

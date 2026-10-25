@@ -142,8 +142,8 @@ struct CoinSelectionTests {
 
     /// The ceiling is on the transaction, not on the coin count, so it is
     /// reached at wildly different input counts depending on what each input
-    /// has to prove: about 1,700 P2TR key-path spends, or about 200 vault
-    /// inputs carrying a 20-key multi_a witness.
+    /// has to prove: about 1,700 P2TR key-path spends, or about 200 inputs
+    /// carrying a 2,000-byte witness.
     @Test("a selection too large to relay is refused before anything is signed",
           arguments: [66, 2_000])
     func standardSizeCeiling(witnessBytesPerInput: Int) throws {

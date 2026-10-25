@@ -4,7 +4,6 @@ import TestSupport
 @testable import WalletCore
 
 /// BIP387 multi_a/sortedmulti_a vectors parsed from bip-0387.mediawiki.
-/// (The task brief calls these "BIP388 vectors"; the descriptor fragments live in BIP387.)
 @Suite("BIP387 multi_a/sortedmulti_a")
 struct BIP387Tests {
     @Test("vector block parsed")

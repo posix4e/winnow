@@ -182,8 +182,8 @@ struct E2EMode {
     }
 
     /// Versioned, E2E-only event journal. It contains automation facts and
-    /// public transaction material, never mnemonics, private keys, entropy,
-    /// or MuSig2 secret nonces. Normal launches never construct E2EMode and
+    /// public transaction material, never mnemonics, private keys or entropy.
+    /// Normal launches never construct E2EMode and
     /// therefore never create this file.
     func journal(_ name: String, fields: [String: String] = [:]) {
         let forbiddenFieldNames = ["entropy", "mnemonic", "privatekey", "secretnonce", "seedhex"]

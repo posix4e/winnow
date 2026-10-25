@@ -1,0 +1,47 @@
+#!/usr/bin/env bash
+# Holds Winnow's Taproot script-path multisig to Bitcoin Core: starts a
+# disposable regtest bitcoind in a fresh temporary datadir, runs
+# `winnow-fixture multisig-differential` against it (arguments pass through:
+# --seed HEX, --cases N) and stops and deletes the node. Ports default to
+# 38710/38711 (WINNOW_RPC_PORT / WINNOW_P2P_PORT override them), away from the
+# signet fixture's 38400. Needs bitcoind and bitcoin-cli (brew install bitcoin).
+set -euo pipefail
+cd "$(dirname "$0")/.."
+command -v bitcoind >/dev/null || { echo "bitcoind not found: brew install bitcoin" >&2; exit 2; }
+
+export WINNOW_RPC_PORT="${WINNOW_RPC_PORT:-38710}"
+export WINNOW_P2P_PORT="${WINNOW_P2P_PORT:-38711}"
+if lsof -nP -iTCP:"$WINNOW_RPC_PORT" -sTCP:LISTEN >/dev/null 2>&1; then
+  echo "port $WINNOW_RPC_PORT is in use; set WINNOW_RPC_PORT to a free one" >&2
+  exit 2
+fi
+WINNOW_DATADIR=$(mktemp -d "${TMPDIR:-/tmp}/winnow-multisig-core.XXXXXX")
+export WINNOW_DATADIR
+cat > "$WINNOW_DATADIR/bitcoin.conf" <<CONF
+# Disposable: created and deleted by scripts/check-multisig-core.
+regtest=1
+
+[regtest]
+rpcport=$WINNOW_RPC_PORT
+port=$WINNOW_P2P_PORT
+rpcbind=127.0.0.1
+rpcallowip=127.0.0.1
+listen=0
+discover=0
+dnsseed=0
+fallbackfee=0.0002
+CONF
+
+cli() { bitcoin-cli -datadir="$WINNOW_DATADIR" "$@"; }
+cleanup() {
+  cli stop >/dev/null 2>&1 || true
+  for _ in $(seq 1 30); do cli getblockcount >/dev/null 2>&1 || break; sleep 1; done
+  rm -rf "$WINNOW_DATADIR"
+}
+trap cleanup EXIT
+
+bitcoind -datadir="$WINNOW_DATADIR" -daemon >/dev/null
+# bitcoin-cli gives up at once while the cookie it authenticates with is absent.
+for _ in $(seq 1 60); do [ -f "$WINNOW_DATADIR/regtest/.cookie" ] && break; sleep 1; done
+cli -rpcwait -rpcwaittimeout=60 getblockcount >/dev/null
+swift run winnow-fixture multisig-differential "$@"

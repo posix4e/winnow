@@ -52,39 +52,6 @@ final class DeviceAuthenticationTests: XCTestCase {
         }
     }
 
-    func testAccountKeyCannotAuthorizeARootKeyOperation() async throws {
-        let environment = ["WINNOW_E2E": "1", "WINNOW_E2E_RUN": "account-auth-\(UUID().uuidString)",
-                           "WINNOW_E2E_ENTROPY": String(repeating: "a1", count: 16),
-                           "WINNOW_E2E_DEVICE_AUTH": "1"]
-        guard case let .active(mode) = E2EMode.resolve(environment: environment),
-              case let .active(cleanup) = E2EMode.resolve(
-                environment: environment.merging(["WINNOW_E2E_RESET": "1"]) { _, reset in reset })
-        else { return XCTFail("could not create an isolated fixture") }
-        defer { cleanup.wipeIfRequested() }
-        let store = InMemoryKeyStore()
-        let authenticator = GrantingAuthenticator()
-        let model = AppModel(deviceAuthenticator: authenticator, e2e: mode,
-                             defaults: makeDefaults(), storeKeys: InMemoryStoreKeyVault(), keyStore: store)
-        authenticator.keychain = model.keychainAuthentication
-        let directory = try XCTUnwrap(model.storageDirectory())
-        let entropy = try XCTUnwrap(mode.entropy)
-        let master = try HDKey(seed: BIP39.seed(mnemonic: BIP39.mnemonic(entropy: entropy)))
-        let account = try BIP86.accountKey(from: master, coinType: 1)
-        _ = try Wallet.create(accountKey: account, masterFingerprint: master.fingerprint,
-                              network: .signet, keyStore: store,
-                              storageURL: directory.appending(path: "wallet.json"))
-        await model.boot()
-        XCTAssertEqual(model.stage, .ready)
-        var authorized = false
-        do {
-            try await model.withMasterKey(reason: "Authorize another account") { _ in authorized = true }
-            XCTFail("an account key authorized a root-key operation")
-        } catch AppModel.AppError.rootKeyUnavailable {
-            XCTAssertFalse(authorized)
-        }
-        XCTAssertFalse(model.keychainAuthentication.isGranted)
-    }
-
     func testCloudRestoreAuthenticatesBeforeReadingCloudData() async {
         let authenticator = RecordingAuthenticator()
         authenticator.shouldFail = true

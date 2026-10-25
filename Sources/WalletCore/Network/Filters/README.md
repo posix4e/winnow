@@ -33,8 +33,8 @@ to bound a single run; the next one resumes from the saved frontier.
 [FilterSync tests](../../../../Tests/WalletCoreTests/Network/FilterSyncTests.swift) and
 [adversarial peers](../../../../Tests/WalletCoreTests/Network/FilterSyncAdversaryTests.swift)
 exercise verification, damaged progress, disagreement, and rollback.
-The [UI journey](../../../../UITests/README.md) discovers and confirms ordinary
-and shared-account payments through the real signet node's filters.
+The [UI journey](../../../../UITests/README.md) discovers and confirms the
+app's payments through the real signet node's filters.
 
 A checkpoint comparison records a `CrossCheckReceipt`: the answer digest,
 compared tip, endpoints and known acquisition source classes that actually

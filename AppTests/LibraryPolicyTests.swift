@@ -84,28 +84,22 @@ final class LibraryPolicyTests: XCTestCase {
         XCTAssertNoThrow(try keys.load(walletID: id))
     }
 
-    func testAppRefusalsExplainAuthorizationAndRecoveryWithoutLosingReceipts() throws {
-        let txid = Data(repeating: 0x23, count: 32)
+    func testAppRefusalsExplainAuthorizationAndRecovery() throws {
         let cases: [(AppModel.AppError, String)] = [
             (.noWallet, "No wallet"), (.noStack, "not running"), (.noPeers, "Settings"),
-            (.mnemonicUnavailable, "Keychain"), (.rootKeyUnavailable, "limited to its own account"),
+            (.mnemonicUnavailable, "Keychain"),
             (.feeDecisionRequired(rate: 120, floor: 200), "explicit rate"),
             (.invalidPeer("bad-peer"), "host:port"), (.wrongNetwork("signet"), "signet"),
-            (.duplicateVault, "already exists"), (.sendReviewChanged, "Review the payment again"),
+            (.sendReviewChanged, "Review the payment again"),
             (.storageDamaged("fixture damage"), "fixture damage"),
             (.deviceAuthUnavailable, "passcode"), (.deviceAuthFailed, "failed"),
             (.spendAlreadyInFlight, "Wait for it to finish"),
-            (.vaultSpendNotRecorded(txid: txid, reason: "fixture write failure"), txid.displayHex),
             (.noStorage, "Syncing has stopped"), (.paymentDetailsUnavailable, "on this phone"),
-            (.personCannotBePaid, "pay-to key"), (.personCannotCoOwn("Fixture person"), "Fixture person")
+            (.personCannotBePaid, "pay-to key")
         ]
         for (error, guidance) in cases {
             XCTAssertTrue(try XCTUnwrap(error.errorDescription).contains(guidance))
         }
-        let receipt = try XCTUnwrap(AppModel.AppError.vaultSpendNotRecorded(
-            txid: txid, reason: "fixture write failure").errorDescription)
-        XCTAssertTrue(receipt.contains("fixture write failure"))
-        XCTAssertTrue(receipt.contains("Reopen the account"))
         let fee = try XCTUnwrap(AppModel.AppError.feeDecisionRequired(rate: 120, floor: 200).errorDescription)
         XCTAssertTrue(fee.contains("200.0"))
         XCTAssertTrue(fee.contains("120"))

@@ -3,7 +3,7 @@
 # PSBT map-order regression
 
 map-order.bin retains a PSBT encoding whose map ordering exposed a parser or
-round-trip assumption. Keeping the input protects imported and shared signing
+round-trip assumption. Keeping the input protects imported signing
 requests against a recurrence of that failure.
 
 [FuzzRegressionTests](../../FuzzRegressionTests.swift) replays this

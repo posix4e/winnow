@@ -102,9 +102,7 @@ public enum Signer {
     /// `scriptPathSignature` or PSBT_IN_TAP_SCRIPT_SIG fields.
     public static func multisigWitness(signatures: [Data: Data], leafScript: Script,
                                        controlBlock: Taproot.ControlBlock) throws -> [Data] {
-        guard let (_, keys) = Multisig.parse(leafScript) else {
-            throw SignerError.malformedLeafScript
-        }
+        guard let keys = Multisig.parsePolicy(leafScript)?.keys else { throw SignerError.malformedLeafScript }
         var stack = keys.reversed().map { signatures[$0] ?? Data() }
         stack.append(leafScript.bytes)
         stack.append(controlBlock.serialized)

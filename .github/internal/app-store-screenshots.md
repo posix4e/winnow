@@ -3,7 +3,7 @@
 The former storefront-only sequence and its optional workflow are retired.
 The single iPhone journey, test01CreateReceiveSendConfirm in
 UITests/WinnowAppUITests.swift, supplies current screenshots of creating a
-wallet, receiving, sending and confirmation for ordinary, MuSig2 and 2-of-3 accounts. It asserts the real app's
+wallet, receiving, sending and confirmation. It asserts the real app's
 behavior against a disposable signet fixture; failures remain failures even
 when a screenshot exists. Detailed feature rules are covered by lower-level
 tests. iPad UI runs are deferred until this basic journey is manageable.

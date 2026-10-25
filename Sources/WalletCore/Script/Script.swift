@@ -42,6 +42,9 @@ public struct Script: Sendable, Equatable {
         public static let checkSig: UInt8 = 0xac // OP_CHECKSIG
         public static let checkSigAdd: UInt8 = 0xba // OP_CHECKSIGADD
         public static let numEqual: UInt8 = 0x9c // OP_NUMEQUAL
+        public static let numEqualVerify: UInt8 = 0x9d // OP_NUMEQUALVERIFY
+        public static let checkSigVerify: UInt8 = 0xad // OP_CHECKSIGVERIFY
+        public static let checkSequenceVerify: UInt8 = 0xb2 // OP_CHECKSEQUENCEVERIFY (BIP112)
         public static let greaterThanOrEqual: UInt8 = 0xa2 // OP_GREATERTHANOREQUAL
 
         /// OP_1 through OP_16 (0x51...0x60).

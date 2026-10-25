@@ -154,8 +154,12 @@ public struct ImportBundle: Codable, Equatable, Sendable {
     public var lastKnownBlockHash: String?
     public var utxos: [UTXO]
     public var transactions: [KnownTransaction]
-    /// Shared and extra-device accounts. Older backups omit them.
-    public var vaults: [VaultRecord]?
+    /// Multisig accounts (`MultisigAccountRecord`), under the key the
+    /// shared-account Winnow used for all its accounts. Script-path k-of-n
+    /// accounts restore; a bundle carrying any other kind of account, such as
+    /// a MuSig2 one, is refused outright rather than restored without it
+    /// (see `decode`).
+    public var vaults: [MultisigAccountRecord]?
     /// Next unused BIP86 receive index. Absent from v1 files and from
     /// writers that only knew UTXO-derived maxima; the importer then
     /// falls back to `max(receive UTXO index) + 1`.
@@ -251,7 +255,14 @@ public struct ImportBundle: Codable, Equatable, Sendable {
         }
         guard (bundle.vaults?.count ?? 0) <= maximumVaults,
               (bundle.vaults ?? []).reduce(0, { $0 + $1.allUtxos.count }) <= maximumEntries else {
-            throw WalletError.invalidBundle("too many shared accounts or account coins")
+            throw WalletError.invalidBundle("too many multisig accounts or account coins")
+        }
+        // MuSig2 accounts from the shared-account Winnow have no home here;
+        // their coins must not vanish from a restore.
+        if let vaults = bundle.vaults, !vaults.isEmpty {
+            guard let network = BitcoinNetwork(rawValue: bundle.network),
+                  vaults.allSatisfy({ (try? MultisigAccount($0.descriptor, network: network)) != nil })
+            else { throw WalletError.unsupportedWalletData }
         }
         return bundle
     }
@@ -275,7 +286,6 @@ public struct ImportBundle: Codable, Equatable, Sendable {
 
     public func encode(to encoder: any Encoder) throws {
         var container = encoder.container(keyedBy: CodingKeys.self)
-        try container.encodeIfPresent(vaults, forKey: .vaults)
         try container.encode(version, forKey: .version)
         try container.encode(network, forKey: .network)
         try container.encodeIfPresent(descriptor, forKey: .descriptor)
@@ -286,6 +296,7 @@ public struct ImportBundle: Codable, Equatable, Sendable {
         try container.encode(transactions, forKey: .transactions)
         try container.encodeIfPresent(nextReceiveIndex, forKey: .nextReceiveIndex)
         try container.encodeIfPresent(nextChangeIndex, forKey: .nextChangeIndex)
+        try container.encodeIfPresent(vaults, forKey: .vaults)
     }
 
     /// The bundle's claimed UTXOs in wallet form.
@@ -492,7 +503,7 @@ extension Wallet {
         }
         let parsed = try Descriptor(bundleDescriptor)
         _ = try Self.origin(of: parsed)
-        guard case let .tr(.single(key), nil) = parsed.expression,
+        guard case let .tr(key) = parsed.expression,
               case let .extended(account, _) = key.base
         else { throw WalletError.invalidDescriptor(bundleDescriptor) }
         return (parsed, account.neutered)

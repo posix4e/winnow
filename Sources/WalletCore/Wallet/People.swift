@@ -1,6 +1,5 @@
 import CryptoKit
 import Foundation
-import WalletCore
 
 // MARK: - Pay-to
 
@@ -58,7 +57,7 @@ public enum PersonPayToError: Error, Equatable, LocalizedError {
     case privateKey
     /// A key with no wildcard: it names one address, not a list.
     case singleAddressKey
-    /// A tree, a musig() or a multi-key leaf: not one person's key.
+    /// A `rawtr()` or other shape that is not one person's tweaked key.
     case notSingleKey
     case wrongNetwork(expected: BitcoinNetwork)
     /// Ranged, but not the receive/change shape Winnow derives from.
@@ -78,7 +77,7 @@ public enum PersonPayToError: Error, Equatable, LocalizedError {
         case .singleAddressKey:
             "This key gives one address only — paste the address itself instead."
         case .notSingleKey:
-            "Winnow pays a person from a single-key descriptor such as tr([…]xpub…/<0;1>/*). Multi-key descriptors belong in shared savings."
+            "Winnow pays a person from a single-key descriptor such as tr([…]xpub…/<0;1>/*)."
         case let .wrongNetwork(expected):
             "That key is for a different Bitcoin network. This wallet is on \(expected.rawValue)."
         case .unsupportedDerivation:
@@ -88,8 +87,10 @@ public enum PersonPayToError: Error, Equatable, LocalizedError {
 }
 
 extension PersonPayTo {
-    /// The one derivation besides `VaultCosignerRole.scriptPath.requiredDerivation`
-    /// a pay-to key may carry: receive chain only.
+    /// The receive/change shape every Winnow account key carries.
+    static let receiveChangeDerivation: [Descriptor.Derivation.Element] = [.multipath([0, 1]), .wildcard(hardened: false)]
+
+    /// The one other derivation a pay-to key may carry: receive chain only.
     static let receiveOnlyDerivation: [Descriptor.Derivation.Element] = [.step(0), .wildcard(hardened: false)]
 
     /// Validates a pay-to descriptor and returns it in canonical form.
@@ -101,10 +102,7 @@ extension PersonPayTo {
         } catch {
             throw PersonPayToError.malformed
         }
-        guard case let .tr(keyExpression, tree) = descriptor.expression else {
-            throw PersonPayToError.notSingleKey
-        }
-        guard tree == nil, case let .single(key) = keyExpression else {
+        guard case let .tr(key) = descriptor.expression else {
             throw PersonPayToError.notSingleKey
         }
         switch key.base {
@@ -114,14 +112,12 @@ extension PersonPayTo {
             throw PersonPayToError.singleAddressKey
         case let .extended(hdKey, keyNetwork):
             guard !hdKey.isPrivate else { throw PersonPayToError.privateKey }
-            guard keyNetwork == Vault.hdNetwork(for: network) else {
+            guard keyNetwork == Wallet.hdNetwork(for: network) else {
                 throw PersonPayToError.wrongNetwork(expected: network)
             }
         }
         let elements = key.derivation.elements
-        guard elements == VaultCosignerRole.scriptPath.requiredDerivation
-            || elements == receiveOnlyDerivation
-        else {
+        guard elements == receiveChangeDerivation || elements == receiveOnlyDerivation else {
             throw key.derivation.isRanged
                 ? PersonPayToError.unsupportedDerivation
                 : PersonPayToError.singleAddressKey
@@ -216,31 +212,6 @@ extension PersonPayTo {
     }
 }
 
-// MARK: - Signer keys
-
-public enum PersonKeys {
-    /// The compressed public key a signer expression resolves to at (0, 0):
-    /// the identity used to refuse the same person twice.
-    public static func signerIdentity(_ expression: String, network: BitcoinNetwork) throws -> Data {
-        try VaultCosignerKey(expression, role: .scriptPath, network: network).publicKey(index: 0, choice: 0)
-    }
-
-    /// A short, human-comparable form of a signer identity: the first four
-    /// bytes of its SHA-256 as two groups of hex, `ab12 cd34`. Two people
-    /// comparing phones read the same eight characters for the same key, and
-    /// a substituted key — valid, foreign, and otherwise invisible in a list
-    /// of names — reads differently.
-    public static func fingerprint(ofIdentity identity: Data) -> String {
-        let hex = Data(CryptoKit.SHA256.hash(data: identity).prefix(4)).hex
-        return "\(hex.prefix(4)) \(hex.suffix(4))"
-    }
-
-    /// `fingerprint(ofIdentity:)` of a signer expression's identity.
-    public static func signerFingerprint(_ expression: String, network: BitcoinNetwork) throws -> String {
-        fingerprint(ofIdentity: try signerIdentity(expression, network: network))
-    }
-}
-
 // MARK: - Cards
 
 public enum PersonCardError: Error, Equatable, LocalizedError {
@@ -260,7 +231,7 @@ public enum PersonCardError: Error, Equatable, LocalizedError {
     }
 }
 
-/// A person's or account's display name as it may be stored: trimmed, at most
+/// A person's display name as it may be stored: trimmed, at most
 /// `maximumLength` characters, and free of control characters and line
 /// breaks — so a pasted card cannot plant megabytes into a file re-read at
 /// every launch, or a second line above the address on the review screen.
@@ -278,8 +249,9 @@ public enum DisplayName {
     }
 }
 
-/// What one person shares so others can pay them and save with them. Public
-/// keys only; nothing here can spend.
+/// What one person shares so others can pay them. Public keys only; nothing
+/// here can spend. A card written by a Winnow that also carried a signer key
+/// still decodes: unknown fields are ignored.
 public struct PersonCard: Codable, Equatable, Sendable {
     public static let kind = "person-card"
     public static let currentVersion = 1
@@ -290,15 +262,13 @@ public struct PersonCard: Codable, Equatable, Sendable {
     public var name: String
     /// Canonical pay-to descriptor, or a plain address.
     public var payTo: String?
-    public var signerKey: String?
 
-    public init(network: BitcoinNetwork, name: String, payTo: String?, signerKey: String?) {
+    public init(network: BitcoinNetwork, name: String, payTo: String?) {
         winnow = Self.kind
         version = Self.currentVersion
         self.network = network.rawValue
         self.name = name
         self.payTo = payTo
-        self.signerKey = signerKey
     }
 
     public func serialized() throws -> String {
@@ -311,95 +281,6 @@ public struct PersonCard: Codable, Equatable, Sendable {
             throw PersonCardError.unsupportedVersion(card.version)
         }
         return card
-    }
-}
-
-/// A shared-savings descriptor, shared with every co-owner before any money
-/// goes in.
-public struct SharedSavingsCard: Codable, Equatable, Sendable {
-    public static let kind = "shared-savings"
-    public static let currentVersion = 1
-
-    public var winnow: String
-    public var version: Int
-    public var network: String
-    public var name: String
-    public var descriptor: String
-
-    public init(network: BitcoinNetwork, name: String, descriptor: String) {
-        winnow = Self.kind
-        version = Self.currentVersion
-        self.network = network.rawValue
-        self.name = name
-        self.descriptor = descriptor
-    }
-
-    public func serialized() throws -> String {
-        try WinnowCardCoding.serialize(self)
-    }
-
-    /// Decodes and proves the descriptor is a vault this wallet's network can hold.
-    public static func decode(_ text: String, network: BitcoinNetwork) throws -> (card: SharedSavingsCard, vault: Vault) {
-        let card: SharedSavingsCard = try WinnowCardCoding.decode(text, kind: kind)
-        guard card.version >= 1, card.version <= currentVersion else {
-            throw PersonCardError.unsupportedVersion(card.version)
-        }
-        guard card.network == network.rawValue else {
-            throw PersonCardError.wrongNetwork(card: card.network, wallet: network)
-        }
-        let vault = try Vault(card.descriptor, network: network)
-        return (card, vault)
-    }
-}
-
-/// A spend of shared savings travelling between co-owners for approval.
-public struct ApprovalRequest: Codable, Equatable, Sendable {
-    public static let kind = "approval"
-    public static let currentVersion = 1
-
-    public var winnow: String
-    public var version: Int
-    public var network: String
-    /// `VaultRecord.id` (the descriptor checksum); absent when a bare PSBT was pasted.
-    public var vault: String?
-    public var name: String?
-    public var psbt: String
-
-    public init(network: BitcoinNetwork, vault: String?, name: String?, psbt: PSBT) {
-        winnow = Self.kind
-        version = Self.currentVersion
-        self.network = network.rawValue
-        self.vault = vault
-        self.name = name
-        self.psbt = psbt.base64
-    }
-
-    public func serialized() throws -> String {
-        try WinnowCardCoding.serialize(self)
-    }
-
-    /// Accepts the envelope or a bare Base64 PSBT.
-    public static func decode(_ text: String, network: BitcoinNetwork) throws -> ApprovalRequest {
-        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
-        if trimmed.hasPrefix("{") {
-            let request: ApprovalRequest = try WinnowCardCoding.decode(trimmed, kind: kind)
-            guard request.version >= 1, request.version <= currentVersion else {
-                throw PersonCardError.unsupportedVersion(request.version)
-            }
-            guard request.network == network.rawValue else {
-                throw PersonCardError.wrongNetwork(card: request.network, wallet: network)
-            }
-            // The PSBT is parsed by `decodedPSBT()`, after the caller has
-            // matched the vault: a request for savings not on this phone is
-            // refused by name, not by whatever its PSBT happens to contain.
-            return request
-        }
-        let psbt = try PSBT(base64: trimmed)
-        return ApprovalRequest(network: network, vault: nil, name: nil, psbt: psbt)
-    }
-
-    public func decodedPSBT() throws -> PSBT {
-        try PSBT(base64: psbt)
     }
 }
 
@@ -416,8 +297,8 @@ enum WinnowCardCoding {
         return String(decoding: try encoder.encode(value), as: UTF8.self)
     }
 
-    /// A card is a name and one or two keys; anything larger is not a card
-    /// and must not be decoded, let alone persisted and re-read at every launch.
+    /// A card is a name and a key; anything larger is not a card and must
+    /// not be decoded, let alone persisted and re-read at every launch.
     public static let maximumBytes = 64 * 1_024
 
     static func decode<T: Decodable>(_ text: String, kind: String) throws -> T {
@@ -445,13 +326,11 @@ public struct PersonImport: Equatable, Sendable {
 
     public var name: String?
     public var payTo: PersonPayTo?
-    public var signerKey: String?
     public var source: Source
 
-    public init(name: String?, payTo: PersonPayTo?, signerKey: String?, source: Source) {
+    public init(name: String?, payTo: PersonPayTo?, source: Source) {
         self.name = name
         self.payTo = payTo
-        self.signerKey = signerKey
         self.source = source
     }
 }
@@ -478,13 +357,14 @@ public enum PersonPaste {
             return try parseCard(trimmed, network: network)
         }
         if trimmed.hasPrefix("tr(") || trimmed.hasPrefix("rawtr(") {
-            return try parseDescriptor(trimmed, network: network)
+            let payTo = try PersonPayTo.descriptor(trimmed, network: network)
+            return PersonImport(name: nil, payTo: payTo, source: .descriptor)
         }
         if SilentPaymentAddress.looksLikeCode(trimmed) {
             return try parseSilentPayment(trimmed, network: network)
         }
         if let payTo = try? PersonPayTo.address(trimmed, network: network) {
-            return PersonImport(name: nil, payTo: payTo, signerKey: nil, source: .address)
+            return PersonImport(name: nil, payTo: payTo, source: .address)
         }
         if let error = addressError(for: trimmed, network: network) {
             throw error
@@ -497,7 +377,7 @@ public enum PersonPaste {
     private static func parseSilentPayment(_ text: String, network: BitcoinNetwork) throws -> PersonImport {
         do {
             let payTo = try PersonPayTo.silentPayment(text, network: network)
-            return PersonImport(name: nil, payTo: payTo, signerKey: nil, source: .address)
+            return PersonImport(name: nil, payTo: payTo, source: .address)
         } catch let error as SilentPaymentAddressError {
             if case .wrongHRP = error { throw error }
             throw PersonPasteError.unrecognised
@@ -535,87 +415,27 @@ public enum PersonPaste {
                 payTo = try PersonPayTo.address(raw, network: network)
             }
         }
-        var signerKey: String?
-        if let raw = card.signerKey?.trimmingCharacters(in: .whitespacesAndNewlines), !raw.isEmpty {
-            signerKey = try VaultCosignerKey(raw, role: .scriptPath, network: network).expression
-        }
-        return PersonImport(name: DisplayName.normalized(card.name), payTo: payTo, signerKey: signerKey, source: .card)
+        return PersonImport(name: DisplayName.normalized(card.name), payTo: payTo, source: .card)
     }
 
-    private static func parseDescriptor(_ text: String, network: BitcoinNetwork) throws -> PersonImport {
-        let payTo = try PersonPayTo.descriptor(text, network: network)
-        var signerKey: String?
-        if case let .descriptor(canonical) = payTo,
-           let inner = innerKeyExpression(canonical),
-           let signer = try? VaultCosignerKey(inner, role: .scriptPath, network: network) {
-            signerKey = signer.expression
-        }
-        return PersonImport(name: nil, payTo: payTo, signerKey: signerKey, source: .descriptor)
-    }
-
-    /// `tr(KEY)#checksum` → `KEY`.
-    static func innerKeyExpression(_ canonical: String) -> String? {
-        guard canonical.hasPrefix("tr(") else { return nil }
-        let body = canonical.split(separator: "#", maxSplits: 1).first.map(String.init) ?? canonical
-        guard body.hasSuffix(")") else { return nil }
-        return String(body.dropFirst(3).dropLast())
-    }
-
+    /// A bare key expression: `[fp/path]tpub…/<0;1>/*` as Winnow exports it,
+    /// or an account key without a suffix, which gets the receive/change
+    /// shape (or, for a key with no origin, the receive chain) added. A
+    /// private key or a key for another network is refused by name; anything
+    /// else that cannot be paid is simply unrecognised.
     private static func parseKeyExpression(_ text: String, network: BitcoinNetwork) throws -> PersonImport {
-        do {
-            let signer = try VaultCosignerKey(text, role: .scriptPath, network: network)
-            let payTo = try PersonPayTo.descriptor("tr(\(signer.expression))", network: network)
-            return PersonImport(name: nil, payTo: payTo, signerKey: signer.expression, source: .keyExpression)
-        } catch VaultCosignerKeyError.scriptPathDerivationRequired {
-            // `[fp/path]xpub…` with no suffix: supply the one Winnow uses.
-            guard let signer = try? VaultCosignerKey(text + "/<0;1>/*", role: .scriptPath, network: network),
-                  let payTo = try? PersonPayTo.descriptor("tr(\(signer.expression))", network: network)
-            else { throw PersonPasteError.unrecognised }
-            return PersonImport(name: nil, payTo: payTo, signerKey: signer.expression, source: .keyExpression)
-        } catch VaultCosignerKeyError.missingOrigin {
-            // A bare account key can be paid, but cannot co-own savings: a
-            // signer needs its origin for the PSBT derivation fields.
-            for candidate in [text, text + "/0/*"] {
-                if let payTo = try? PersonPayTo.descriptor("tr(\(candidate))", network: network) {
-                    return PersonImport(name: nil, payTo: payTo, signerKey: nil, source: .keyExpression)
-                }
+        for candidate in [text, text + "/<0;1>/*", text + "/0/*"] {
+            do {
+                let payTo = try PersonPayTo.descriptor("tr(\(candidate))", network: network)
+                return PersonImport(name: nil, payTo: payTo, source: .keyExpression)
+            } catch PersonPayToError.privateKey {
+                throw PersonPayToError.privateKey
+            } catch let PersonPayToError.wrongNetwork(expected) {
+                throw PersonPayToError.wrongNetwork(expected: expected)
+            } catch {
+                continue
             }
-            _ = try PersonPayTo.descriptor("tr(\(text)/0/*)", network: network)
-            throw PersonPasteError.unrecognised
-        } catch VaultCosignerKeyError.malformed {
-            throw PersonPasteError.unrecognised
         }
-    }
-}
-
-// MARK: - Labels
-
-/// Who an output of a shared-savings spend pays, in the words a co-owner reads.
-public enum PaymentLabel: Equatable, Sendable {
-    case savings(String)
-    case person(String)
-    case you
-    case unknown
-}
-
-/// Resolves output scripts against what this phone knows: the savings'
-/// own derivations (decided by `Vault.reviewSpend`, never by PSBT metadata),
-/// the people in the address book, and the wallet's own scripts.
-public struct PaymentLabeler: Sendable {
-    public var savingsName: String
-    public var personScripts: [Data: String]
-    public var ownScripts: Set<Data>
-
-    public init(savingsName: String, personScripts: [Data: String], ownScripts: Set<Data>) {
-        self.savingsName = savingsName
-        self.personScripts = personScripts
-        self.ownScripts = ownScripts
-    }
-
-    public func label(script: Data, isVaultOwned: Bool) -> PaymentLabel {
-        if isVaultOwned { return .savings(savingsName) }
-        if let name = personScripts[script] { return .person(name) }
-        if ownScripts.contains(script) { return .you }
-        return .unknown
+        throw PersonPasteError.unrecognised
     }
 }

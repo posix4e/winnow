@@ -1,5 +1,4 @@
 @testable import WinnowApp
-import VaultKit
 import WalletCore
 import Foundation
 import TestSupport
@@ -20,7 +19,7 @@ final class SenderLabelStoreTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: url) }
         let store = PeopleStore(keys: keys)
         await store.configure(storageURL: url, network: .signet)
-        let person = try await store.add(name: "Alice", payTo: nil, signerKey: nil)
+        let person = try await store.add(name: "Alice", payTo: nil)
         let txid = String(repeating: "ab", count: 32)
         try await store.labelSender(txidHex: txid, personID: person.id)
         let reopened = PeopleStore(keys: keys)
@@ -42,8 +41,8 @@ final class SenderLabelStoreTests: XCTestCase {
     }
 
     private func personFixture(_ byte: UInt8) throws -> (payTo: PersonPayTo, signer: String) {
-        let master = try TestVaults.master(entropyByte: byte)
-        let signer = try TestVaults.keyExpression(master: master)
+        let master = try TestKeys.master(entropyByte: byte)
+        let signer = try TestKeys.keyExpression(master: master)
         return (try PersonPayTo.descriptor("tr(\(signer))", network: .signet), signer)
     }
 
@@ -56,7 +55,7 @@ final class SenderLabelStoreTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: url) }
         let store = PeopleStore(keys: keys)
         await store.configure(storageURL: url, network: .signet)
-        let person = try await store.add(name: "Alice", payTo: alice.payTo, signerKey: alice.signer)
+        let person = try await store.add(name: "Alice", payTo: alice.payTo)
         let txidHex = String(repeating: "ab", count: 32)
 
         let unlabelled = await store.sender(forTxidHex: txidHex)
@@ -91,8 +90,8 @@ final class SenderLabelStoreTests: XCTestCase {
         defer { try? FileManager.default.removeItem(at: url) }
         let store = PeopleStore(keys: keys)
         await store.configure(storageURL: url, network: .signet)
-        let a = try await store.add(name: "Alice", payTo: alice.payTo, signerKey: alice.signer)
-        let b = try await store.add(name: "Bob", payTo: bob.payTo, signerKey: bob.signer)
+        let a = try await store.add(name: "Alice", payTo: alice.payTo)
+        let b = try await store.add(name: "Bob", payTo: bob.payTo)
         let aliceTxid = String(repeating: "a1", count: 32)
         let bobTxid = String(repeating: "b2", count: 32)
         try await store.labelSender(txidHex: aliceTxid, personID: a.id)

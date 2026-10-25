@@ -6,8 +6,6 @@ let package = Package(
     platforms: [.iOS(.v17), .macOS(.v14)],
     products: [
         .library(name: "WalletCore", targets: ["WalletCore"]),
-        // Shared-savings vaults and the contact cards they are built from, on WalletCore.
-        .library(name: "VaultKit", targets: ["VaultKit"]),
         // Test fixtures shared by every test target, SwiftPM and Xcode alike.
         .library(name: "TestSupport", targets: ["TestSupport"]),
         .executable(name: "winnow-debug", targets: ["WinnowDebug"]),
@@ -39,11 +37,6 @@ let package = Package(
                 "Wallet/README.md",
             ]
         ),
-        .target(
-            name: "VaultKit",
-            dependencies: ["WalletCore", .product(name: "P256K", package: "swift-secp256k1")],
-            exclude: ["README.md"]
-        ),
         .executableTarget(
             name: "WinnowDebug",
             dependencies: ["WalletCore"],
@@ -52,7 +45,7 @@ let package = Package(
         ),
         .target(
             name: "WinnowFuzzCore",
-            dependencies: ["WalletCore", "VaultKit"],
+            dependencies: ["WalletCore"],
             path: "Tools/Fuzz/Sources/WinnowFuzzCore",
             exclude: ["README.md"]
         ),
@@ -67,14 +60,14 @@ let package = Package(
         // implementation. P256K: the signet miner signs block challenges.
         .target(
             name: "TestSupport",
-            dependencies: ["WalletCore", "VaultKit",
+            dependencies: ["WalletCore",
                            .product(name: "P256K", package: "swift-secp256k1")],
             path: "Tests/Support",
             exclude: ["Node/README.md", "P2P/README.md", "README.md"]
         ),
         .executableTarget(
             name: "WinnowFixture",
-            dependencies: ["TestSupport"],
+            dependencies: ["TestSupport", "WalletCore"],
             path: "Tools/Fixture",
             exclude: ["README.md"]
         ),
@@ -89,12 +82,6 @@ let package = Package(
             dependencies: ["WalletCore", "TestSupport"],
             exclude: ["Network/README.md", "README.md"],
             resources: [.copy("Vectors")]
-        ),
-        .testTarget(
-            name: "VaultKitTests",
-            dependencies: ["VaultKit", "WalletCore", "TestSupport",
-                           .product(name: "P256K", package: "swift-secp256k1")],
-            exclude: ["README.md"]
         ),
         // The development tools, tested together: the debugging commands, the
         // release-path generators, and the fuzz crash corpus replayed out of

@@ -4,11 +4,10 @@ import TestSupport
 @testable import WalletCore
 
 /// Bounds the independent review of 2026-09-14 asked for on inputs the
-/// August audit did not see: files are measured before they are read, an
-/// error repeats only an excerpt, and BIP39 normalizes the way the
-/// specification says. The card and name ceilings are in VaultKit's
-/// `CardBoundsTests`. Each test was observed failing against the code it
-/// guards before the guard was written.
+/// August audit did not see: files are measured before they are read, a
+/// pasted card and a name have a ceiling, an error repeats only an excerpt,
+/// and BIP39 normalizes the way the specification says. Each test was
+/// observed failing against the code it guards before the guard was written.
 @Suite("Hostile input bounds")
 struct HostileInputBoundsTests {
     private static let words = "abandon abandon abandon abandon abandon abandon "
@@ -58,6 +57,33 @@ struct HostileInputBoundsTests {
         #expect(PeerPool.boundedRead(url) == nil)
         try Data("[]".utf8).write(to: url)
         #expect(PeerPool.boundedRead(url) == Data("[]".utf8))
+    }
+
+    @Test("a card past the byte ceiling is not a card")
+    func oversizedCardRefused() throws {
+        let card = PersonCard(network: .signet, name: String(repeating: "n", count: WinnowCardCoding.maximumBytes),
+                              payTo: nil)
+        #expect(throws: PersonCardError.notACard) { try PersonCard.decode(try card.serialized()) }
+        let small = PersonCard(network: .signet, name: "Ada", payTo: nil)
+        #expect(try PersonCard.decode(try small.serialized()).name == "Ada")
+    }
+
+    @Test("a display name is short, single-line and free of control characters")
+    func displayNameBounds() {
+        #expect(DisplayName.normalized("  Ada Lovelace ") == "Ada Lovelace")
+        #expect(DisplayName.normalized("") == nil)
+        #expect(DisplayName.normalized("   ") == nil)
+        #expect(DisplayName.normalized("Ada\nsend to bc1q…") == nil)
+        #expect(DisplayName.normalized("Ada\u{7}") == nil)
+        #expect(DisplayName.normalized(String(repeating: "a", count: DisplayName.maximumLength)) != nil)
+        #expect(DisplayName.normalized(String(repeating: "a", count: DisplayName.maximumLength + 1)) == nil)
+    }
+
+    @Test("a card's over-long name is dropped rather than stored")
+    func cardNameNormalized() throws {
+        let long = PersonCard(network: .signet, name: String(repeating: "a", count: DisplayName.maximumLength + 1),
+                              payTo: nil)
+        #expect(try PersonPaste.parse(long.serialized(), network: .signet).name == nil)
     }
 
     @Test("a getdata naming one txid many times is served once, and a served peer is not served again")

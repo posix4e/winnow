@@ -5,7 +5,7 @@ import WalletCore
 import TestSupport
 import XCTest
 
-/// The people and vault files are sealed under a key the app container cannot
+/// The people file is sealed under a key the app container cannot
 /// reach (IR-010). What the seal buys: a file this app did not write on this
 /// device — a substituted signer key that validates perfectly and would show
 /// up as a co-owner — is refused rather than trusted. What it costs: a file
@@ -60,7 +60,7 @@ final class StoreAuthenticationTests: XCTestCase {
         let keys = InMemoryStoreKeyVault()
         let store = PeopleStore(keys: keys)
         _ = await store.configure(storageURL: url, network: .signet)
-        _ = try await store.add(name: "Alice", payTo: nil, signerKey: nil)
+        _ = try await store.add(name: "Alice", payTo: nil)
         XCTAssertTrue(SealedStoreFile.isSealed(try Data(contentsOf: url)), "the first write seals the file")
 
         // The substitution: a well-formed address book that validates, dropped
@@ -75,7 +75,7 @@ final class StoreAuthenticationTests: XCTestCase {
         let people = await reopened.all
         XCTAssertTrue(people.isEmpty, "nothing from the planted file is loaded")
         do {
-            _ = try await reopened.add(name: "Bob", payTo: nil, signerKey: nil)
+            _ = try await reopened.add(name: "Bob", payTo: nil)
             XCTFail("a store that refused its file accepted a mutation")
         } catch PeopleStorageError.damaged {}
         XCTAssertEqual(try Data(contentsOf: url), planted, "the refused file is left as evidence")
@@ -87,7 +87,7 @@ final class StoreAuthenticationTests: XCTestCase {
         let keys = InMemoryStoreKeyVault()
         let store = PeopleStore(keys: keys)
         _ = await store.configure(storageURL: url, network: .signet)
-        _ = try await store.add(name: "Alice", payTo: nil, signerKey: nil)
+        _ = try await store.add(name: "Alice", payTo: nil)
 
         // One byte of the payload, under an untouched header.
         let sealed = try Data(contentsOf: url)
@@ -125,41 +125,6 @@ final class StoreAuthenticationTests: XCTestCase {
         XCTAssertTrue(SealedStoreFile.isSealed(try Data(contentsOf: url)))
     }
 
-    // MARK: - Vaults
-
-    func testAVaultFileIsSealedAndATamperedOneRefusedBeforeBoot() async throws {
-        let url = tempFileURL("vaults.json")
-        defer { try? FileManager.default.removeItem(at: url) }
-        let (vault, _) = try TestVaults.multiAVault()
-        let descriptor = vault.descriptor.serialized()
-        let record = VaultRecord(id: String(descriptor.split(separator: "#").last!),
-                                 name: "Ours", descriptor: descriptor, createdAtHeight: 0)
-        try JSONEncoder().encode([record]).write(to: url, options: .atomic)
-
-        let keys = InMemoryStoreKeyVault()
-        let store = VaultStore(keys: keys)
-        let opened = await store.configure(storageURL: url, network: .signet)
-        XCTAssertEqual(opened, .loaded)
-        XCTAssertTrue(SealedStoreFile.isSealed(try Data(contentsOf: url)), "an adopted vault file is sealed")
-        XCTAssertNotNil(try keys.key(for: "vaults.signet"))
-        XCTAssertEqual(try JSONDecoder().decode([VaultRecord].self, from: unsealedPayload(of: url)), [record])
-
-        // A record swapped under the seal: same shape, validates, not ours.
-        var renamed = record
-        renamed.name = "Theirs"
-        let planted = try JSONEncoder().encode([renamed])
-        try planted.write(to: url, options: .atomic)
-        let reopened = VaultStore(keys: keys)
-        guard case let .damaged(message) = await reopened.configure(storageURL: url, network: .signet) else {
-            return XCTFail("an unsealed vault file was accepted by a store that holds a key")
-        }
-        XCTAssertTrue(message.contains("could not verify"), message)
-        XCTAssertTrue(message.contains("wallet bundle"), "the message names the way back: \(message)")
-        let vaults = await reopened.all
-        XCTAssertTrue(vaults.isEmpty)
-        XCTAssertEqual(try Data(contentsOf: url), planted, "the refused file is left as evidence")
-    }
-
     // MARK: - The seal itself
 
     func testTheSealNamesItsStoreAndNetworkAndKeepsThePayloadReadable() throws {
@@ -173,8 +138,8 @@ final class StoreAuthenticationTests: XCTestCase {
         func failure(_ body: () throws -> Data) -> SealedStoreFile.Failure? {
             do { _ = try body(); return nil } catch { return error as? SealedStoreFile.Failure }
         }
-        XCTAssertEqual(failure { try SealedStoreFile.open(sealed, store: "vaults", network: .signet, key: key) },
-                       .verificationFailed, "a people file cannot be dropped in as the vault file")
+        XCTAssertEqual(failure { try SealedStoreFile.open(sealed, store: "receive-labels", network: .signet, key: key) },
+                       .verificationFailed, "a people file cannot be dropped in under another store's name")
         XCTAssertEqual(failure { try SealedStoreFile.open(sealed, store: "people", network: .mainnet, key: key) },
                        .verificationFailed, "a signet file cannot be presented as mainnet")
         XCTAssertEqual(failure { try SealedStoreFile.open(sealed, store: "people", network: .signet,

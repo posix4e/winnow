@@ -1,11 +1,9 @@
 import Foundation
 import P256K
 
-/// PSBT roles (BIP370/BIP371/BIP373): creator (unsigned wallet tx + UTXO
-/// data), signer (PSBT_IN_TAP_KEY_SIG for key-path, PSBT_IN_TAP_SCRIPT_SIG
-/// for multi_a script-path leaves, MuSig2 nonces/partials for vaults),
-/// combiner (union merge of partial PSBTs), finalizer/extractor (witnesses →
-/// raw transaction).
+/// PSBT roles (BIP370/BIP371): creator (unsigned wallet tx + UTXO data),
+/// signer (PSBT_IN_TAP_KEY_SIG for the key path), combiner (union merge of
+/// partial PSBTs), finalizer/extractor (witnesses → raw transaction).
 extension PSBT {
     /// The Taproot key-origin metadata the creator attaches to an in/output:
     /// the x-only internal key and its full derivation path from the master
@@ -172,10 +170,10 @@ extension PSBT {
         inputs[index].tapKeySignature = witness[0]
     }
 
-    // MARK: - Script-path (multi_a vault) roles
+    // MARK: - Script-path (multi_a) roles
 
     /// Creator-side helper: attaches the BIP371 script-path fields for a
-    /// vault input — PSBT_IN_TAP_INTERNAL_KEY (from the control block),
+    /// multisig input — PSBT_IN_TAP_INTERNAL_KEY (from the control block),
     /// PSBT_IN_TAP_LEAF_SCRIPT, and per-leaf-key PSBT_IN_TAP_BIP32_DERIVATION
     /// entries carrying the tapleaf hash.
     public mutating func attachScriptPath(input index: Int, controlBlock: Taproot.ControlBlock,
@@ -195,6 +193,25 @@ extension PSBT {
         inputs[index].tapBIP32Derivation = origins
     }
 
+    /// Creator-side helper for a tree of leaves: the internal key, one
+    /// PSBT_IN_TAP_LEAF_SCRIPT per leaf, and the given origins, whose leaf
+    /// hashes the caller sets to the leaves each key appears in.
+    public mutating func attachScriptPaths(input index: Int,
+                                           leaves: [(controlBlock: Taproot.ControlBlock, script: Script,
+                                                     leafVersion: UInt8)],
+                                           keyOrigins: [Data: KeyOrigin]) throws {
+        guard inputs.indices.contains(index), let first = leaves.first else {
+            throw PSBTError.missingField("input \(index)")
+        }
+        inputs[index].tapInternalKey = first.controlBlock.internalKey
+        inputs[index].tapLeafScripts = leaves.map {
+            TapLeafScript(controlBlock: $0.controlBlock, script: $0.script.bytes, leafVersion: $0.leafVersion)
+        }
+        var origins = inputs[index].tapBIP32Derivation
+        for (key, origin) in keyOrigins { origins[key] = origin }
+        inputs[index].tapBIP32Derivation = origins
+    }
+
     /// Signer role for multi_a leaves (BIP371/BIP387): for every 32-byte
     /// secret whose x-only key appears in the input's leaf script, adds a
     /// PSBT_IN_TAP_SCRIPT_SIG. Plain x-only keys sign with NO taproot tweak.
@@ -202,137 +219,101 @@ extension PSBT {
     /// provided key matches a leaf key.
     public mutating func signScriptPath(input index: Int, privateKeys: [Data],
                                         auxiliaryRand: Data? = nil) throws {
-        let (leaf, leafKeys, hashType) = try leafSigningContext(input: index)
         let tx = try unsignedTransaction()
         let spentOutputs = try spentOutputs()
-
         var signatures = inputs[index].tapScriptSignatures
         var signed = 0
-        for secret in privateKeys {
-            guard let attached = try selfVerifiedLeafSignature(
-                for: secret, input: index, leaf: leaf, leafKeys: leafKeys,
-                tx: tx, spentOutputs: spentOutputs, hashType: hashType,
-                auxiliaryRand: auxiliaryRand) else { continue } // not ours — skip
-            signatures[attached.id] = attached.signature
-            signed += 1
+        // Every leaf the key is in whose timelock, if any, this input's
+        // sequence already meets: a signature on a leaf the transaction
+        // cannot use is never made.
+        for context in try leafSigningContexts(input: index)
+        where Self.lockIsMet(context.policy, input: index, tx: tx) {
+            for secret in privateKeys {
+                guard let attached = try selfVerifiedLeafSignature(
+                    for: secret, input: index, leaf: context.leaf, leafKeys: context.policy.keys,
+                    tx: tx, spentOutputs: spentOutputs, hashType: context.hashType,
+                    auxiliaryRand: auxiliaryRand) else { continue } // not ours — skip
+                signatures[attached.id] = attached.signature
+                signed += 1
+            }
         }
         guard signed > 0 else { throw PSBTError.missingField("input \(index) matching leaf key") }
         inputs[index].tapScriptSignatures = signatures
     }
 
-    // MARK: - MuSig2 (vault) roles — BIP373 transport
-
-    /// Creator-side helper: attaches PSBT_IN_TAP_INTERNAL_KEY (the BIP328-
-    /// derived, pre-TapTweak aggregate key) and PSBT_IN_MUSIG2_PARTICIPANT_PUBKEYS
-    /// for a MuSig2 vault input (BIP373). `participants` are the sorted
-    /// compressed keys the session aggregates over.
-    public mutating func attachMuSig2(input index: Int, internalKey: Data, aggregate: Data,
-                                      participants: [Data]) throws {
-        guard inputs.indices.contains(index) else { throw PSBTError.missingField("input \(index)") }
-        guard internalKey.count == 32, aggregate.count == 33, !participants.isEmpty else {
-            throw PSBTError.malformed("musig2 keys")
-        }
-        inputs[index].tapInternalKey = internalKey
-        var all = inputs[index].musig2ParticipantPubKeys
-        all[aggregate] = participants
-        inputs[index].musig2ParticipantPubKeys = all
+    /// Whether the leaf's relative timelock, if it has one, is met by the
+    /// input's sequence in this transaction (BIP68/BIP112).
+    static func lockIsMet(_ policy: LeafPolicy, input index: Int, tx: Transaction) -> Bool {
+        guard let blocks = policy.relativeLock else { return true }
+        guard tx.inputs.indices.contains(index) else { return false }
+        return RelativeLock.isSatisfied(blocks: blocks, sequence: tx.inputs[index].sequence, txVersion: tx.version)
     }
 
-    /// Round 1 (BIP373): attaches the caller's 66-byte public nonce.
-    public mutating func attachMuSig2PubNonce(input index: Int, id: MuSig2KeyID, nonce: Data) throws {
-        guard inputs.indices.contains(index) else { throw PSBTError.missingField("input \(index)") }
-        guard nonce.count == 66 else { throw PSBTError.malformed("pubnonce length \(nonce.count)") }
-        var nonces = inputs[index].musig2PubNonces
-        nonces[id] = nonce
-        inputs[index].musig2PubNonces = nonces
+    /// The keys of one leaf whose script-path signatures on `input` verify
+    /// against the recomputed sighash — the finalizer's own test, exposed so
+    /// a progress display counts approvals the way the finalizer will, rather
+    /// than by the presence of a signature entry. Always per leaf: a key's
+    /// valid signature on one leaf says nothing about an entry naming another.
+    public func verifiedScriptPathSigners(input index: Int, leafHash: Data, tx: Transaction,
+                                          spentOutputs: [SighashBIP341.SpentOutput]) throws -> Set<Data> {
+        guard let context = try leafSigningContexts(input: index).first(where: { $0.leaf.leafHash == leafHash }) else {
+            return []
+        }
+        return Set(validScriptPathSignatures(input: index, leaf: context.leaf, tx: tx, spentOutputs: spentOutputs,
+                                             leafKeys: context.policy.keys).keys)
     }
 
-    /// Builds the BIP327 session from the PSBT contents once every
-    /// participant has attached a nonce: the aggregate nonce is the BIP327
-    /// NonceAgg of the nonces in participant order. `message` is the BIP341
-    /// key-path sighash; the tweak chain comes from the vault descriptor
-    /// (BIP328 path tweaks, then the x-only TapTweak).
-    public func muSig2Session(input index: Int, aggregateKey: Data, tweaks: [Data],
-                              isXOnlyTweaks: [Bool], message: Data) throws -> MuSig.Session {
+    /// The signable leaf and its contract for one input: a leaf script that
+    /// parses as multisig, and an output-committing sighash type — a signer
+    /// signs only those, so a PSBT creator cannot collect NONE/SINGLE
+    /// partials and then rewrite the outputs.
+    private func leafSigningContexts(input index: Int) throws
+        -> [(leaf: TapLeafScript, policy: LeafPolicy, hashType: SighashBIP341.HashType)] {
         guard inputs.indices.contains(index) else { throw PSBTError.missingField("input \(index)") }
-        guard let participants = inputs[index].musig2ParticipantPubKeys[aggregateKey] else {
-            throw PSBTError.missingField("input \(index) musig2 participants")
+        let leaves = inputs[index].tapLeafScripts
+        guard !leaves.isEmpty else { throw PSBTError.missingField("input \(index) tap leaf script") }
+        let rawType = inputs[index].sighashType ?? 0
+        guard rawType <= UInt32(UInt8.max) else { throw PSBTError.malformed("sighash type \(rawType)") }
+        let hashType = SighashBIP341.HashType(rawValue: UInt8(rawType))
+        guard hashType.commitsToAllOutputs else {
+            throw PSBTError.malformed("refusing non-DEFAULT/ALL sighash type \(rawType)")
         }
-        let nonces = inputs[index].musig2PubNonces
-        // Participant lists name the root aggregate; signing contributions
-        // name the actual output key, after derivation and TapTweak (BIP373).
-        let signingKey = try MuSig.aggregate(publicKeys: participants, tweaks: tweaks,
-                                             isXOnlyTweaks: isXOnlyTweaks)
-        var ordered: [Data] = []
-        for participant in participants {
-            guard let nonce = nonces[MuSig2KeyID(participant: participant, aggregate: signingKey)] else {
-                throw PSBTError.missingField("input \(index) musig2 nonce for \(participant.hex)")
-            }
-            ordered.append(nonce)
+        let contexts = leaves.compactMap { leaf in
+            Multisig.parsePolicy(Script(leaf.script)).map { (leaf: leaf, policy: $0, hashType: hashType) }
         }
-        return MuSig.Session(aggregateNonce: try MuSig.nonceAggregate(publicNonces: ordered),
-                             publicKeys: participants, tweaks: tweaks,
-                             isXOnlyTweaks: isXOnlyTweaks, message: message)
+        guard !contexts.isEmpty else { throw PSBTError.malformed("input \(index) leaf script") }
+        return contexts
     }
 
-    /// Round 2 (BIP373/BIP327): produces the caller's partial signature and
-    /// attaches it after a successful partial self-verification. The secret
-    /// nonce is zeroed by `MuSig.partialSign`.
-    public mutating func signMuSig2(input index: Int, id: MuSig2KeyID, secretNonce: inout Data,
-                                    secretKey: Data, session: MuSig.Session) throws {
-        guard inputs.indices.contains(index) else { throw PSBTError.missingField("input \(index)") }
-        let nonces = inputs[index].musig2PubNonces
-        guard let ownNonce = nonces[id] else {
-            throw PSBTError.missingField("input \(index) own musig2 nonce")
+    /// One leaf signature for one secret — or nil when the key is not a
+    /// leaf key. The signature is checked against the leaf key with BIP340
+    /// verification before it is ever attached.
+    private func selfVerifiedLeafSignature(
+        for secret: Data, input index: Int, leaf: TapLeafScript, leafKeys: [Data],
+        tx: Transaction, spentOutputs: [SighashBIP341.SpentOutput],
+        hashType: SighashBIP341.HashType, auxiliaryRand: Data?)
+        throws -> (id: TapScriptSignatureID, signature: Data)? {
+        guard let key = try? P256K.Schnorr.PrivateKey(dataRepresentation: secret) else {
+            throw PSBTError.malformed("invalid private key")
         }
-        let partial = try MuSig.partialSign(secretNonce: &secretNonce, secretKey: secretKey, session: session)
-        guard try MuSig.partialVerify(partialSignature: partial, publicNonce: ownNonce,
-                                      publicKey: id.participant, session: session) else {
-            throw PSBTError.malformed("self-produced partial signature failed verification")
+        let xonly = Data(key.xonly.bytes)
+        guard leafKeys.contains(xonly) else { return nil }
+        let signature = try Signer.scriptPathSignature(tx: tx, inputIndex: index,
+                                                       spentOutputs: spentOutputs,
+                                                       leafScript: Script(leaf.script),
+                                                       leafVersion: leaf.leafVersion,
+                                                       hashType: hashType, privateKey: secret,
+                                                       auxiliaryRand: auxiliaryRand)
+        let sighash = try SighashBIP341.sighash(tx: tx, inputIndex: index, spentOutputs: spentOutputs,
+                                                hashType: hashType,
+                                                scriptPath: .init(leafScript: Script(leaf.script),
+                                                                  leafVersion: leaf.leafVersion))
+        var message = [UInt8](sighash)
+        let parsed = try P256K.Schnorr.SchnorrSignature(dataRepresentation: signature.prefix(64))
+        guard P256K.Schnorr.XonlyKey(dataRepresentation: xonly).isValid(parsed, for: &message) else {
+            throw PSBTError.malformed("self-produced signature failed verification")
         }
-        var partials = inputs[index].musig2PartialSigs
-        partials[id] = partial
-        inputs[index].musig2PartialSigs = partials
-    }
-
-    /// Aggregation (BIP327 PartialSigAgg): verifies every partial, combines
-    /// them into the 64-byte BIP340 signature over the tweaked aggregate key
-    /// and stores it as PSBT_IN_TAP_KEY_SIG, ready for `finalize()`.
-    public mutating func aggregateMuSig2(input index: Int, session: MuSig.Session) throws {
-        guard inputs.indices.contains(index) else { throw PSBTError.missingField("input \(index)") }
-        let partials = inputs[index].musig2PartialSigs
-        let nonces = inputs[index].musig2PubNonces
-        let aggregate = try MuSig.aggregate(publicKeys: session.publicKeys, tweaks: session.tweaks,
-                                            isXOnlyTweaks: session.isXOnlyTweaks)
-        var ordered: [Data] = []
-        for participant in session.publicKeys {
-            let id = MuSig2KeyID(participant: participant, aggregate: aggregate)
-            guard let partial = partials[id], let nonce = nonces[id] else {
-                throw PSBTError.missingField("input \(index) musig2 partial sig for \(participant.hex)")
-            }
-            // Reject a wrong-key or otherwise invalid partial before combining.
-            guard try MuSig.partialVerify(partialSignature: partial, publicNonce: nonce,
-                                          publicKey: participant, session: session) else {
-                throw PSBTError.malformed("invalid partial signature from \(participant.hex)")
-            }
-            ordered.append(partial)
-        }
-        let signature = try MuSig.partialSigAggregate(partialSignatures: ordered, session: session)
-        // The aggregate must be a valid BIP340 signature for the tweaked
-        // aggregate key over the session message (the key-path sighash).
-        let aggregateXonly = try MuSig.aggregateXonly(publicKeys: session.publicKeys,
-                                                      tweaks: session.tweaks,
-                                                      isXOnlyTweaks: session.isXOnlyTweaks)
-        var message = [UInt8](session.message)
-        let parsed = try P256K.Schnorr.SchnorrSignature(dataRepresentation: signature)
-        guard P256K.Schnorr.XonlyKey(dataRepresentation: aggregateXonly).isValid(parsed, for: &message) else {
-            throw PSBTError.malformed("aggregate signature failed verification")
-        }
-        // BIP341: a 64-byte witness signature means SIGHASH_DEFAULT; a non-default
-        // type (only ALL survives keyPathSighash's guard) must append its byte,
-        // or the finalized witness is consensus-invalid. Mirrors Signer.witness.
-        let hashType = SighashBIP341.HashType(rawValue: UInt8(truncatingIfNeeded: inputs[index].sighashType ?? 0))
-        inputs[index].tapKeySignature = hashType == .default ? signature : signature + Data([hashType.rawValue])
+        return (TapScriptSignatureID(publicKey: xonly, leafHash: leaf.leafHash), signature)
     }
 
     // MARK: - Combiner
@@ -387,10 +368,11 @@ extension PSBT {
     /// Finalizer role: moves each input's signature data into
     /// PSBT_IN_FINAL_SCRIPTWITNESS and clears the in-progress fields (BIP174:
     /// finalizers remove partial data). Key-path inputs take the single
-    /// PSBT_IN_TAP_KEY_SIG; script-path inputs build the BIP387 multi_a
-    /// witness from PSBT_IN_TAP_SCRIPT_SIG entries (each verified against the
-    /// script-path sighash first — a wrong-key or corrupt partial is rejected
-    /// here), requiring at least the leaf's threshold of valid signatures.
+    /// PSBT_IN_TAP_KEY_SIG, verified against the declared P2TR output first;
+    /// script-path inputs build the BIP387 multi_a witness from
+    /// PSBT_IN_TAP_SCRIPT_SIG entries (each verified against the script-path
+    /// sighash — a wrong-key or corrupt partial is discarded), requiring at
+    /// least the leaf's threshold of valid signatures.
     public mutating func finalize() throws {
         let tx = try unsignedTransaction()
         let spentOutputs = try spentOutputs()
@@ -401,7 +383,10 @@ extension PSBT {
                     input: index, signature: signature, tx: tx, spentOutputs: spentOutputs))
             } else if !inputs[index].tapLeafScripts.isEmpty {
                 var witness: [Data]?
-                for leaf in inputs[index].tapLeafScripts {
+                // A leaf without a timelock first: it spends without waiting.
+                let all = inputs[index].tapLeafScripts
+                let isLocked = { (leaf: TapLeafScript) in Multisig.parsePolicy(Script(leaf.script))?.relativeLock != nil }
+                for leaf in all.filter({ !isLocked($0) }) + all.filter(isLocked) {
                     witness = try finalizedScriptPathWitness(input: index, leaf: leaf,
                                                              tx: tx, spentOutputs: spentOutputs)
                     if witness != nil { break }
@@ -421,52 +406,18 @@ extension PSBT {
             inputs[index].pairs.removeAll {
                 $0.type == InType.tapKeySignature || $0.type == InType.sighashType
                     || $0.type == InType.tapScriptSignature || $0.type == InType.tapLeafScript
-                    || $0.type == InType.musig2PubNonce || $0.type == InType.musig2PartialSig
             }
         }
     }
 
-    /// Validates an imported key-path signature against the PSBT's declared
-    /// P2TR witness UTXO before moving it into the final witness. Trusted
-    /// wallet policy must separately bind that declaration to the real coin;
-    /// finalization proves document self-consistency, not chain ownership.
-    private func validatedKeyPathWitness(input index: Int, signature: Data,
-                                         tx: Transaction,
-                                         spentOutputs: [SighashBIP341.SpentOutput]) throws -> [Data] {
-        let hashType: SighashBIP341.HashType
-        switch signature.count {
-        case 64:
-            hashType = .default
-        case 65:
-            hashType = SighashBIP341.HashType(rawValue: signature.last!)
-        default:
-            throw PSBTError.malformed("input \(index) tap key signature length")
-        }
-        guard hashType.commitsToAllOutputs,
-              hashType != .default || signature.count == 64
-        else { throw PSBTError.malformed("input \(index) unsafe tap key sighash type") }
-
-        let script = spentOutputs[index].scriptPubKey
-        guard script.count == 34, script[script.startIndex] == 0x51,
-              script[script.index(after: script.startIndex)] == 0x20
-        else { throw PSBTError.malformed("input \(index) witness utxo is not P2TR") }
-        let sighash = try SighashBIP341.sighash(
-            tx: tx, inputIndex: index, spentOutputs: spentOutputs, hashType: hashType)
-        guard let parsed = try? P256K.Schnorr.SchnorrSignature(
-            dataRepresentation: signature.prefix(64))
-        else { throw PSBTError.malformed("input \(index) tap key signature encoding") }
-        var message = [UInt8](sighash)
-        let outputKey = P256K.Schnorr.XonlyKey(dataRepresentation: script.suffix(32))
-        guard outputKey.isValid(parsed, for: &message) else {
-            throw PSBTError.malformed("input \(index) invalid tap key signature")
-        }
-        return [signature]
-    }
-
-    /// The BIP387 witness for one multi_a leaf, or nil when fewer valid
-    /// signatures than the threshold are attached. Signatures whose hash type
-    /// byte (or absence of one) does not match, or that fail BIP340
-    /// verification, are discarded rather than trusted.
+    /// The BIP387 witness for one multi_a leaf, carrying exactly its
+    /// threshold of signatures, or nil when fewer valid ones are attached
+    /// or the leaf repeats a key. Signatures whose hash type byte (or absence
+    /// of one) does not match, or that fail BIP340 verification, are
+    /// discarded rather than trusted. Exercised by the signet journey in
+    /// UITests/MultisigJourney.swift, where all three signers of a 2-of-3
+    /// sign and Core mines the two-signature witness, then a recovery-leaf
+    /// one; a surplus on a recovery leaf is in TimelockedMultisigTests.
     private func finalizedScriptPathWitness(input index: Int, leaf: TapLeafScript,
                                             tx: Transaction,
                                             spentOutputs: [SighashBIP341.SpentOutput]) throws -> [Data]? {
@@ -477,11 +428,20 @@ extension PSBT {
         else { throw PSBTError.malformed("input \(index) witness utxo is not P2TR") }
         guard Self.leafCommitsToOutput(leaf, spentScript: spentScript) else { return nil }
 
-        guard let (threshold, leafKeys) = Multisig.parse(Script(leaf.script)) else { return nil }
+        // A repeated key would fill two slots with one signature.
+        guard let policy = Multisig.parsePolicy(Script(leaf.script)), Set(policy.keys).count == policy.keys.count,
+              Self.lockIsMet(policy, input: index, tx: tx) else { return nil }
         let valid = validScriptPathSignatures(input: index, leaf: leaf, tx: tx,
-                                              spentOutputs: spentOutputs, leafKeys: leafKeys)
-        guard valid.count >= threshold else { return nil }
-        return try Signer.multisigWitness(signatures: valid, leafScript: Script(leaf.script),
+                                              spentOutputs: spentOutputs, leafKeys: policy.keys)
+        // multi_a counts every signature and needs exactly k (BIP387): a
+        // surplus one fails OP_NUMEQUAL, so the first k in script order sign
+        // and the other slots stay empty.
+        var chosen: [Data: Data] = [:]
+        for key in policy.keys where chosen.count < policy.threshold {
+            chosen[key] = valid[key]
+        }
+        guard chosen.count == policy.threshold else { return nil }
+        return try Signer.multisigWitness(signatures: chosen, leafScript: Script(leaf.script),
                                           controlBlock: leaf.controlBlock)
     }
 
@@ -489,8 +449,7 @@ extension PSBT {
     /// tweaked output key that must equal the spent P2TR output, parity
     /// included — the check that stops a stranger's control block from
     /// dressing another script as this output's.
-    private static func leafCommitsToOutput(_ leaf: TapLeafScript,
-                                            spentScript: Data) -> Bool {
+    private static func leafCommitsToOutput(_ leaf: TapLeafScript, spentScript: Data) -> Bool {
         var merkleRoot = leaf.leafHash
         for sibling in leaf.controlBlock.path {
             guard sibling.count == 32 else { return false }
@@ -536,68 +495,37 @@ extension PSBT {
         return valid
     }
 
-    /// The leaf keys whose script-path signatures on `input` verify against
-    /// the recomputed sighash — the finalizer's own test, exposed so a
-    /// progress display can count approvals the way the finalizer will,
-    /// rather than by the presence of a signature entry.
-    public func verifiedScriptPathSigners(input index: Int, tx: Transaction,
-                                          spentOutputs: [SighashBIP341.SpentOutput]) throws -> Set<Data> {
-        let (leaf, leafKeys, _) = try leafSigningContext(input: index)
-        return Set(validScriptPathSignatures(input: index, leaf: leaf, tx: tx,
-                                             spentOutputs: spentOutputs, leafKeys: leafKeys).keys)
-    }
+    /// Validates an imported key-path signature against the PSBT's declared
+    /// P2TR witness UTXO before moving it into the final witness. Trusted
+    /// wallet policy must separately bind that declaration to the real coin;
+    /// finalization proves document self-consistency, not chain ownership.
+    private func validatedKeyPathWitness(input index: Int, signature: Data,
+                                         tx: Transaction,
+                                         spentOutputs: [SighashBIP341.SpentOutput]) throws -> [Data] {
+        let hashType: SighashBIP341.HashType
+        switch signature.count {
+        case 64:
+            hashType = .default
+        case 65:
+            hashType = SighashBIP341.HashType(rawValue: signature.last!)
+        default:
+            throw PSBTError.malformed("input \(index) tap key signature length")
+        }
+        guard hashType.commitsToAllOutputs,
+              hashType != .default || signature.count == 64
+        else { throw PSBTError.malformed("input \(index) unsafe tap key sighash type") }
 
-    /// The signable leaf and its contract for one input: a leaf script that
-    /// parses as multisig, and an output-committing sighash type — a vault
-    /// cosigner signs only those, so a PSBT creator cannot collect
-    /// NONE/SINGLE partials and then rewrite the outputs.
-    private func leafSigningContext(input index: Int) throws
-        -> (leaf: TapLeafScript, leafKeys: [Data], hashType: SighashBIP341.HashType) {
-        guard inputs.indices.contains(index) else { throw PSBTError.missingField("input \(index)") }
-        guard let leaf = inputs[index].tapLeafScripts.first else {
-            throw PSBTError.missingField("input \(index) tap leaf script")
-        }
-        guard let (_, leafKeys) = Multisig.parse(Script(leaf.script)) else {
-            throw PSBTError.malformed("input \(index) leaf script")
-        }
-        let rawType = inputs[index].sighashType ?? 0
-        guard rawType <= UInt32(UInt8.max) else { throw PSBTError.malformed("sighash type \(rawType)") }
-        let hashType = SighashBIP341.HashType(rawValue: UInt8(rawType))
-        guard hashType.commitsToAllOutputs else {
-            throw PSBTError.malformed("refusing non-DEFAULT/ALL sighash type \(rawType)")
-        }
-        return (leaf, leafKeys, hashType)
-    }
-
-    /// One leaf signature for one secret — or nil when the key is not a
-    /// leaf key. The signature is self-checked (BIP340 verify against the
-    /// leaf key) before it is ever attached.
-    private func selfVerifiedLeafSignature(
-        for secret: Data, input index: Int, leaf: TapLeafScript, leafKeys: [Data],
-        tx: Transaction, spentOutputs: [SighashBIP341.SpentOutput],
-        hashType: SighashBIP341.HashType, auxiliaryRand: Data?)
-        throws -> (id: TapScriptSignatureID, signature: Data)? {
-        guard let key = try? P256K.Schnorr.PrivateKey(dataRepresentation: secret) else {
-            throw PSBTError.malformed("invalid private key")
-        }
-        let xonly = Data(key.xonly.bytes)
-        guard leafKeys.contains(xonly) else { return nil }
-        let signature = try Signer.scriptPathSignature(tx: tx, inputIndex: index,
-                                                       spentOutputs: spentOutputs,
-                                                       leafScript: Script(leaf.script),
-                                                       leafVersion: leaf.leafVersion,
-                                                       hashType: hashType, privateKey: secret,
-                                                       auxiliaryRand: auxiliaryRand)
-        let sighash = try SighashBIP341.sighash(tx: tx, inputIndex: index, spentOutputs: spentOutputs,
-                                                hashType: hashType,
-                                                scriptPath: .init(leafScript: Script(leaf.script),
-                                                                  leafVersion: leaf.leafVersion))
+        let script = spentOutputs[index].scriptPubKey
+        guard script.count == 34, script[script.startIndex] == 0x51,
+              script[script.index(after: script.startIndex)] == 0x20
+        else { throw PSBTError.malformed("input \(index) witness utxo is not P2TR") }
+        let sighash = try SighashBIP341.sighash(
+            tx: tx, inputIndex: index, spentOutputs: spentOutputs, hashType: hashType)
         var message = [UInt8](sighash)
-        let parsed = try P256K.Schnorr.SchnorrSignature(dataRepresentation: signature.prefix(64))
-        guard P256K.Schnorr.XonlyKey(dataRepresentation: xonly).isValid(parsed, for: &message) else {
-            throw PSBTError.malformed("self-produced signature failed verification")
-        }
-        return (TapScriptSignatureID(publicKey: xonly, leafHash: leaf.leafHash), signature)
+        guard let parsed = try? P256K.Schnorr.SchnorrSignature(dataRepresentation: signature.prefix(64)),
+              P256K.Schnorr.XonlyKey(dataRepresentation: script.suffix(32)).isValid(parsed, for: &message)
+        else { throw PSBTError.malformed("input \(index) invalid tap key signature") }
+        return [signature]
     }
 
     /// Extractor role: the fully-signed raw transaction.

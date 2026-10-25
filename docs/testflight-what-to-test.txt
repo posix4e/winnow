@@ -1,11 +1,27 @@
-Winnow: fee refusals, peer verification receipts and recovery checks
+Winnow: 2-of-3 multisig with recovery paths, silent payment codes (internal test)
 
-Compact-filter checkpoint comparisons now record which peer acquisition source classes agreed, and the shared library can require two classes before a scan advances. This build keeps the previous behaviour on every network: a scan advances on whatever agreed. Source classes do not prove that peers have different operators.
+Send accepts a BIP352 silent payment code (sp1…/tsp1…) and derives the recipient's address from the coins it spends; the receipt shows both. Advanced mode builds k-of-n Taproot multisig accounts from Winnows or any signer, with an optional recovery path. There is no MuSig2 and no shared savings. Compact-filter sync, peer routing, people, labels and backups are unchanged.
 
-Automatic peer-driven fee increases now use the majority of configured peer seats and stop at 120 sat/vB. A rate below what any connected peer would relay, or below a reported floor above that cap, is refused before signing and asks for an explicit rate; this applies to payments, fee bumps and shared-savings spends. Peer floors are relay hints, not fee estimates or guarantees that a transaction will be accepted.
+Do not install this build on a phone that holds funds in MuSig2 accounts (build 0.8.8) or shared-account vaults. It cannot see them, and its automatic iCloud backup leaves them out.
 
-After updating, check existing wallets, vaults, contact cards, balances, transaction history and payment approvals. Check fee previews and refusals, including a fee bump on a pending payment and an override typed outside the accepted range. Use test-network funds for sends and a separate test wallet for backup export and file import. Automatic cloud-backup updates should still work; replacement-device iCloud recovery remains unverified.
+2-of-3 with three Winnows, on signet
 
-The shared library gains account-key signing, durable address cursors, bounded range recovery, recipient metadata, confirmation hashes and relay-only APIs. This build does not add a completed hardware-card or iPhone NFC signing flow. Recording block hashes alone does not validate an imported backup.
+1. On every phone, turn on Advanced mode and switch to signet (Advanced → Settings → Signet).
+2. On the second and third phones: Wallet → Multisig → Join with a descriptor, and copy This phone's key. Send both to the first phone.
+3. On the first phone: Wallet → Multisig → New multisig account. Name it, paste both keys, keep "Any 2 of 3", and optionally turn on Recovery after a delay (try Fewer signers, 1 of 3, after 1 day). Tap Create account.
+4. Copy the descriptor it shows and paste it on the other two phones under Join with a descriptor. All three phones must show the same first address.
+5. Fund the address from a signet faucet and wait for it to confirm.
+6. Spend with any two: create the PSBT on one phone, add its signature, paste the PSBT on another phone and sign there, and paste it back. Finalize and broadcast.
+7. After the delay (144 blocks a day), New or pasted PSBT → Recovery path: one signer alone can spend a coin that has not moved. Before the delay it must refuse.
 
-Report bugs at https://github.com/winnowwallet/winnow/issues. Include the app version, device, network, routing mode and steps to reproduce. Never include recovery words, private keys or wallet backup files.
+Also try: a separate recovery key instead of fewer signers, a 2-of-2 of two phones, and joining the same descriptor twice (the same account comes back, not a copy). None of this appears in Simple mode.
+
+Ordinary wallet
+
+Receive from a faucet, send a payment and watch it confirm. Restore the same recovery words in the App Store Winnow on another device: the first receive address must match. Pay a saved person and a pasted address. Bump the fee on a pending payment.
+
+Backups
+
+A backup from this build carries its multisig accounts. A file carrying MuSig2 accounts or vaults must be refused with a clear message, never restored partially.
+
+Report bugs publicly at https://github.com/winnowwallet/winnow/issues. Include the app version, device, network and steps to reproduce. Never include recovery words, private keys, or wallet backup files.

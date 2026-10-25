@@ -1,18 +1,16 @@
-import VaultKit
 import WalletCore
 import Foundation
 
-/// A saved recipient or co-owner, as persisted at `people.json`. Public keys
-/// only: nothing here can spend, so the file is not a wallet's and survives
-/// deleting one.
+/// A saved recipient, as persisted at `people.json`. Public keys only:
+/// nothing here can spend, so the file is not a wallet's and survives
+/// deleting one. A record written by a Winnow that also kept a signer key
+/// still decodes; that field is ignored.
 struct PersonRecord: Codable, Equatable, Identifiable, Sendable {
     /// Opaque; a UUID string.
     var id: String
     var name: String
-    /// Absent for a signer-only or label-only person.
+    /// Absent for a label-only person.
     var payTo: PersonPayTo?
-    /// A validated script-path signer expression, `[fp/path]xpub…/<0;1>/*`.
-    var signerKey: String?
     /// The next receive-chain index a payment to this person derives.
     var nextPaymentIndex: UInt32 = 0
     /// Nil in older files: payable recipients were all saved. Keep the record
@@ -27,7 +25,6 @@ struct PersonRecord: Codable, Equatable, Identifiable, Sendable {
         destinationProvenance == .localFunding || destinationProvenance == .explorerFunding
     }
 
-    var canCoOwnSavings: Bool { signerKey != nil }
     var derivesFreshAddresses: Bool { payTo?.derivesFreshAddresses == true }
     var isSavedRecipient: Bool { payTo != nil && savedRecipient != false }
 }
@@ -62,19 +59,20 @@ enum PeopleStorageError: Error, Equatable, LocalizedError {
 }
 
 /// Local recipient names, public keys, address counters, and per-payment
-/// sender labels. Mirrors `VaultStore`: one JSON file per network, sealed
-/// under a Keychain-held key, a strict validation that fails the whole
-/// snapshot closed, and a rollback on any failed write. Differs in one way:
-/// damage is not fatal to the app.
-/// A vault holds money; a person is a public key and a name. So a damaged
-/// file is reported, left untouched, and refused every mutation until it
-/// reads again, while the rest of the wallet carries on.
+/// sender labels: one JSON file per network, sealed under a Keychain-held
+/// key, a strict validation that fails the whole snapshot closed, and a
+/// rollback on any failed write. Damage is not fatal to the app: a person is
+/// a public key and a name, so a damaged file is reported, left untouched,
+/// and refused every mutation until it reads again, while the rest of the
+/// wallet carries on.
 actor PeopleStore {
     static let maximumPeople = 1_000
     /// Sender labels share the file and its bound: a label names a payment,
     /// never a key, so the map cannot outgrow the people list's ceiling.
     static let maximumSenderLabels = 1_000
-    static let maximumNextIndex = VaultStore.maximumNextIndex
+    /// Leaves room below the hardened offset for the two indices a payment
+    /// advances past the one it derived.
+    static let maximumNextIndex: UInt32 = 10_000 - 2
 
     private var records: [PersonRecord] = []
     /// Txid display hex → person id: who a received payment is labelled as
@@ -85,8 +83,8 @@ actor PeopleStore {
     private var isDamaged = false
     private let writeData: @Sendable (Data, URL) throws -> Void
     /// Reads verify and writes seal, under a key the app container cannot
-    /// reach: a signer key substituted in the file would validate perfectly
-    /// and show up as a co-owner, so validation alone is not enough here.
+    /// reach: a pay-to key substituted in the file would validate perfectly
+    /// and redirect every later payment, so validation alone is not enough.
     private let seal: StoreSeal
 
     init(keys: any StoreKeyVault, writeData: @escaping @Sendable (Data, URL) throws -> Void = { data, url in
@@ -263,18 +261,17 @@ actor PeopleStore {
     }
 
     @discardableResult
-    func add(name: String, payTo: PersonPayTo?, signerKey: String?,
+    func add(name: String, payTo: PersonPayTo?,
              provenance: PersonRecord.DestinationProvenance? = nil, source: String? = nil) throws -> PersonRecord {
         guard !isDamaged else { throw PeopleStorageError.damaged }
         let trimmedName = try Self.normalizedName(name)
         try Self.requireSource(source)
-        // payTo and signerKey may both be absent: a name alone labels a
-        // received payment, and keys can only ever be added by re-saving.
-        let candidate = PersonRecord(id: UUID().uuidString, name: trimmedName,
-                                     payTo: payTo, signerKey: signerKey,
+        // payTo may be absent: a name alone labels a received payment, and a
+        // key can only ever be added by re-saving.
+        let candidate = PersonRecord(id: UUID().uuidString, name: trimmedName, payTo: payTo,
                                      destinationProvenance: provenance, destinationSource: source)
         if let existing = try Self.firstSharingAKey(with: candidate, among: records, network: network) {
-            if !existing.isSavedRecipient, payTo != nil, existing.payTo == payTo, existing.signerKey == signerKey {
+            if !existing.isSavedRecipient, payTo != nil, existing.payTo == payTo {
                 return try updateRecipient(id: existing.id, name: trimmedName, saved: true)
             }
             throw PeopleStorageError.duplicate(existingName: existing.name)
@@ -418,20 +415,14 @@ actor PeopleStore {
         error is SealedStoreFile.Failure ? unverifiedStorageMessage : damagedStorageMessage
     }
 
-    /// The existing person who already holds one of `candidate`'s keys, if any.
-    /// Keys are compared as derived material, so relabelling an origin cannot
+    /// The existing person who already holds `candidate`'s key, if any. Keys
+    /// are compared as derived material, so relabelling an origin cannot
     /// make a second entry for the same account.
     private static func firstSharingAKey(with candidate: PersonRecord, among others: [PersonRecord],
                                          network: BitcoinNetwork) throws -> PersonRecord? {
-        let payIdentity = try candidate.payTo?.identity(network: network)
-        let signerIdentity = try candidate.signerKey.map { try PersonKeys.signerIdentity($0, network: network) }
+        guard let payIdentity = try candidate.payTo?.identity(network: network) else { return nil }
         for other in others {
-            if let payIdentity, let existing = try other.payTo?.identity(network: network),
-               existing == payIdentity {
-                return other
-            }
-            if let signerIdentity, let key = other.signerKey,
-               try PersonKeys.signerIdentity(key, network: network) == signerIdentity {
+            if let existing = try other.payTo?.identity(network: network), existing == payIdentity {
                 return other
             }
         }
@@ -453,19 +444,17 @@ actor PeopleStore {
         }
         var ids = Set<String>()
         var payIdentities = Set<Data>()
-        var signerIdentities = Set<Data>()
         for record in records {
             guard ids.insert(record.id).inserted else {
                 throw PeopleStorageError.invalidState("duplicate person identifier")
             }
             try validateShape(record)
             try validatePayTo(record, network: network, seen: &payIdentities)
-            try validateSigner(record, network: network, seen: &signerIdentities)
         }
     }
 
-    /// What every person needs, whatever keys they carry — or do not: a
-    /// label-only person holds a name and no keys at all.
+    /// What every person needs, whether or not they carry a key: a
+    /// label-only person holds a name and no key at all.
     private static func validateShape(_ record: PersonRecord) throws {
         guard DisplayName.normalized(record.name) == record.name else {
             throw PeopleStorageError.invalidState("a person has no usable name")
@@ -493,18 +482,6 @@ actor PeopleStore {
         }
         guard seen.insert(try payTo.identity(network: network)).inserted else {
             throw PeopleStorageError.invalidState("two people share a pay-to key")
-        }
-    }
-
-    private static func validateSigner(_ record: PersonRecord, network: BitcoinNetwork,
-                                       seen: inout Set<Data>) throws {
-        guard let signerKey = record.signerKey else { return }
-        let validated = try VaultCosignerKey(signerKey, role: .scriptPath, network: network)
-        guard validated.expression == signerKey else {
-            throw PeopleStorageError.invalidState("signer key is not in canonical form")
-        }
-        guard seen.insert(try validated.publicKey(index: 0, choice: 0)).inserted else {
-            throw PeopleStorageError.invalidState("two people share a signer key")
         }
     }
 
