@@ -225,13 +225,6 @@ jobs:
         uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
         with:
           generate_release_notes: true
-          # Internal TestFlight builds: the release is marked pre-release so
-          # it never becomes "latest", and its body says what the build is
-          # and is not.
-          prerelease: true
-          name: "${{ github.ref_name }}: Taproot multisig accounts, recovery paths and silent payment codes (internal TestFlight)"
-          body: |
-            Internal TestFlight build: raw k-of-n Taproot multisig accounts in Advanced mode with optional timelocked recovery paths, and sending to BIP352 silent payment codes. No MuSig2 and no shared-account vaults. Not on the App Store. Do not install it over a Winnow that holds MuSig2 or vault funds — move them out first; a backup carrying a MuSig2 account is refused rather than restored without it.
           files: |
             supply-chain/winnow.spdx.json
             supply-chain/winnow-build-provenance.json
