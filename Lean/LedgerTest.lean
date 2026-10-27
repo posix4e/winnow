@@ -475,8 +475,17 @@ def sessionTests (dir : String) : IO Unit := do
     s3 := s'
     check s!"simulator replay: {label}" bad.isNone s!"first difference at {bad}"
 
+def ioTests : IO Unit := do
+  say "IO transport"
+  let ref ← IO.mkRef (Simulator.new masters[1]!)
+  let r ← (Multisig.signerExpression .signet |>.runIO (Simulator.transport ref)).run
+  check "runIO over the shared simulator" ((r.toOption.map (·.2)) == some masters[1]!.fingerprint)
+  let r ← (Multisig.signerExpression .mainnet |>.runIO (Simulator.transport ref)).run
+  check "runIO returns the device's refusal" (match r with | .error (.status 0x6A82) => true | _ => false)
+
 def main (args : List String) : IO UInt32 := do
   let dir := args.headD "Vectors"
+  ioTests
   vectorTests dir
   merkleTests
   framingTests

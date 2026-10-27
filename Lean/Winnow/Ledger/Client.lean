@@ -69,6 +69,11 @@ def run {m : Type → Type} [Monad m] [MonadExceptOf LedgerError m] {α} (exchan
     let reply ← exchange apdu
     run exchange (next reply)
 
+/-- `run` over an `IO` transport (Bluetooth through the shell, `Simulator.transport`); the device's
+and the protocol's failures come back as `LedgerError`s, the transport's own as `IO` errors. -/
+def runIO {α} (exchange : ByteArray → IO ByteArray) (p : Program α) : ExceptT LedgerError IO α :=
+  p.run fun apdu => ExceptT.lift (exchange apdu)
+
 end Program
 
 /-- A signature the device yielded while signing a PSBT (`LedgerSignature`). -/
