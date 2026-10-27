@@ -28,8 +28,8 @@ not shipped capabilities or promised dates.
 - `LeanApp/`: the app: `WinnowApp/` holds the model, update, views and commands (Elm-style, ElmLean),
   `WinnowApp/Real/` the backend, `WinnowApp/E2E.lean` the Debug-only test mode. `ios/` is the XcodeGen
   project that links the Lean-generated C with ElmLean's native shell (renderer, C shim, capabilities:
-  Keychain, device authentication, clipboard, HTTPS, paths). The shell's Swift is printed from Lean at
-  build time into `ios/build/native-shell/` and is not checked in.
+  Keychain, device authentication, clipboard, HTTPS, paths). The shell is Objective-C printed from Lean
+  at build time into `ios/build/native-shell/`, never checked in; the app compiles no Swift at all.
 - `docs/`: the website and the papers the app bundles.
 - [PORT.md](PORT.md): how the port was done and verified, and what differs from the Swift original
   (removed from this tree; it remains in the history before this port).
