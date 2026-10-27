@@ -12,8 +12,9 @@ Ports `Tests/WalletCoreTests/LedgerTests.swift` (upstream 1cf93fb) where it does
   `LedgerBitcoinClient`/`LedgerMultisig` against Swift's `LedgerSimulator`, every APDU and reply in
   order, for a 2-of-2 (pair, register, show an address, the Ledger signs a two-input spend, a
   refusal on the device, a mainnet key request) and a 2-of-3 with a recovery leaf. Recorded by
-  `Vectors/ledger-sessions-recorder.swift.txt` (a swift-testing file added to a scratch copy of the
-  Swift checkout, run with `LEDGER_RECORD_OUT=… swift test --filter LedgerRecordTests`).
+  `LedgerRecordTests.swift`, kept with the oracle harness outside this tree
+  (`~/src/winnow-lean-swift-archive/LedgerRecorder/`; add it to the tests of a copy of the Swift at
+  1cf93fb and run `LEDGER_RECORD_OUT=… swift test --filter LedgerRecordTests`).
 
   - client replay: the Lean client must send byte-identical APDUs and reach the same results and
     signed PSBT from the recorded replies;
