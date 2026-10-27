@@ -4,3 +4,6 @@ import Winnow.Ledger.APDU
 import Winnow.Ledger.Framing
 import Winnow.Ledger.Merkle
 import Winnow.Ledger.WalletPolicy
+import Winnow.Ledger.ClientCommands
+import Winnow.Ledger.Client
+import Winnow.Ledger.Multisig
