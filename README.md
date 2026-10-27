@@ -1,6 +1,7 @@
 # Winnow
 
-A Bitcoin wallet for iOS with on-device compact-filter matching, written in Swift.
+A Bitcoin wallet for iOS with on-device compact-filter matching, written in Lean 4 and rendered by
+ElmLean's generic native shell (see [PORT.md](PORT.md)).
 
 **[Download on the App Store](https://apps.apple.com/app/id6801502501)** — pre-release builds ship through [TestFlight](https://testflight.apple.com/join/83djpNE7). Mainnet by default; signet is one Advanced-mode toggle away. The broader beta is planned for 0.9; see the [release roadmap](https://winnowwallet.com/roadmap).
 
@@ -8,7 +9,7 @@ A Bitcoin wallet for iOS with on-device compact-filter matching, written in Swif
 - **Taproot today.** Current receiving uses P2TR (BIP86), with no ECDSA signing path. The planned 0.7 P2WSH Safe is a separate, opt-in addition.
 - **Pay people and share control.** Save a public payment card or Bitcoin address. From Wallet, create shared savings with a threshold such as 2-of-3: any two keys can spend while one is unavailable. A 1-of-n policy permits one key to spend. Cards carry public keys only.
 - **Require another signing device.** Advanced mode offers MuSig2 accounts where every key must participate. The single integration journey receives and sends with a phone-plus-Core account, followed by a script-path 2-of-3 account. Focused tests check wallet and account rules. Hardware-wallet compatibility needs its own test. Read about [shared signing and its limits](docs/vaults.html).
-- **Bitcoin cryptography:** [`swift-secp256k1`](https://github.com/21-DOT-DEV/swift-secp256k1) (Bitcoin Core's libsecp256k1), pinned; the only third-party dependency. The embedded Tor client shipped in 0.6 through 0.7.0 was removed in 0.7.1 (its source is kept on the `archive/tor-0.7.0` branch); Tor and I2P are on the [roadmap](https://winnowwallet.com/roadmap#private-transports).
+- **Bitcoin cryptography:** secp256k1, BIP340 and MuSig2 in Lean (`Lean/Secp`, with machine-checked proofs of the field and curve arithmetic), no third-party dependency. The embedded Tor client shipped in 0.6 through 0.7.0 was removed in 0.7.1 (its source is kept on the `archive/tor-0.7.0` branch); Tor and I2P are on the [roadmap](https://winnowwallet.com/roadmap#private-transports).
 - **Warned explorer links** — choose mempool.space or a custom Esplora website; Winnow opens it only after a tap and privacy warning, never as a wallet backend.
 
 ## Release roadmap
@@ -20,123 +21,40 @@ not shipped capabilities or promised dates.
 
 ## Layout
 
-The app, Bitcoin implementation, CLI, fuzz harness, debugging tools and website
-live in this repository. The app and all development tools use one root
-Swift package and dependency lockfile. There is one release version and one source revision.
-
-The app owns the user flows. WalletCore contains Bitcoin primitives, wallet
-state, and P2P networking in one target. The winnow-debug tool and fuzz harness
-use that same implementation. Explorer links open an external website after a warning.
-
-The [testing and feature policy](docs/testing.md) keeps one iPhone integration
-journey: an ordinary receive/send, MuSig2 receive/send with one Core cosigner,
-then script-path 2-of-3 receive/send with two Core cosigners available. The phone
-and one Core key approve the 2-of-3 payment; the third key stays unused. The
-private signet fixture mines blocks automatically for prompt confirmation.
-App, wallet, and protocol tests cover detailed rules; there is no separate
-DifferentialTests target or broad interoperability matrix. One continuous
-video presents the journey on the [recording page](https://winnowwallet.com/recording).
-iPad UI runs follow separately. The homepage gives an overview, illustrates
-the signing choices, shows the run's sixteen checkpoint screenshots in order,
-and links to the full recording. Detailed guidance and test evidence live on
-separate pages.
-`scripts/build-site` generates home and the recording page.
-Run it after changing docs/journeys.json or the app test
-source. CI rejects missing or undocumented app scenarios.
-
-## Directory guides
-
-Each guide explains what its directory owns, why the app or debugging needs it,
-and which consumers and tests support that purpose. Every guide links back here.
-When adding an owned directory with code, data, or documentation, add its README
-and index link together. Parent folders with their own files need a guide too;
-asset catalogs are documented by their owner, outside the bundle.
-
-### App and Bitcoin rules
-
-- App and inspection: [iPhone app](Sources/WinnowApp/README.md), [debugging and offline inspection](Tools/Debug/README.md).
-- WalletCore primitives: [crypto/encodings](Sources/WalletCore/Crypto/README.md), [descriptors](Sources/WalletCore/Descriptors/README.md), [scripts](Sources/WalletCore/Script/README.md).
-- WalletCore: [keys and secret storage](Sources/WalletCore/Keys/README.md), [PSBTs](Sources/WalletCore/PSBT/README.md), [transactions](Sources/WalletCore/Transactions/README.md), [wallet policy](Sources/WalletCore/Wallet/README.md).
-- Network synchronization: [filters](Sources/WalletCore/Network/Filters/README.md), [headers](Sources/WalletCore/Network/Headers/README.md), [peer selection](Sources/WalletCore/Network/Peers/README.md).
-- Network communication: [relay](Sources/WalletCore/Network/Broadcast/README.md), [mempool](Sources/WalletCore/Network/Mempool/README.md), [wire formats](Sources/WalletCore/Network/Protocol/README.md), [transport](Sources/WalletCore/Network/Transport/README.md).
-
-### Tests and reference data
-
-- User experience: [app decisions](AppTests/README.md), [integration journey](UITests/README.md).
-- Rules and interoperability: [Bitcoin primitives](Tests/BitcoinCoreTests/README.md), [wallet rules](Tests/WalletCoreTests/README.md), [network cases](Tests/WalletCoreTests/Network/README.md).
-- Shared fixtures: [TestSupport](Tests/Support/README.md), [real nodes](Tests/Support/Node/README.md), [controlled peers](Tests/Support/P2P/README.md).
-- Reference data: [Bitcoin vectors](Tests/BitcoinCoreTests/Vectors/README.md), [MuSig2 vectors](Tests/BitcoinCoreTests/Vectors/bip327/README.md), [wallet/network vectors](Tests/WalletCoreTests/Vectors/README.md).
-- Development tools: [tool tests](Tests/ToolsTests/README.md), [filter regressions](Tests/ToolsTests/Cases/filter/README.md), [PSBT regressions](Tests/ToolsTests/Cases/psbt/README.md).
-
-### Debugging and fuzzing
-
-- GUI/network debugging: [runbook](Tools/Debug/README.md), [implementation](Tools/Debug/Sources/WinnowDebug/README.md), [release-data generators](Tools/Generate/README.md).
-- Fuzzing: [runbook](Tools/Fuzz/README.md), [executable](Tools/Fuzz/Sources/WinnowFuzz/README.md), [shared invariants](Tools/Fuzz/Sources/WinnowFuzzCore/README.md).
-
-### Website and repository operations
-
-- Website: [pages and generation](docs/README.md), [journey recording](docs/videos/README.md), [selected screenshots](docs/screenshots/README.md).
-- Security: [reports and claims](docs/security/README.md), [retained soak evidence](docs/security/evidence/README.md).
-- Operations: [public contributor runbooks](.github/internal/README.md), [workflows](.github/workflows/README.md), [scripts](scripts/README.md), [tooling regressions](scripts/tests/README.md).
+- `Lean/`: the wallet in Lean 4 (`Winnow/`): keys, transactions, PSBTs, descriptors, vaults and
+  MuSig2, the wallet, compact-filter sync, peers, mempool windows and the broadcaster, over libuv TCP.
+  `Secp/` is the proven secp256k1. `IOTest.lean` (`io-test`) runs the network layer against a disposable
+  regtest bitcoind.
+- `LeanApp/`: the app: `WinnowApp/` holds the model, update, views and commands (Elm-style, ElmLean),
+  `WinnowApp/Real/` the backend, `WinnowApp/E2E.lean` the Debug-only test mode. `ios/` is the XcodeGen
+  project that links the Lean-generated C with ElmLean's native shell (renderer, C shim, capabilities:
+  Keychain, device authentication, clipboard, HTTPS, paths).
+- `docs/`: the website and the papers the app bundles.
+- [PORT.md](PORT.md): how the port was done and verified, and what differs from the Swift original
+  (removed from this tree; it remains in the history before this port).
 
 ## Build & test
 
 ```sh
-swift test
-swift run winnow-debug inspect tx <hex>
-xcodegen
-scripts/ci-app-tests /tmp/winnow-app-tests
-scripts/ci-debug
+cd LeanApp
+lake build backend-test records-test        # Lean toolchain leanprover/lean4:v4.35.0 (elan)
+./.lake/build/bin/backend-test               # end to end against a fresh regtest bitcoind
+./.lake/build/bin/records-test
+<framework>/native/scripts/ios_lean_sources.sh . WinnowApp ios/build iossim
+cd ios && xcodegen generate && xcodebuild -scheme WinnowLean -destination 'platform=iOS Simulator,id=<udid>' build
 ```
 
-Use XcodeGen 2.46.0. `scripts/install-xcodegen` downloads and verifies that
-version; locally it prints the executable path to use. The generated Xcode
-project is ignored. Run app tests with a fresh results directory.
-Test fixtures live once, in the `TestSupport` library
-([`Tests/Support`](Tests/Support/README.md)); it imports neither `Testing` nor
-`XCTest`, so the swift-testing targets and the Xcode bundles share it and every
-assertion stays at the call site.
-`scripts/check-dependencies --xcode /path/to/DerivedData` verifies that Xcode uses the root
-package and its committed third-party dependency revision.
-
-[CI and release operations](.github/internal/ci-release.md) describes the shared
-validation gates, node fixture, TestFlight recovery and website deployment.
-CI has one GitHub-hosted Apple silicon (`macos-26`) `build` job for package,
-app, fuzz, lint, and release checks, followed by a `website` job that deploys
-its ready artifact. Fresh runs use per-run build products and a new signet
-fixture, with no dependence on a developer Mac. One Debug build serves app
-unit tests and the signet journey on the same simulator. Fresh runs retain both
-result bundles, the video, and screenshots in `app-tests-…`.
-Website-only edits reuse normalized journey media from a successful run with
-matching test and build inputs, then generate and check a fresh website.
-App-bundled HTML/CSS changes still require fresh tests. Missing evidence runs
-the full checks; manual, nightly, and release runs always run fresh.
+`backend-test --fixture <dir>` leaves a funded regtest node running for manual simulator runs.
+`scripts/install-xcodegen` installs XcodeGen 2.46.0. Simulator builds are ad-hoc signed (an unsigned
+app has no Keychain entitlement).
 
 Mainnet is the default network, and the app starts in beginner mode: one
 screen with the balance, Receive, Send, your activity, shared savings once you
-have any, and the backup — no settings. Open a payment to save or rename its
-recipient, then pick them from Saved recipients in Send. The same Send form
-handles every account: choose the account, recipient, and amount, then review
-the fee. Shared accounts continue to their required approvals before anything
-is sent. Advanced, in the corner of that screen, switches to the three-tab
-interface — Wallet, Send, Settings — with the test network, your own peers,
-chain verification, the block explorer, custom fees, fee bumping, build
-details and the raw vault tools; Simple, on the Wallet tab, switches back and
-keeps every setting. Switch to signet there for development. Point the app at
-your own filter-serving node (Settings → Manual peers); the node needs
-`blockfilterindex=1` and `peerblockfilters=1`.
-
-## App demonstration
-
-GUI diagnostics live in [Tools/Debug](Tools/Debug/README.md). Use
-`scripts/winnow-debug doctor` for environment checks and
-`scripts/winnow-debug diagnostics` for local simulator logs and screenshots.
-The demo and publication workflow has been retired. The single
-`test01CreateReceiveSendConfirm` journey in `UITests/WinnowAppUITests.swift`
-covers ordinary, MuSig2, and script-path 2-of-3 payments on iPhone. The host
-records one continuous video; checkpoint screenshots remain secondary artifacts.
-Lower-level tests cover detailed feature behavior. The recording’s provenance
-identifies exactly which version and payments it shows.
+have any, and the backup. Advanced switches to the three-tab interface —
+Wallet, Send, Settings — with the test network, your own peers, chain
+verification, the block explorer, custom fees, fee bumping and the vault tools.
+Point the app at your own filter-serving node (Settings → Manual peers); the
+node needs `blockfilterindex=1` and `peerblockfilters=1`.
 
 Screenshot PNGs in `docs/screenshots/` are stored in Git LFS. After cloning,
 install Git LFS and download the image objects before viewing or publishing them:
@@ -145,13 +63,6 @@ install Git LFS and download the image objects before viewing or publishing them
 git lfs install --local
 git lfs pull
 ```
-
-The build job fetches LFS objects and prepares a fresh website artifact with
-either its new journey or cached normalized video and all 16 screenshots.
-Cached media keeps the original recording's provenance. The website job deploys
-that same-run artifact without rebuilding: trusted PRs get previews and `main`
-gets production. Local test runs use fresh temporary directories; committed
-historical images remain in LFS.
 
 ## License
 

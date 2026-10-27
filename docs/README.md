@@ -6,13 +6,9 @@ This directory is the static website and the public explanation of Winnow's
 features, architecture, testing, and limitations. The app also bundles five
 technical guides and site.css so those explanations are available offline.
 
-[The journey inventory](journeys.json) and
-[app test source](../UITests/README.md) feed [build-site](../scripts/build-site),
-which generates home and recording pages. The homepage pairs three signing
-choices with real wallet screens: one key, both keys, or any two of three.
-An expandable gallery keeps all sixteen checkpoint screenshots in journey order,
-each linking to the full-size image. Generation refuses any checkpoint the
-journey does not capture, so the page cannot show a screen no test produced.
+The home and recording pages were generated from the Swift app's recorded UI journey
+([journey inventory](journeys.json)); that generator and journey were removed with the Swift app
+(see [PORT.md](../PORT.md)), so the committed pages and screenshots are kept as they are.
 
 [home.css](home.css) styles only the homepage; app-bundled [site.css](site.css)
 is unaffected. Native radio controls and the gallery work without JavaScript.

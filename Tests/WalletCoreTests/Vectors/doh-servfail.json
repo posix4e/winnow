@@ -1,9 +1,0 @@
-{
-  "Status": 2,
-  "TC": false,
-  "RD": true,
-  "RA": true,
-  "AD": false,
-  "CD": false,
-  "Question": [{ "name": "seed.example.test.", "type": 1 }]
-}

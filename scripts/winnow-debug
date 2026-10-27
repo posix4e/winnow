@@ -1,6 +1,0 @@
-#!/bin/bash
-# Run GUI and network debugging tools with all app paths anchored to this checkout.
-set -euo pipefail
-cd "$(dirname "${BASH_SOURCE[0]}")/.."
-export WINNOW_DEBUG_REPOSITORY="$PWD"
-exec swift run --package-path "$PWD" --quiet winnow-debug "$@"
