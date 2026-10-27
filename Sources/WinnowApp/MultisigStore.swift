@@ -300,6 +300,18 @@ actor MultisigStore {
         return changed
     }
 
+    /// Files the Ledger registration for an account the Ledger signs for.
+    func setLedger(id: String, registration: LedgerRegistration) throws {
+        guard !isDamaged else { throw MultisigStorageError.damaged }
+        guard let index = records.firstIndex(where: { $0.id == id }) else {
+            throw MultisigStorageError.invalidState("the account is no longer on this phone")
+        }
+        var updated = records[index]
+        updated.ledger = registration
+        try updated.checkLedgerRegistration(for: MultisigAccount(updated.descriptor, network: network))
+        try mutate { $0[index] = updated }
+    }
+
     /// Marks the next receive address used ("New address").
     func advanceReceiveIndex(id: String) throws {
         guard !isDamaged else { throw MultisigStorageError.damaged }
@@ -446,6 +458,11 @@ actor MultisigStore {
         let account = try MultisigAccount(record.descriptor, network: network)
         guard account.descriptor.serialized() == record.descriptor, account.id == record.id else {
             throw MultisigStorageError.invalidState("account descriptor identifier does not match")
+        }
+        do {
+            try record.checkLedgerRegistration(for: account)
+        } catch {
+            throw MultisigStorageError.invalidState("an account's Ledger registration does not match it")
         }
         guard record.nextReceiveIndex <= maximumNextIndex, record.nextChangeIndex <= maximumNextIndex else {
             throw MultisigStorageError.invalidState("account address index is out of range")

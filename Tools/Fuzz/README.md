@@ -5,8 +5,8 @@
 The harness covers fifteen parsing surfaces: PSBT, descriptors, transactions,
 blocks, wire messages (including `addr`), framing, filters, addresses, import
 bundles, the census catalog, DNS-over-HTTPS answers, funding
-sources, Taproot control blocks, person cards and pastes, and BIP352 silent
-payment codes. It
+sources, Taproot control blocks, person cards and pastes, BIP352 silent
+payment codes, and what a Ledger sends: Bluetooth frames, client commands and yielded signatures. It
 uses the local Bitcoin modules as a development target in the root package.
 Parsers in the app target (`PeopleStore`, `ReceiveAddressLabelStore`,
 `SealedStoreFile`) and WalletCore's internal `PersistedPeers` are out of its

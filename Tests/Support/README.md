@@ -33,6 +33,7 @@ configuration and under Xcode.
 | `Collectors.swift` | `MatchCollector`, `EventCollector`, `pollUntil`, `settle` |
 | `WalletFixtures.swift` | `testEntropy`, `testMnemonic`, `testMaster`, `fakeHeader`, `coinbaseInput`, `fakeMatch`, `matureCoinbase`, `testChainTip`, `makeTestWallet`, `fund`, `fundedWallet` |
 | `TestScripts.swift` | `TestScripts.p2trDestination`, `TestScripts.bip86FirstMainnetAddress` |
+| `LedgerSimulator.swift` | A software Ledger Bitcoin app holding a test seed: the device side of the app's interrupt protocol, written from its documentation, checking every proof and preimage the client serves and signing script-path inputs for its own key. It shows the phone's client is consistent, not that a real device agrees |
 | `TestKeys.swift` | `TestKeys.master(entropyByte:)`, `masters()`, and the `keyExpression`/`bareKeyExpression` text that people and label tests paste |
 | `P2P/` | `SyntheticChain`/`makeSyntheticChain`, `minedHeader`, `makeTestParams`, `makeFakeSegwitTx`, `ResumeOnce`, `LoopbackNode`, `LoopbackHTTPServer` |
 | `Node/` | `BitcoinCLI`, `CoreSigner`, `HostProcess`, `SignetMiner`, `SignetFixture`: the custom-signet node and Core signer used by the UI journey |

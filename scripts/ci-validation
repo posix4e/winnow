@@ -18,7 +18,7 @@ LANES = {'package', 'build', 'units', 'journey'}
 # it regularly, and the Xcode build, iOS runtime and architecture are what the
 # evidence depends on.
 POLICY = {'schema': 2, 'xcode': '17F113', 'runtime': 'iOS 26.5', 'architecture': 'arm64', 'max_age_days': 7,
-          'minimum_tests': {'package': 635, 'units': 259, 'journey': 1}}
+          'minimum_tests': {'package': 646, 'units': 265, 'journey': 1}}
 
 
 def sha(path):

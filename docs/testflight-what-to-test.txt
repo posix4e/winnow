@@ -1,20 +1,20 @@
-Winnow: 2-of-3 multisig with recovery paths, silent payment codes (internal test)
+Winnow: 2-of-3 multisig with recovery paths, a Ledger signer, silent payment codes (internal test)
 
-Send accepts a BIP352 silent payment code (sp1…/tsp1…) and derives the recipient's address from the coins it spends; the receipt shows both. Advanced mode builds k-of-n Taproot multisig accounts from Winnows or any signer, with an optional recovery path. There is no MuSig2 and no shared savings. Compact-filter sync, peer routing, people, labels and backups are unchanged.
+Send accepts a BIP352 silent payment code (sp1…/tsp1…) and derives the recipient's address from the coins it spends; the receipt shows both. Advanced mode builds k-of-n Taproot multisig accounts from Winnows, a Ledger or any signer, with an optional recovery path. There is no MuSig2 and no shared savings. Compact-filter sync, peer routing, people, labels and backups are unchanged.
 
 Do not install this build on a phone that holds funds in MuSig2 accounts (build 0.8.8) or shared-account vaults. It cannot see them, and its automatic iCloud backup leaves them out.
 
-2-of-3 with three Winnows, on signet
+2-of-3 with two Winnows and a Ledger, on signet
 
 1. On every phone, turn on Advanced mode and switch to signet (Advanced → Settings → Signet).
-2. On the second and third phones: Wallet → Multisig → Join with a descriptor, and copy This phone's key. Send both to the first phone.
-3. On the first phone: Wallet → Multisig → New multisig account. Name it, paste both keys, keep "Any 2 of 3", and optionally turn on Recovery after a delay (try Fewer signers, 1 of 3, after 1 day). Tap Create account.
-4. Copy the descriptor it shows and paste it on the other two phones under Join with a descriptor. All three phones must show the same first address.
+2. On the second phone: Wallet → Multisig → Join with a descriptor, and copy This phone's key. Send it to the first phone.
+3. On the first phone: Wallet → Multisig → New multisig account. Name it, paste the second phone's key, turn on Include a Ledger, keep "Any 2 of 3", and optionally turn on Recovery after a delay (try Fewer signers, 1 of 3, after 1 day). Open Bitcoin Test on the Ledger (version 2.2.1 or later for a recovery path) and tap Create account; approve the account on the Ledger.
+4. Copy the descriptor it shows and paste it on the second phone under Join with a descriptor. Both phones must show the same first address; Verify on Ledger shows it on the Ledger too.
 5. Fund the address from a signet faucet and wait for it to confirm.
-6. Spend with any two: create the PSBT on one phone, add its signature, paste the PSBT on another phone and sign there, and paste it back. Finalize and broadcast.
+6. Spend with any two: create the PSBT on one phone, add its signature, then Sign with Ledger, or paste the PSBT on the other phone and sign there, and paste it back. Finalize and broadcast.
 7. After the delay (144 blocks a day), New or pasted PSBT → Recovery path: one signer alone can spend a coin that has not moved. Before the delay it must refuse.
 
-Also try: a separate recovery key instead of fewer signers, a 2-of-2 of two phones, and joining the same descriptor twice (the same account comes back, not a copy). None of this appears in Simple mode.
+Also try: a separate recovery key instead of fewer signers, a 2-of-3 of three phones without a Ledger, declining on the Ledger, and joining the same descriptor twice (the same account comes back, not a copy). None of this appears in Simple mode.
 
 Silent payment codes
 
@@ -26,6 +26,6 @@ Receive from a faucet, send a payment and watch it confirm. Restore the same rec
 
 Backups
 
-A backup from this build carries its multisig accounts. A file carrying MuSig2 accounts or vaults must be refused with a clear message, never restored partially.
+A backup from this build carries its multisig accounts and Ledger pairings. A file carrying MuSig2 accounts or vaults must be refused with a clear message, never restored partially.
 
-Report bugs publicly at https://github.com/winnowwallet/winnow/issues. Include the app version, device, network and steps to reproduce. Never include recovery words, private keys, or wallet backup files.
+Report bugs publicly at https://github.com/winnowwallet/winnow/issues. Include the app version, device, Ledger model and app version, network and steps to reproduce. Never include recovery words, private keys, or wallet backup files.

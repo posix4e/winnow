@@ -50,7 +50,7 @@ final class MultisigAccountFlowTests: XCTestCase {
         let otherWinnow = try TestKeys.keyExpression(master: masters[2])
 
         let record = try await model.createMultisigAccount(
-            name: "Family 2-of-2", threshold: 2, otherKeys: [" \(otherWinnow) "],
+            name: "Family 2-of-2", threshold: 2, otherKeys: [" \(otherWinnow) "], includeLedger: false,
             recovery: .fewerSigners(threshold: 1, blocks: 4320))
         let account = try model.multisigAccount(for: record)
         XCTAssertEqual(account.threshold, 2)
@@ -80,7 +80,7 @@ final class MultisigAccountFlowTests: XCTestCase {
         // Phone and another Winnow with a separate recovery key.
         let recoveryKey = try TestKeys.keyExpression(master: TestKeys.master(entropyByte: 0xD4))
         let pair = try await model.createMultisigAccount(
-            name: "Two phones", threshold: 2, otherKeys: [otherWinnow],
+            name: "Two phones", threshold: 2, otherKeys: [otherWinnow], includeLedger: false,
             recovery: .separateKeys(threshold: 1, keys: [recoveryKey], blocks: 144))
         XCTAssertEqual(try model.multisigAccount(for: pair).recovery?.keys.count, 1)
         XCTAssertEqual(model.multisigAccounts.count, 2)
@@ -91,7 +91,7 @@ final class MultisigAccountFlowTests: XCTestCase {
         let otherPhone = try await readyMultisigModel(advanced: true, entropyByte: 0xC3)
         let recoveryKey = try TestKeys.keyExpression(master: TestKeys.master(entropyByte: 0xD4))
         let created = try await phone.createMultisigAccount(
-            name: "Two phones", threshold: 2, otherKeys: [try otherPhone.multisigKeyExpression()],
+            name: "Two phones", threshold: 2, otherKeys: [try otherPhone.multisigKeyExpression()], includeLedger: false,
             recovery: .separateKeys(threshold: 1, keys: [recoveryKey], blocks: 144))
         _ = try await otherPhone.addMultisigAccount(name: "Two phones", descriptor: created.descriptor)
         let account = try phone.multisigAccount(for: created)
@@ -149,7 +149,7 @@ final class MultisigAccountFlowTests: XCTestCase {
         let model = try await readyMultisigModel(advanced: true)
         let record = try await model.createMultisigAccount(
             name: "Two phones", threshold: 2, otherKeys: [try TestKeys.keyExpression(master: TestKeys.masters()[2])],
-            recovery: .fewerSigners(threshold: 1, blocks: 1000))
+            includeLedger: false, recovery: .fewerSigners(threshold: 1, blocks: 1000))
         let account = try model.multisigAccount(for: record)
         let height = record.createdAtHeight + 1
         let coinbase = Transaction(version: 1, inputs: [coinbaseInput()],
@@ -182,10 +182,10 @@ final class MultisigAccountFlowTests: XCTestCase {
         do {
             _ = try await model.createMultisigAccount(
                 name: "Two phones", threshold: 2, otherKeys: [try TestKeys.keyExpression(master: TestKeys.masters()[2])],
-                recovery: nil)
+                includeLedger: false, recovery: nil)
             XCTFail("built a multisig account in Simple mode")
         } catch {
-            XCTAssertEqual(error as? AppModel.MultisigActionError, .advancedModeOnly)
+            XCTAssertEqual(error as? AppModel.LedgerActionError, .advancedModeOnly)
         }
     }
 }

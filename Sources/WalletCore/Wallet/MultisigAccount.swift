@@ -41,10 +41,13 @@ public struct MultisigAccountRecord: Codable, Equatable, Identifiable, Sendable 
     public var nextReceiveIndex: UInt32 = 0
     public var nextChangeIndex: UInt32 = 0
     public var allUtxos: [WalletUTXO] = []
+    /// Present when a Ledger is one of the signers and has registered this
+    /// account; absent in records written before Ledger support.
+    public var ledger: LedgerRegistration?
 
     public init(id: String, name: String, descriptor: String, createdAtHeight: UInt32,
                 nextReceiveIndex: UInt32 = 0, nextChangeIndex: UInt32 = 0,
-                allUtxos: [WalletUTXO] = []) {
+                allUtxos: [WalletUTXO] = [], ledger: LedgerRegistration? = nil) {
         self.id = id
         self.name = name
         self.descriptor = descriptor
@@ -52,13 +55,25 @@ public struct MultisigAccountRecord: Codable, Equatable, Identifiable, Sendable 
         self.nextReceiveIndex = nextReceiveIndex
         self.nextChangeIndex = nextChangeIndex
         self.allUtxos = allUtxos
+        self.ledger = ledger
     }
 
     public var utxos: [WalletUTXO] { allUtxos.filter { !$0.isSpent } }
     public var balance: Int64 { utxos.reduce(0) { $0 + $1.amount } }
 
+    /// A stored Ledger registration must be this account's own policy and
+    /// name one of its signers; anything else is refused with the record.
+    public func checkLedgerRegistration(for account: MultisigAccount) throws {
+        guard let ledger else { return }
+        guard ledger.policyID.count == 32, ledger.hmac.count == 32,
+              LedgerMultisig.ledgerSigner(of: account, fingerprint: ledger.masterFingerprint, path: ledger.keyPath) != nil,
+              (try? LedgerWalletPolicy(name: ledger.policyName, account: account).id) == ledger.policyID else {
+            throw MultisigAccountError.invalidDescriptor("the stored Ledger registration does not belong to this account")
+        }
+    }
+
     private enum CodingKeys: String, CodingKey {
-        case id, name, descriptor, createdAtHeight, nextReceiveIndex, nextChangeIndex
+        case id, name, descriptor, createdAtHeight, nextReceiveIndex, nextChangeIndex, ledger
         case allUtxos = "utxos"
     }
 }

@@ -128,6 +128,14 @@ private func binaryCorpus(for target: FuzzTarget) -> [Data] {
     case .personPaste:
         return [Data(), Data("tr(\(generatorXOnly.hex))".utf8),
                 Data("{\"winnow\":\"person-card\",\"version\":1,\"network\":\"signet\",\"name\":\"Alice\"}".utf8)]
+    case .ledger:
+        // A two-frame reply, a preimage request for a committed hash, a proof
+        // request, and a yielded script-path signature.
+        let frames = (try? LedgerBluetoothFraming.frames(for: Data(repeating: 0x90, count: 40), frameSize: 23)) ?? []
+        let winnow = Data(hex: "f1c01ae726fd268ed10606d63225deced6528b0bd1d69417e21c792851d68447")!
+        let yielded = Data([0x01, 64]) + Data(repeating: 0x11, count: 64) + Data(repeating: 0x22, count: 64)
+        return [Data(), frames.reduce(Data(), +), Data([0x40, 0x00]) + winnow,
+                Data([0x41]) + Data(repeating: 0, count: 32) + Data([100, 5]), Data([0xA0]), yielded]
     }
 }
 

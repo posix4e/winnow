@@ -25,6 +25,10 @@ public enum FuzzTarget: String, CaseIterable, Sendable {
     case personPaste = "person-paste"
     /// BIP352 codes: bech32m up to 1023 characters, two compressed keys.
     case silentPaymentAddress = "silent-payment-address"
+    // What a Ledger sends: Bluetooth frames, client commands answered from
+    // committed data, and yielded signatures. A hostile device must not crash
+    // the app or draw an answer longer than one APDU.
+    case ledger
 }
 
 /// The harness's generator. `exercise` draws from it too, to vary how the
@@ -82,6 +86,7 @@ public func exercise(_ target: FuzzTarget, data: Data, rng: inout SplitMix64) th
     case .controlBlock: try exerciseControlBlock(data)
     case .personPaste: try exercisePersonPaste(data)
     case .silentPaymentAddress: try exerciseSilentPaymentAddress(data)
+    case .ledger: try exerciseLedger(data, rng: &rng)
     }
 }
 
@@ -227,5 +232,43 @@ private func exercisePersonPaste(_ data: Data) throws {
     if let card = try? PersonCard.decode(text) {
         try require(try PersonCard.decode(card.serialized()) == card,
                     "person card canonical round trip changed semantics")
+    }
+}
+
+/// A committed preimage, list and map for the interpreter to answer from.
+private func ledgerInterpreter() -> LedgerClientCommandInterpreter {
+    var interpreter = LedgerClientCommandInterpreter()
+    interpreter.addKnownPreimage(Data("winnow".utf8))
+    interpreter.addKnownPreimage(Data(repeating: 0x5A, count: 600))
+    interpreter.addKnownList((0 ..< 100).map { Data([UInt8($0)]) })
+    interpreter.addKnownMapping([PSBT.KeyValue(type: 0x01, value: Data(repeating: 7, count: 300))])
+    return interpreter
+}
+
+private func exerciseLedger(_ data: Data, rng: inout SplitMix64) throws {
+    // Notifications cut wherever the generator says.
+    var reassembler = LedgerBluetoothFraming.Reassembler()
+    var offset = 0
+    while offset < data.count {
+        let length = min(data.count - offset, 1 + rng.index(40))
+        if let reply = try? reassembler.receive(data.subdata(in: offset ..< offset + length)) {
+            try require(reply.count <= Int(UInt16.max), "a reassembled reply longer than its length field")
+        }
+        offset += length
+    }
+    // The input as one client command, then as the follow-up requests the
+    // device would send to drain a queue.
+    var interpreter = ledgerInterpreter()
+    var request = data
+    for _ in 0 ..< 12 {
+        guard let answer = try? interpreter.execute(request) else { break }
+        try require(answer.count <= LedgerClientCommandInterpreter.maximumResponse,
+                    "a client-command answer longer than one APDU")
+        request = Data([0xA0])
+    }
+    if let signature = try? LedgerBitcoinClient.signature(fromYield: data, inputCount: 4) {
+        try require(signature.inputIndex < 4, "a yielded signature for an input that does not exist")
+        try require([32, 33].contains(signature.publicKey.count) || signature.leafHash?.count == 32,
+                    "a yielded signature with a malformed key")
     }
 }

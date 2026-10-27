@@ -221,10 +221,25 @@ jobs:
           name: release-supply-chain-${{ github.run_id }}
           path: supply-chain
 
+      - name: Is the tagged commit on main?
+        id: placement
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # A tag on a branch is an internal TestFlight build for the team,
+          # not a release: it is published as a pre-release so it never
+          # becomes "latest". A tag on main is a full release.
+          status=$(gh api "repos/$GITHUB_REPOSITORY/compare/$GITHUB_SHA...main" --jq .status)
+          on_main=false
+          if [ "$status" = "identical" ] || [ "$status" = "ahead" ]; then on_main=true; fi
+          echo "on_main=$on_main" >> "$GITHUB_OUTPUT"
+          echo "$GITHUB_SHA against main: $status; on_main=$on_main"
+
       - name: GitHub Release
         uses: softprops/action-gh-release@efb35369e0ad2afab669f228072c1b0d510eae64 # v3.0.3
         with:
           generate_release_notes: true
+          prerelease: ${{ steps.placement.outputs.on_main != 'true' }}
           files: |
             supply-chain/winnow.spdx.json
             supply-chain/winnow-build-provenance.json
