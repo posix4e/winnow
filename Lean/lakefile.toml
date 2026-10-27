@@ -1,6 +1,6 @@
 # Winnow in Lean: the port of Sources/WalletCore and Sources/WinnowApp (see ../PORT.md).
 name = "winnow"
-defaultTargets = ["Secp", "Winnow", "oracle-crypto", "oracle-keys", "oracle-tx", "oracle-net", "oracle-wallet", "io-test"]
+defaultTargets = ["Secp", "Winnow", "oracle-crypto", "oracle-keys", "oracle-tx", "oracle-net", "oracle-wallet", "io-test", "ledger-test"]
 
 [[lean_lib]]
 name = "Secp"
@@ -37,3 +37,8 @@ root = "OracleWallet"
 [[lean_exe]]
 name = "io-test"
 root = "IOTest"
+
+# The Ledger signer's tests: upstream's LedgerTests, Ledger's vectors and recorded Swift sessions (Winnow/Ledger).
+[[lean_exe]]
+name = "ledger-test"
+root = "LedgerTest"

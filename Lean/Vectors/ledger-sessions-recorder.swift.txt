@@ -1,0 +1,120 @@
+import Foundation
+import Testing
+import TestSupport
+@testable import WalletCore
+
+/// Records whole Ledger sessions (client APDUs and simulator replies) for the Lean port's lockstep replay.
+actor RecordingTransport: LedgerTransport {
+    let inner: any LedgerTransport
+    var log: [[String]] = []
+    init(inner: any LedgerTransport) { self.inner = inner }
+    func exchange(_ apdu: Data) async throws -> Data {
+        let reply = try await inner.exchange(apdu)
+        log.append([apdu.hex, reply.hex])
+        return reply
+    }
+    func take() -> [[String]] { defer { log = [] }; return log }
+}
+
+@Suite("Ledger recording")
+struct LedgerRecordTests {
+    func steps(_ r: RecordingTransport) async -> [[String]] { await r.take() }
+
+    @Test func record() async throws {
+        var out: [String: Any] = [:]
+        let masters = try TestKeys.masters()
+
+        // 2-of-2
+        do {
+            let simulator = LedgerSimulator(master: masters[1])
+            let rec = RecordingTransport(inner: simulator)
+            let client = LedgerBitcoinClient(transport: rec)
+            var c: [String: Any] = [:]
+            let (ledgerKey, fingerprint) = try await LedgerMultisig.signerExpression(client: client, network: .signet)
+            c["signerExpression"] = ["expression": ledgerKey, "fingerprint": fingerprint, "exchanges": await steps(rec)]
+            let phoneKey = try TestKeys.keyExpression(master: masters[0])
+            let descriptor = try MultisigAccount.descriptor(threshold: 2, signers: [phoneKey, ledgerKey], network: .signet)
+            let account = try MultisigAccount(descriptor: descriptor, network: .signet)
+            let policy = try LedgerWalletPolicy(name: "Winnow 2-of-2", account: account)
+            c["descriptor"] = account.descriptor.serialized()
+            c["template"] = policy.template
+            c["keys"] = policy.keys
+            c["policyId"] = policy.id.hex
+            c["firstAddress"] = try account.address(index: 0, choice: 0)
+            let registration = try await LedgerMultisig.register(account, name: "Winnow 2-of-2", fingerprint: fingerprint, client: client)
+            c["register"] = ["hmac": registration.hmac.hex, "exchanges": await steps(rec)]
+            let shown = try await LedgerMultisig.displayAddress(account, registration: registration, index: 4, client: client)
+            c["display"] = ["index": 4, "choice": 0, "address": shown, "exchanges": await steps(rec)]
+            let owned = [MultisigAccount.OutputCoordinate(choice: 1, index: 0)]
+            let utxos = try (0 ..< 2).map { index in
+                try WalletUTXO(txid: Data(repeating: 0x40 + UInt8(index), count: 32), vout: 0, amount: 60_000,
+                               scriptPubKey: account.scriptPubKey(index: UInt32(index)), chain: .receive,
+                               index: UInt32(index), height: 100)
+            }
+            let payment = Payment(amount: 90_000, scriptPubKey: Data([0x51, 0x20] + repeatElement(0x77, count: 32)))
+            var psbt = try account.createSpend(utxos: utxos, payments: [payment], changeIndex: 0,
+                                               feeRateSatPerVByte: 2, chainTip: 200, randomness: { 0.5 })
+            c["unsignedPSBT"] = psbt.serialized.hex
+            // The Ledger first (deterministic: zero aux rand), then the phone.
+            let first = psbt
+            let added = try await LedgerMultisig.sign(&psbt, account: account, registration: registration, client: client)
+            c["signFirst"] = ["psbt": first.serialized.hex, "signed": psbt.serialized.hex, "added": added,
+                              "exchanges": await steps(rec)]
+            try account.sign(&psbt, signingKey: masters[0], knownUTXOs: utxos, ownedOutputCoordinates: owned, chainTip: 200)
+            _ = try account.finalizeSpend(&psbt, knownUTXOs: utxos, ownedOutputCoordinates: owned, chainTip: 200)
+            // Rejected on the device.
+            await simulator.setDecision(.reject)
+            var again = first
+            do {
+                _ = try await LedgerMultisig.sign(&again, account: account, registration: registration, client: client)
+            } catch {
+                c["reject"] = ["error": "\(error)", "exchanges": await steps(rec)]
+            }
+            await simulator.setDecision(.approve)
+            // A wrong-network request.
+            do { _ = try await LedgerMultisig.signerExpression(client: client, network: .mainnet) } catch {
+                c["mainnet"] = ["error": "\(error)", "exchanges": await steps(rec)]
+            }
+            out["twoOfTwo"] = c
+        }
+
+        // 2-of-3 with recovery (client side only in Lean until the descriptor grows and_v/older).
+        do {
+            let simulator = LedgerSimulator(master: masters[1])
+            let rec = RecordingTransport(inner: simulator)
+            let client = LedgerBitcoinClient(transport: rec)
+            var c: [String: Any] = [:]
+            let (ledgerKey, fingerprint) = try await LedgerMultisig.signerExpression(client: client, network: .signet)
+            c["signerExpression"] = ["expression": ledgerKey, "fingerprint": fingerprint, "exchanges": await steps(rec)]
+            let descriptor = try MultisigAccount.descriptor(
+                threshold: 2,
+                signers: [try TestKeys.keyExpression(master: masters[0]), try TestKeys.keyExpression(master: masters[2]), ledgerKey],
+                recovery: .fewerSigners(threshold: 1, blocks: 10), network: .signet)
+            let account = try MultisigAccount(descriptor: descriptor, network: .signet)
+            let policy = try LedgerWalletPolicy(name: "Family 2-of-3", account: account)
+            c["descriptor"] = account.descriptor.serialized()
+            c["template"] = policy.template
+            c["keys"] = policy.keys
+            c["policyId"] = policy.id.hex
+            c["firstAddress"] = try account.address(index: 0, choice: 0)
+            let registration = try await LedgerMultisig.register(account, name: "Family 2-of-3", fingerprint: fingerprint, client: client)
+            c["register"] = ["hmac": registration.hmac.hex, "exchanges": await steps(rec)]
+            let shown = try await LedgerMultisig.displayAddress(account, registration: registration, choice: 1, index: 3, client: client)
+            c["display"] = ["index": 3, "choice": 1, "address": shown, "exchanges": await steps(rec)]
+            let coin = try WalletUTXO(txid: Data(repeating: 0x61, count: 32), vout: 0, amount: 90_000,
+                                      scriptPubKey: account.scriptPubKey(index: 0), chain: .receive, index: 0, height: 100)
+            let payment = Payment(amount: 50_000, scriptPubKey: Data([0x51, 0x20] + repeatElement(0x77, count: 32)))
+            var later = try account.createSpend(utxos: [coin], payments: [payment], changeIndex: 0, feeRateSatPerVByte: 2,
+                                                chainTip: 109, path: .recovery, randomness: { 0.5 })
+            let before = later
+            let added = try await LedgerMultisig.sign(&later, account: account, registration: registration, client: client)
+            c["signFirst"] = ["psbt": before.serialized.hex, "signed": later.serialized.hex, "added": added,
+                              "exchanges": await steps(rec)]
+            out["twoOfThreeRecovery"] = c
+        }
+
+        let data = try JSONSerialization.data(withJSONObject: out, options: [.sortedKeys, .prettyPrinted])
+        let path = ProcessInfo.processInfo.environment["LEDGER_RECORD_OUT"] ?? "/tmp/ledger-sessions.json"
+        try data.write(to: URL(fileURLWithPath: path))
+    }
+}
