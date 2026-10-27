@@ -56,6 +56,43 @@ This file is the plan and the status board; it is updated as each module lands.
   ephemeral, same-host redirects only, never https→http); `RoutedHTTPClient`'s policy is ported to Lean.
   Bitcoin P2P is plain TCP and stays Lean (libuv).
 
+## Tracking upstream 0.8.13 and the Ledger signer
+
+On 2026-10-27 the user asked for the port to follow the newer upstream: winnowwallet/winnow#255
+(`ledger-on-main`, 1cf93fb, "Ledger Nano X as a signer of Taproot multisig accounts"), which is on
+upstream `main` at 0.8.13 (#252: raw Taproot multisig accounts in Advanced mode replace vaults). That is 43
+upstream commits after this port's base: upstream's f4bab06 has the same tree as 9cca3fc. The Swift
+changes are Sources/WalletCore 60 files (+6,593/−4,217) and the app 35 files (+4,466/−3,545). No new
+third-party dependency.
+
+- Branch `lean-port-ledger`. Its merge commit 5acf15d has 1cf93fb as a parent and applies exactly
+  `f4bab06..1cf93fb` minus the Swift sources, tests, tools and workflows, so a PR based on `ledger-on-main`
+  shows only the Lean work.
+- Oracle: the Swift at 1cf93fb, checked out at `~/src/winnow-ledger` (kept pristine). The lockstep harness in
+  `~/src/winnow-lean-swift-archive/LeanOracle` builds its oracle products against that checkout's `Sources/`.
+
+| Phase | Upstream Swift | Status | Verified by |
+|---|---|---|---|
+| A. Removals | Vault, VaultRecord, VaultSetup, MuSig/MuSig2 descriptors, CensusSignature, CensusCatalogStore, FallbackPeersGenerated; the app's vault, shared-savings and MuSig2 screens and stores; their parts of People, PSBTRoles, Descriptor, ImportBundle (a bundle with a MuSig2 account is refused) | **done** (91c6e91, dc439e3): a bundle with accounts is refused (`unsupportedWalletData`); the census is the list shipped with the build (`CensusCatalog.bundled`), but importing it into the iOS build (scripts/import-census plus a resource line in project.yml) is still to do | every Lean target builds; records-test 99/99, backend-test 76/76, io-test 71/71; the simulator app builds and launches |
+| B. WalletCore: multisig | Descriptor and Script/Multisig changes (`tr(NUMS, sortedmulti_a(k, …))` with recovery paths), MultisigAccount, PSBTRoles, HistoryOutputs, and the Wallet, KeyStore/BIP32 and FeePolicy changes they need | not started | lockstep per area against 1cf93fb; a Lean `multisig-differential` against Bitcoin Core (upstream's scripts/check-multisig-core) |
+| C. Ledger, pure | LedgerAPDU, LedgerMerkle, LedgerWalletPolicy, LedgerClientCommands, LedgerBitcoinClient, LedgerMultisig | not started | lockstep with recorded APDU exchanges |
+| D. App | AppModel's multisig and Ledger parts, MultisigStore, MultisigViews, MultisigBuildView, LedgerViews, LedgerBluetooth's protocol | not started | records/app tests mirroring upstream's MultisigStoreTests, MultisigAccountFlowTests, LedgerPairingTests; simulator in test mode |
+| E. Shell capability | Bluetooth (GATT) for the Ledger: a generic capability row in ElmLean's shell (`framework/lean/ElmShell/Capabilities.lean`, Objective-C), not Winnow code | not started | E2E fake: a Ledger transport answering recorded APDUs |
+
+Scope, as the user set it on 2026-10-27: the Ledger signer and the Taproot multisig ("ledger, and the fancy
+multi, no need for musig2 right now"). The other upstream changes in this range are deferred, not ported
+yet: silent-payment sending (BIP352), automatic iCloud backup (CloudKit), background sync, Tor/I2P peer
+gateways over Tailscale, RangeScan, the peer-pool and broadcaster changes, the census shipped with the build,
+and Onboarding/Home/Settings changes outside multisig.
+
+The layer table below was written for the 0.7.3 port. Phase A removed its MuSig2 (layer 4), musig()
+descriptors and MuSig2 rounds (layer 7), vaults and vault records (layer 8), fallback peers and the signed,
+downloaded census (layer 9), and VaultStore, shared savings and approvals (layer 10). The test counts there
+are now records-test 99, backend-test 76 and io-test 71 (before: 192, 84 and 73).
+
+The simulator has no Bluetooth, so phases D and E are verified with a test-mode fake and the pure oracles.
+A device run with a Ledger is not claimed until one happens.
+
 ## Layers and status
 
 Each module is done when its lockstep run against the Swift original passes and its vectors pass.
