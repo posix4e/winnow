@@ -71,8 +71,6 @@ structure Randomness where
   changePosition : Nat → IO Nat
   /-- 32 bytes of BIP340 auxiliary randomness per signature. -/
   auxRand : IO ByteArray
-  /-- 32 bytes of MuSig2 nonce randomness. -/
-  nonceRand : IO ByteArray
 
 def randomUInt64 : IO UInt64 := do
   let b ← IO.getRandomBytes 8
@@ -83,7 +81,6 @@ def Randomness.system : Randomness where
   draw := do return ((← randomUInt64) >>> 11).toFloat / (2 ^ 53 : Float)
   changePosition n := do return ((← randomUInt64) % (n + 1).toUInt64).toNat
   auxRand := IO.getRandomBytes 32
-  nonceRand := IO.getRandomBytes 32
 
 /-! ## An in-memory key store over a reference -/
 
@@ -159,13 +156,13 @@ def walletDerivation : Array Descriptor.Element := #[.multipath #[0, 1], .wildca
 
 /-- The canonical multipath `tr()` descriptor for an account key. -/
 def makeDescriptor (accountKey : HDKey) (origin : Descriptor.KeyOrigin) (network : BitcoinNetwork) : Descriptor :=
-  { expression := .tr (.single { origin := some origin, base := .extended accountKey.neutered (hdNetwork network),
+  { expression := .tr ({ origin := some origin, base := .extended accountKey.neutered (hdNetwork network),
                                  derivation := { elements := walletDerivation } }) none }
 
 /-- Validates the wallet descriptor shape and returns its key origin. -/
 def origin (d : Descriptor) : Except WalletError Descriptor.KeyOrigin := do
   let bad : WalletError := .invalidDescriptor "expected tr([fp/86'/c'/a']xpub/<0;1>/*)"
-  let .tr (.single key) none := d.expression | throw bad
+  let .tr key none := d.expression | throw bad
   let some o := key.origin | throw bad
   unless key.derivation.elements == walletDerivation do throw bad
   if let .extended account _ := key.base then
@@ -245,7 +242,7 @@ def «open» (storagePath : System.FilePath) (keyStore : KeyStore IO) (random : 
     | throw (.wallet (.invalidBundle s!"unknown network {ImportBundle.excerpt state.network}"))
   let descriptor ← WM.liftE (·.name) (Descriptor.parse state.descriptor)
   discard <| WM.wallet (origin descriptor)
-  let .tr (.single key) none := descriptor.expression | throw (.wallet (.invalidDescriptor state.descriptor))
+  let .tr key none := descriptor.expression | throw (.wallet (.invalidDescriptor state.descriptor))
   let .extended accountKey _ := key.base | throw (.wallet (.invalidDescriptor state.descriptor))
   make network descriptor accountKey.neutered keyStore (some storagePath) random state
 
@@ -864,7 +861,7 @@ def importedKeyMaterial (bundle : ImportBundle) (network : BitcoinNetwork) (keyS
   let some text := bundle.descriptor | throw (.wallet (.invalidBundle "no usable descriptor"))
   let parsed ← WM.liftE (·.name) (Descriptor.parse text)
   discard <| WM.wallet (origin parsed)
-  let .tr (.single key) none := parsed.expression | throw (.wallet (.invalidDescriptor text))
+  let .tr key none := parsed.expression | throw (.wallet (.invalidDescriptor text))
   let .extended account _ := key.base | throw (.wallet (.invalidDescriptor text))
   return (parsed, account.neutered)
 

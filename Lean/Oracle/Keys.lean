@@ -71,36 +71,11 @@ def controlBlockJ (c : Taproot.ControlBlock) : Json := Json.mkObj [
   ("leafVersion", toJson c.leafVersion.toNat), ("parity", toJson c.outputKeyParity),
   ("internalKey", hexJ c.internalKey), ("path", listJ c.path), ("serialized", hexJ c.serialized)]
 
-def session (j : Json) : Except String MuSig.Session := do
-  let s ← j.getObjVal? "session"
-  return { aggregateNonce := ← bytes s "aggnonce", publicKeys := ← bytesList s "pubkeys",
-           tweaks := ← bytesList s "tweaks", isXOnlyTweaks := ← boolList s "isXOnly", message := ← bytes s "msg" }
-
-def contextJ (c : MuSig.KeyAggContext) : Json := Json.mkObj [
-  ("aggregateKey", hexJ c.aggregateKey), ("gacc", hexJ c.parityAccumulator), ("tacc", hexJ c.tweakAccumulator),
-  ("xonly", hexJ c.xonlyAggregateKey)]
-
 def pointJ (data : ByteArray) (p : Point) : Json := Json.mkObj [
   ("data", hexJ data), ("uncompressed", hexJ (serializeUncompressed p)),
   ("xonly", hexJ (xonlyBytes p)), ("parity", toJson (hasOddY p))]
 
-def censusJ (c : CensusSignature) : Json := Json.mkObj [
-  ("algorithm", Json.str c.algorithm), ("publicKey", Json.str c.publicKey), ("signature", Json.str c.signature)]
-
-def census (j : Json) : Except String CensusSignature := do
-  return { algorithm := ← str j "algorithm", publicKey := ← str j "publicKey", signature := ← str j "signature" }
-
-/-- `URL.appendingPathExtension("sig")` for absolute URLs: `.sig` ends the path, before a query or
-fragment and before a trailing slash. -/
-def appendSig (url : String) : String :=
-  let cut := (url.toList.findIdx? (fun c => c == '?' || c == '#')).getD url.length
-  let base := String.ofList (url.toList.take cut)
-  let rest := String.ofList (url.toList.drop cut)
-  if base.endsWith "/" then String.ofList (base.toList.dropLast) ++ ".sig/" ++ rest
-  else base ++ ".sig" ++ rest
-
 def p256k {α} (f : α → Json) (r : PK α) : Json := reply P256KError.name f r
-def m2 {α} (f : α → Json) (r : MuSig.M2 α) : Json := reply MuSig2Error.name f r
 
 def keystoreRun (steps : Array Json) : Except String Json := do
   let mut st : InMemorySecrets := {}
@@ -229,70 +204,7 @@ def keysOps : List (String × Handler) := [
       | .ok c => pure c
       | .error _ => throw "controlBlock"
     return ok (toJson (Taproot.verify cb (← bytes j "script") (← bytes j "merkleRoot")))),
-  ("taproot.unspendableInternalKey", fun _ => return ok (hexJ Taproot.unspendableInternalKey)),
-  -- MuSig key aggregation
-  ("musig.keySort", fun j => do return ok (listJ (MuSig.keySort (← bytesList j "keys")))),
-  ("musig.aggregate", fun j => do return reply MuSigError.name hexJ (MuSig.aggregate (← bytesList j "keys"))),
-  ("musig.aggregateXonly", fun j => do return reply MuSigError.name hexJ (MuSig.aggregateXonly (← bytesList j "keys"))),
-  ("musig.syntheticExtendedKey", fun j => do
-    return reply MuSigError.name hdKeyJ (MuSig.syntheticExtendedKey (← bytes j "key"))),
-  -- MuSig2
-  ("musig.keyAggContext", fun j => do
-    let ks ← bytesList j "keys"; let ts ← bytesList j "tweaks"; let xs ← boolList j "isXOnly"
-    return m2 contextJ (do MuSig.applyTweaks (← MuSig.keyAggContext ks) ts xs)),
-  ("musig.aggregateTweaked", fun j => do
-    return m2 hexJ (MuSig.aggregateTweaked (← bytesList j "keys") (← bytesList j "tweaks") (← boolList j "isXOnly"))),
-  ("musig.aggregateXonlyTweaked", fun j => do
-    return m2 hexJ (MuSig.aggregateXonlyTweaked (← bytesList j "keys") (← bytesList j "tweaks") (← boolList j "isXOnly"))),
-  ("musig.nonceGen", fun j => do
-    return m2 (fun (s, p) => Json.mkObj [("secnonce", hexJ s), ("pubnonce", hexJ p)])
-      (MuSig.nonceGenerate (← optBytes j "sk") (← bytes j "pk") (← optBytes j "aggpk") (← optBytes j "msg")
-        (← optBytes j "extra") (← bytes j "rand"))),
-  ("musig.nonceAgg", fun j => do return m2 hexJ (MuSig.nonceAggregate (← bytesList j "pnonces"))),
-  ("musig.sessionValues", fun j => do
-    return m2 (fun (c, b, r, e) => Json.mkObj [("context", contextJ c), ("b", hexJ b), ("noncePoint", hexJ r),
-      ("challenge", hexJ e)]) (← session j).values),
-  ("musig.coefficient", fun j => do return m2 hexJ ((← session j).coefficient (← bytes j "pk"))),
-  ("musig.partialSign", fun j => do
-    let (r, zeroed) := MuSig.partialSign (← bytes j "secnonce") (← bytes j "sk") (← session j)
-    return m2 (fun s => Json.mkObj [("psig", hexJ s), ("secnonce", hexJ zeroed)]) r),
-  ("musig.partialVerify", fun j => do
-    return m2 toJson (MuSig.partialVerify (← bytes j "psig") (← bytes j "pnonce") (← bytes j "pk") (← session j))),
-  ("musig.partialSigAgg", fun j => do return m2 hexJ (MuSig.partialSigAggregate (← bytesList j "psigs") (← session j))),
-  ("musig.bip328Tweak", fun j => do
-    return ok (hexJ (MuSig.bip328Tweak (← bytes j "chainCode") (← bytes j "key") (← u32 j "index")))),
-  ("musig.reduce", fun j => do
-    let a ← bytes j "a"
-    if a.size != 32 then throw "a: 32 bytes"
-    return ok (hexJ (MuSig.reduceModGroupOrder a))),
-  ("musig.scalarAdd", fun j => do return m2 hexJ (MuSig.scalarAdd (← bytes j "a") (← bytes j "b"))),
-  ("musig.scalarMultiply", fun j => do return m2 hexJ (MuSig.scalarMultiply (← bytes j "a") (← bytes j "b"))),
-  ("musig.scalarNegate", fun j => do return m2 hexJ (MuSig.scalarNegate (← bytes j "a"))),
-  -- Ed25519 and the census signature
-  ("ed25519.publicKey", fun j => do return reply Ed25519.Error.name hexJ (Ed25519.publicKey (← bytes j "seed"))),
-  ("ed25519.verify", fun j => do
-    let pk ← bytes j "publicKey"
-    if pk.size != 32 then return err "incorrectKeySize"
-    return ok (toJson (Ed25519.verify pk (← bytes j "signature") (← bytes j "message")))),
-  ("ed25519.sign", fun j => do return reply Ed25519.Error.name hexJ (Ed25519.sign (← bytes j "seed") (← bytes j "message"))),
-  ("census.decode", fun j => do return reply CensusSignature.Invalid.name censusJ (CensusSignature.decode (← bytes j "data"))),
-  ("census.encoded", fun j => do return ok (Json.str (String.fromUTF8! (← census j).encoded))),
-  ("census.verify", fun j => do
-    return reply CensusSignature.Invalid.name (fun _ => Json.bool true)
-      ((← census j).verify (← bytes j "payload") (← bytesList j "trusted"))),
-  ("census.publisherVerify", fun j => do
-    return reply CensusSignature.Invalid.name (fun _ => Json.bool true)
-      (CensusPublisher.verify (← bytes j "payload") (← optBytes j "signature") (← bytesList j "trusted"))),
-  ("census.sign", fun j => do
-    return reply Ed25519.Error.name censusJ (CensusSignature.sign (← bytes j "payload") (← bytes j "seed"))),
-  ("census.errorDescription", fun j => do
-    let e : CensusSignature.Invalid ← match ← str j "case" with
-      | "malformed" => pure .malformed | "unknownKey" => pure .unknownKey
-      | "signature" => pure .signature | "missing" => pure .missing
-      | c => throw s!"case {c}"
-    return ok (Json.str e.errorDescription)),
-  ("census.trustedKeys", fun _ => return ok (listJ CensusPublisher.trustedKeys)),
-  ("census.endpoint", fun j => do return ok (Json.str (appendSig (← str j "url"))))
+  ("taproot.unspendableInternalKey", fun _ => return ok (hexJ Taproot.unspendableInternalKey))
 ]
 
 end Oracle

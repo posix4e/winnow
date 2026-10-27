@@ -112,7 +112,7 @@ partial def treeJ : Keys.Taproot.Tree → Json
 def descJ (j : Json) : Except String (Except String Descriptor) := do
   return (Descriptor.parse (← str j "s")).mapError (·.name)
 
-def topKey (d : Descriptor) : Descriptor.KeyExpression :=
+def topKey (d : Descriptor) : Descriptor.SingleKey :=
   match d.expression with | .tr k _ => k | .rawtr k => k
 
 /-- Run a refusable computation: its error name becomes the reply. -/
@@ -143,30 +143,9 @@ def editPairs (pairs : Array PSBT.KeyValue) (e : Json) : Except String (Array PS
     | _ => pure ps
   return PSBT.sortPairs ps
 
-def sessionJson (s : Keys.MuSig.Session) : Json :=
-  Json.mkObj [("aggnonce", hexJ s.aggregateNonce), ("pubkeys", Json.arr (s.publicKeys.toArray.map hexJ)),
-    ("tweaks", Json.arr (s.tweaks.toArray.map hexJ)), ("isXOnly", Json.arr (s.isXOnlyTweaks.toArray.map Json.bool)),
-    ("msg", hexJ s.message)]
-
-def keyIdJ (st : Json) : Except String PSBT.MuSig2KeyID := do
-  let leafHash ← match field st "leafHash" with
-    | .str _ => some <$> hxJ (field st "leafHash")
-    | _ => pure none
-  return { participant := ← hxJ (field st "participant"), aggregate := ← hxJ (field st "aggregate"), leafHash }
-
-def boolsJ (v : Json) : Array Bool := match v with
-  | .arr xs => xs.filterMap fun x => match x with | .bool b => some b | _ => none
-  | _ => #[]
-
 structure FlowState where
   psbt : PSBT
   saved : Array PSBT := #[]
-  sessions : List (String × Keys.MuSig.Session) := []
-  secnonces : List (String × ByteArray) := []
-  pubnonces : List (String × ByteArray) := []
-
-def lookupL {α} (xs : List (String × α)) (k : String) : Option α := (xs.find? (·.1 == k)).map (·.2)
-def insertL {α} (xs : List (String × α)) (k : String) (v : α) : List (String × α) := (k, v) :: xs.filter (·.1 != k)
 
 /-- One role; `.error (.inl badRequest)` for a malformed step, `.error (.inr name)` for a refusal (with the
 extra fields of the reply so far). -/
@@ -193,51 +172,6 @@ def flowStep (st : Json) (s : FlowState) : Except String (Except (String × List
     | .ok q => done q | .error e => pure (.error e)
   | "signScriptPath" =>
     match ← refuse (p.signScriptPath index (← listJ hxJ (field st "keys")) (← hxJ (field st "aux"))) with
-    | .ok q => done q | .error e => pure (.error e)
-  | "attachMuSig2" =>
-    match ← refuse (p.attachMuSig2 index (← hxJ (field st "internalKey")) (← hxJ (field st "aggregate")) (← listJ hxJ (field st "participants"))) with
-    | .ok q => done q | .error e => pure (.error e)
-  | "nonceGen" =>
-    let slot := (str st "slot").toOption.getD ""
-    let sk ← match field st "sk" with | .str _ => some <$> hxJ (field st "sk") | _ => pure none
-    match Keys.MuSig.nonceGenerate sk (← hxJ (field st "pk")) none none none (← hxJ (field st "rand")) with
-    | .error e => pure (.error (e.name, []))
-    | .ok (sec, pub) =>
-      pure (.ok ({ s with secnonces := insertL s.secnonces slot sec, pubnonces := insertL s.pubnonces slot pub },
-        [("pubnonce", hexJ pub)]))
-  | "attachMuSig2PubNonce" =>
-    let nonce ← match str st "slot" with
-      | .ok slot => pure ((lookupL s.pubnonces slot).getD .empty)
-      | .error _ => hxJ (field st "nonce")
-    match ← refuse (p.attachMuSig2PubNonce index (← keyIdJ st) nonce) with
-    | .ok q => done q | .error e => pure (.error e)
-  | "session" =>
-    let message? : PSBT.RM ByteArray ← if (str st "message").toOption == some "sighash" then
-        pure do
-          let raw := (if 0 ≤ index && index < p.inputs.size then p.inputs[index.toNat]!.sighashType else none).getD 0
-          let tx ← PSBT.liftP p.unsignedTransaction
-          let spent ← PSBT.liftP p.spentOutputs
-          (SighashBIP341.sighash tx index spent ⟨raw.toUInt8⟩).mapError (PSBTRoleError.sign ∘ .sighash)
-      else pure (pure (← hxJ (field st "message")))
-    let r : PSBT.RM Keys.MuSig.Session := do
-      p.muSig2Session index (← hxJ' (field st "aggregateKey")) (← listJ' (field st "tweaks")) (boolsJ (field st "isXOnly")) (← message?)
-    match r with
-    | .error e => pure (.error (e.name, []))
-    | .ok sess =>
-      pure (.ok ({ s with sessions := insertL s.sessions ((str st "name").toOption.getD "") sess }, [("session", sessionJson sess)]))
-  | "signMuSig2" =>
-    let slot := (str st "slot").toOption.getD ""
-    let sec := (lookupL s.secnonces slot).getD .empty
-    let some sess := lookupL s.sessions ((str st "session").toOption.getD "") | throw "session"
-    let (r, sec') := p.signMuSig2 index (← keyIdJ st) sec (← hxJ (field st "sk")) sess
-    let s := { s with secnonces := insertL s.secnonces slot sec' }
-    let extra := [("secnonce", hexJ sec')]
-    match r with
-    | .ok q => pure (.ok ({ s with psbt := q }, extra))
-    | .error e => pure (.error (e.name, extra))
-  | "aggregateMuSig2" =>
-    let some sess := lookupL s.sessions ((str st "session").toOption.getD "") | throw "session"
-    match ← refuse (p.aggregateMuSig2 index sess) with
     | .ok q => done q | .error e => pure (.error e)
   | "save" => pure (.ok ({ s with saved := s.saved.push p }, []))
   | "restore" => done (s.saved[(st.getObjValAs? Nat "n").toOption.getD 0]!)
@@ -272,9 +206,6 @@ def flowStep (st : Json) (s : FlowState) : Except String (Except (String × List
     done { p with outputs := p.outputs.set! k ⟨ps⟩ }
   | "editGlobal" => done { p with globals := ← editPairs p.globals st }
   | _ => throw s!"role {role}"
-where
-  hxJ' (v : Json) : PSBT.RM ByteArray := match hxJ v with | .ok b => pure b | .error _ => pure .empty
-  listJ' (v : Json) : PSBT.RM (Array ByteArray) := match listJ hxJ v with | .ok b => pure b | .error _ => pure #[]
 
 def runFlow (j : Json) : Except String Json := do
   let start : Except String (Except String PSBT) := do

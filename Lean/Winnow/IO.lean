@@ -20,7 +20,7 @@ import Winnow.IO.Broadcast
 | `IO/Http.lean` | `Transport/RoutedHTTPClient.swift`: policy in Lean, the fetch injected (`HttpFetch`; `curlFetch` for tests) |
 | `IO/Diversity.lean` | `Peers/PeerDiversity.swift`, `SeedAddressFilter` (BSD `inet_pton` ported), `PersistedPeers` (peers.json) |
 | `IO/Seeds.lean` | `Peers/SeedResolver.swift` (DoH through `RoutedHTTPClient`, `getaddrinfo` via `Std.Async.DNS`) |
-| `IO/Census.lean` | `Peers/CensusCatalog.swift`, `Peers/CensusCatalogStore.swift` (signatures: the Keys area's `Keys/Census.lean`) |
+| `IO/Census.lean` | `Peers/CensusCatalog.swift` (the list shipped with the build: `CensusCatalog.bundled`) |
 | `IO/Headers.lean` | `Headers/HeaderChain.swift`: file read/write and `sync(using:)` (the chain is Net's pure `HeaderChain`) |
 | `IO/Pool.lean` | `Peers/PeerPool.swift` |
 | `IO/Filters.lean` | `Filters/FilterSync.swift`: `sync`, `transaction(_:at:)`, filters.json (decisions: Net's `FilterSync`) |

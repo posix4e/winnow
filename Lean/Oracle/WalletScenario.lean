@@ -36,7 +36,6 @@ def Ctx.random (c : Ctx) : Randomness where
   auxRand := do
     let n ← c.aux.modifyGet fun n => (n, n + 1)
     pure (ByteArray.mk (Array.replicate 32 (n % 256).toUInt8))
-  nonceRand := pure (ByteArray.mk (Array.replicate 32 7))
 
 def Ctx.keyStore (c : Ctx) : Keys.KeyStore IO := inMemoryKeyStore c.secrets
 

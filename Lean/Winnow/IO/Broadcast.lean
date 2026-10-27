@@ -1,5 +1,5 @@
 import Winnow.IO.Pool
-import Winnow.Keys.Census
+import Winnow.Keys.Unicode
 import Winnow.Wallet.SwiftDouble
 
 /-! # P2P transaction relay (`Network/Broadcast/TxBroadcaster.swift`)

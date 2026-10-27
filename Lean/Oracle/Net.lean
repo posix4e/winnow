@@ -78,7 +78,6 @@ def paramsJ (p : NetworkParams) : Json :=
     ("powLimit", hexJ p.powLimit), ("powTargetTimespan", toJson p.powTargetTimespan.toNat),
     ("powTargetSpacing", toJson p.powTargetSpacing.toNat), ("interval", toJson p.difficultyAdjustmentInterval.toNat),
     ("noRetargeting", toJson p.noRetargeting), ("dnsSeeds", toJson p.dnsSeeds),
-    ("fallbackPeers", toJson (p.fallbackPeers.map (·.description))),
     ("checkpoint", match p.checkpoint with | some c => checkpointJ c | none => Json.null),
     ("isCustomSignet", toJson p.isCustomSignet), ("allowsPrivateSeedAddresses", toJson p.allowsPrivateSeedAddresses),
     ("genesisHeader", hexJ g.serialized), ("genesisHeaderHash", hexJ g.hash)]

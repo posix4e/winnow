@@ -7,11 +7,12 @@ import Winnow.Tx.Base64
 /-! # PSBT: the BIP174 / BIP370 document
 
 Port of `Sources/WalletCore/PSBT/PSBT.swift`: PSBTv2 in memory with BIP174 v0 import/export, generic
-key-value maps kept in canonical key order, the typed field accessors (BIP370/371/373), and every
-validation the parser applies.
+key-value maps kept in canonical key order, the typed field accessors (BIP370/371) and every validation
+the parser applies. MuSig2's BIP373 fields are carried as unknown pairs, never interpreted (upstream
+removed MuSig2).
 
 Also `unsignedTransaction` from `PSBTRoles.swift`, which `base64V0` needs; the rest of PSBTRoles (signer,
-MuSig2, finalizer) needs the Keys area and is not ported here. -/
+finalizer) needs the Keys area and is not ported here. -/
 
 namespace Winnow
 
@@ -64,9 +65,6 @@ def tapScriptSignature : UInt8 := 0x14
 def tapLeafScript : UInt8 := 0x15
 def tapBIP32Derivation : UInt8 := 0x16
 def tapInternalKey : UInt8 := 0x17
-def musig2ParticipantPubKeys : UInt8 := 0x1A
-def musig2PubNonce : UInt8 := 0x1B
-def musig2PartialSig : UInt8 := 0x1C
 end InType
 
 namespace OutType
@@ -114,21 +112,6 @@ structure TapLeafScript where
   deriving Inhabited
 
 def TapLeafScript.leafHash (l : TapLeafScript) : ByteArray := Tx.Taproot.leafHash l.leafVersion ⟨l.script⟩
-
-structure MuSig2KeyID where
-  participant : ByteArray
-  aggregate : ByteArray
-  leafHash : Option ByteArray := none
-  deriving Inhabited
-
-namespace MuSig2KeyID
-def keyData (k : MuSig2KeyID) : ByteArray := k.participant ++ k.aggregate ++ k.leafHash.getD .empty
-def ofKeyData? (d : ByteArray) : Option MuSig2KeyID :=
-  if d.size == 66 || d.size == 98 then
-    some { participant := d.extract 0 33, aggregate := d.extract 33 66,
-           leafHash := if d.size == 98 then some (d.extract 66 98) else none }
-  else none
-end MuSig2KeyID
 
 /-! ## Maps: shared pair plumbing of inputs and outputs -/
 
@@ -286,29 +269,6 @@ def setTapScriptSignatures (i : Input) (sigs : Array (TapScriptSignatureID × By
     ps := setPair ps (KeyValue.make InType.tapScriptSignature (id.publicKey ++ id.leafHash) sig)
   return ⟨ps⟩
 
-def musig2ParticipantPubKeys (i : Input) : Array (ByteArray × Array ByteArray) :=
-  dictSorted (·.1) <| i.pairs.filterMap fun p =>
-    let v := p.value
-    if p.type != InType.musig2ParticipantPubKeys || p.keyData.size != 33 || v.size % 33 != 0 || v.size == 0 then none
-    else some (p.keyData, (List.range (v.size / 33)).toArray.map fun k => v.extract (33 * k) (33 * k + 33))
-def setMusig2ParticipantPubKeys (i : Input) (m : Array (ByteArray × Array ByteArray)) : Input := Id.run do
-  let mut ps := removeType i.pairs InType.musig2ParticipantPubKeys
-  for (agg, parts) in dictSorted (·.1) m do
-    ps := setPair ps (KeyValue.make InType.musig2ParticipantPubKeys agg (parts.foldl (· ++ ·) .empty))
-  return ⟨ps⟩
-
-def muSig2Values (i : Input) (type : UInt8) : Array (MuSig2KeyID × ByteArray) :=
-  dictSorted (·.1.keyData) <| i.pairs.filterMap fun p =>
-    if p.type != type then none else (MuSig2KeyID.ofKeyData? p.keyData).map (·, p.value)
-def setMuSig2Values (i : Input) (type : UInt8) (vs : Array (MuSig2KeyID × ByteArray)) : Input := Id.run do
-  let mut ps := removeType i.pairs type
-  for (id, v) in dictSorted (·.1.keyData) vs do ps := setPair ps (KeyValue.make type id.keyData v)
-  return ⟨ps⟩
-
-def musig2PubNonces (i : Input) := i.muSig2Values InType.musig2PubNonce
-def setMusig2PubNonces (i : Input) := i.setMuSig2Values InType.musig2PubNonce
-def musig2PartialSigs (i : Input) := i.muSig2Values InType.musig2PartialSig
-def setMusig2PartialSigs (i : Input) := i.setMuSig2Values InType.musig2PartialSig
 
 end Input
 

@@ -1,6 +1,5 @@
 import Winnow.Crypto
 import Winnow.Net.Wire
-import Winnow.Net.FallbackPeers
 
 /-! # Network parameters (`Network/Protocol/NetworkParams.swift`, `PeerEndpoint` of PeerConnection.swift)
 
@@ -46,7 +45,6 @@ structure NetworkParams where
   genesisHash : ByteArray
   powLimit : ByteArray
   dnsSeeds : Array String
-  fallbackPeers : Array PeerEndpoint := #[]
   checkpoint : Option Checkpoint := none
   powTargetTimespan : UInt32 := 14 * 24 * 60 * 60
   powTargetSpacing : UInt32 := 600
@@ -86,7 +84,6 @@ def mainnet : NetworkParams := {
   dnsSeeds := #["seed.bitcoin.sipa.be", "dnsseed.bluematt.me", "dnsseed.bitcoin.dashjr-list-of-p2p-nodes.us",
     "seed.bitcoin.jonasschnelli.ch", "seed.btc.petertodd.net", "seed.bitcoin.sprovoost.nl", "dnsseed.emzy.de",
     "seed.bitcoin.wiz.biz", "seed.mainnet.achownodes.xyz"]
-  fallbackPeers := generatedMainnetFallbackPeerList.map fun (h, p) => { host := h, port := p }
   -- Block 959,616 (a difficulty-period boundary, 476 × 2016), derived from a genesis sync.
   checkpoint := some {
     height := 959_616

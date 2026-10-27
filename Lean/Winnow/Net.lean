@@ -4,7 +4,6 @@ import Winnow.Net.Wire
 import Winnow.Net.GCS
 import Winnow.Net.UInt256
 import Winnow.Net.Params
-import Winnow.Net.FallbackPeers
 import Winnow.Net.Header
 import Winnow.Net.HeaderChain
 import Winnow.Net.PeerAddress

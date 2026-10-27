@@ -7,8 +7,8 @@ import Winnow.IO.Census
 /-! # The peer pool (`Network/Peers/PeerPool.swift`)
 
 A small pool of outbound peers (default 3). Candidates: manual endpoints, the persisted good peers
-(`peers.json`, version 2 with source classes), the census catalog's clearnet list when it is at most
-7 days old (else the network's fallback peers), shuffled, with `avoidOnReset` endpoints last — and
+(`peers.json`, version 2 with source classes), the clearnet list of the census the app was built with
+(validated once, when the pool is made; no clock ages it), shuffled, with `avoidOnReset` endpoints last — and
 DNS seeds only when those cannot fill the pool. A round dials up to `maxParallelDials` (5) at once,
 each with `dialTimeout` (5 s), at most `maxDialAttempts` (50) per round, skipping candidates the
 diversity policy refuses (re-checked on arrival); stragglers are awaited and disconnected; a round
@@ -46,7 +46,6 @@ structure PoolState where
   lastRejection : Std.HashMap PeerEndpoint String := {}
   validatedTip : Option UInt32 := none
   staleTipJudged : Std.HashSet PeerEndpoint := {}
-  censusCatalog : Option CensusCatalog := none
   monitorGeneration : Nat := 0
 
 /-- The UI snapshot (`ConnectionStatus`). -/
@@ -68,8 +67,8 @@ structure PeerPool where
   maxParallelDials : Nat
   maxDialAttempts : Nat
   seedResolver : SeedResolver
-  /-- Wall clock in seconds for the census freshness rule (`catalogNow`). -/
-  catalogNow : IO Int
+  /-- The shipped census, validated at construction (an invalid one is dropped). -/
+  censusCatalog : Option CensusCatalog
   avoidOnReset : Array PeerEndpoint
   /-- Monotonic milliseconds for cooldowns (`now`). -/
   now : IO Nat
@@ -96,15 +95,14 @@ capability): the default `curlFetch` runs a `curl` subprocess and exists for tes
 def new (params : NetworkParams) (peerCount : Nat := 3) (manualPeers : Array PeerEndpoint := #[])
     (peersFile : Option System.FilePath := none) (relayPreference : Bool := false) (dialTimeoutMs : Nat := 5_000)
     (maxParallelDials : Nat := 5) (maxDialAttempts : Nat := 50) (seedResolver : Option SeedResolver := none)
-    (censusCatalog : Option CensusCatalog := none) (catalogNow : IO Int := wallSeconds)
+    (censusCatalog : Option CensusCatalog := none)
     (avoidOnReset : Array PeerEndpoint := #[]) (now : IO Nat := monoMs) (monitorIntervalMs : Nat := 30_000)
     (httpFetch : HttpFetch := curlFetch) : IO PeerPool := do
   let resolver : SeedResolver ← match seedResolver with
     | some r => pure r
     | none => pure (SeedResolver.routed (← RoutedHTTPClient.new httpFetch))
-  let nowS ← catalogNow
-  let catalog := censusCatalog.bind fun c => (c.validated nowS).toOption
-  let mut st : PoolState := { censusCatalog := catalog }
+  let censusCatalog := censusCatalog.bind fun c => c.validated.toOption
+  let mut st : PoolState := {}
   if let some p := peersFile then
     if let some data ← PersistedPeers.boundedRead p then
       if let some stored := PersistedPeers.decode data then
@@ -113,7 +111,7 @@ def new (params : NetworkParams) (peerCount : Nat := 3) (manualPeers : Array Pee
             st := { st with knownGood := st.knownGood.push c.endpoint,
                             knownSource := st.knownSource.insert c.endpoint c.source }
   return { params, peerCount, manualPeers, peersFile, relayPreference, dialTimeoutMs, maxParallelDials,
-           maxDialAttempts, seedResolver := resolver, catalogNow, avoidOnReset, now, monitorIntervalMs,
+           maxDialAttempts, seedResolver := resolver, censusCatalog, avoidOnReset, now, monitorIntervalMs,
            state := ← IO.mkRef st }
 
 def connectionStatus (p : PeerPool) : BaseIO ConnectionStatus := do
@@ -163,20 +161,18 @@ private def seatedCandidates (s : PoolState) : Array PeerCandidate :=
 
 private def policy (p : PeerPool) : DiversityPolicy := { peerCount := p.peerCount }
 
-/-- Manual peers, then persisted good peers, then the census list or the hardcoded fallbacks. -/
+/-- Manual peers, then persisted good peers, then the shipped census. -/
 def localCandidates (p : PeerPool) (excluded : Std.HashSet PeerEndpoint) : IO (Array PeerCandidate) := do
   let s ← p.state.get
   let mut ordered : Array PeerCandidate := p.manualPeers.map ({ endpoint := ·, source := .manual })
   for e in s.knownGood do
     if !p.manualPeers.contains e then ordered := ordered.push { endpoint := e, source := p.rememberedSource s e }
-  let nowS ← p.catalogNow
-  let fresh := s.censusCatalog.filter (·.isFresh nowS)
-  let automatic ← shuffle (match fresh.bind (·.clearnet) with
+  let automatic ← shuffle (match p.censusCatalog.bind (·.clearnet) with
     | some entries => entries.map (·.endpoint)
-    | none => p.params.fallbackPeers)
+    | none => #[])
   let preferred := automatic.filter (!p.avoidOnReset.contains ·)
   let previous := automatic.filter (p.avoidOnReset.contains ·)
-  ordered := ordered ++ (preferred ++ previous).map ({ endpoint := ·, source := .fallback })
+  ordered := ordered ++ (preferred ++ previous).map ({ endpoint := ·, source := .census })
   let mut seen := excluded
   let mut out := #[]
   for c in ordered do
@@ -194,12 +190,6 @@ private def seedCandidates (p : PeerPool) (excluded : Std.HashSet PeerEndpoint) 
       seen := seen.insert e
       out := out.push { endpoint := e, source := .dnsSeed }
   return out
-
-/-- Refresh only changes future discovery. -/
-def updateCensusCatalog (p : PeerPool) (c : CensusCatalog) : IO (Except CensusInvalid Unit) := do
-  match c.validated (← p.catalogNow) with
-  | .ok v => p.state.modify (fun s => { s with censusCatalog := some v }); return .ok ()
-  | .error e => return .error e
 
 /-! ## Unseating -/
 

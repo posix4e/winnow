@@ -4,23 +4,22 @@ import Winnow.Wallet.Signer
 /-! # PSBT roles (BIP370 / 371 / 373)
 
 Port of `Sources/WalletCore/PSBT/PSBTRoles.swift` on top of the Tx area's PSBT document: creator,
-signer (key path, `multi_a` script path), the MuSig2 rounds as the Swift does them (participants, public
-nonces, session, partial signatures, aggregation), combiner, finalizer and extractor.
+signer (key path, `multi_a` script path), combiner, finalizer and extractor (the MuSig2 rounds went
+with MuSig2 upstream).
 (`unsignedTransaction` itself is in `Winnow.Tx.PSBT`.) Dictionaries of the Swift original are arrays of
 pairs here, with the last value per key kept and keys in byte order (`PSBT.dictSorted`). -/
 
 namespace Winnow
 open Keys
 
-/-- What the roles can throw: the document's errors, signing's, MuSig2's. -/
+/-- What the roles can throw: the document's errors or signing's. -/
 inductive PSBTRoleError where
   | psbt (e : PSBTError)
   | sign (e : SignFailure)
-  | musig2 (e : MuSig2Error)
   deriving Inhabited
 
 def PSBTRoleError.name : PSBTRoleError → String
-  | .psbt e => e.name | .sign e => e.name | .musig2 e => e.name
+  | .psbt e => e.name | .sign e => e.name
 
 namespace PSBT
 
@@ -28,7 +27,6 @@ abbrev RM := Except PSBTRoleError
 
 def perr {α} (e : PSBTError) : RM α := throw (.psbt e)
 def liftP {α} (r : Except PSBTError α) : RM α := r.mapError .psbt
-def liftM2 {α} (r : Except MuSig2Error α) : RM α := r.mapError .musig2
 
 /-- A Taproot key's origin: the x-only internal key and its path from the master fingerprint. -/
 structure TaprootKey where
@@ -112,7 +110,7 @@ def signKeyPath (p : PSBT) (index : Int) (tweakedPrivateKey : ByteArray) (auxili
   let w ← (Signer.witness tx k spent tweakedPrivateKey hashType auxiliaryRand).mapError .sign
   return p.modifyInput k (·.setTapKeySignature (some w[0]!))
 
-/-- Script-path fields of a vault input: internal key, the one leaf script, leaf-hashed key origins. -/
+/-- Script-path fields of a `multi_a` input: internal key, the one leaf script, leaf-hashed key origins. -/
 def attachScriptPath (p : PSBT) (index : Int) (controlBlock : Tx.Taproot.ControlBlock) (leafScript : Script)
     (leafVersion : UInt8 := Tx.Taproot.leafVersion) (keyOrigins : Array (ByteArray × KeyOrigin) := #[]) : RM PSBT := do
   let k ← p.checkIndex index
@@ -163,84 +161,6 @@ def signScriptPath (p : PSBT) (index : Int) (privateKeys : Array ByteArray) (aux
     signed := signed + 1
   if signed == 0 then perr (.missingField s!"input {k} matching leaf key")
   return p.modifyInput k (·.setTapScriptSignatures signatures)
-
-/-! ## MuSig2 (BIP373 transport) -/
-
-def attachMuSig2 (p : PSBT) (index : Int) (internalKey aggregate : ByteArray) (participants : Array ByteArray) : RM PSBT := do
-  let k ← p.checkIndex index
-  unless internalKey.size == 32 && aggregate.size == 33 && !participants.isEmpty do perr (.malformed "musig2 keys")
-  let i := p.inputs[k]!.setTapInternalKey (some internalKey)
-  let i := i.setMusig2ParticipantPubKeys (i.musig2ParticipantPubKeys.push (aggregate, participants))
-  return p.modifyInput k fun _ => i
-
-def attachMuSig2PubNonce (p : PSBT) (index : Int) (id : MuSig2KeyID) (nonce : ByteArray) : RM PSBT := do
-  let k ← p.checkIndex index
-  unless nonce.size == 66 do perr (.malformed s!"pubnonce length {nonce.size}")
-  let i := p.inputs[k]!
-  return p.modifyInput k fun _ => i.setMusig2PubNonces (i.musig2PubNonces.push (id, nonce))
-
-def lookupId (xs : Array (MuSig2KeyID × ByteArray)) (id : MuSig2KeyID) : Option ByteArray :=
-  (xs.find? (·.1.keyData == id.keyData)).map (·.2)
-
-/-- The BIP327 session once every participant has a nonce (aggregate nonce in participant order). -/
-def muSig2Session (p : PSBT) (index : Int) (aggregateKey : ByteArray) (tweaks : Array ByteArray) (isXOnlyTweaks : Array Bool)
-    (message : ByteArray) : RM MuSig.Session := do
-  let k ← p.checkIndex index
-  let some (_, participants) := p.inputs[k]!.musig2ParticipantPubKeys.find? (·.1 == aggregateKey)
-    | perr (.missingField s!"input {k} musig2 participants")
-  let nonces := p.inputs[k]!.musig2PubNonces
-  let signingKey ← liftM2 (MuSig.aggregateTweaked participants.toList tweaks.toList isXOnlyTweaks.toList)
-  let mut ordered : Array ByteArray := #[]
-  for participant in participants do
-    let some nonce := lookupId nonces { participant, aggregate := signingKey }
-      | perr (.missingField s!"input {k} musig2 nonce for {hex participant}")
-    ordered := ordered.push nonce
-  return { aggregateNonce := ← liftM2 (MuSig.nonceAggregate ordered.toList), publicKeys := participants.toList,
-           tweaks := tweaks.toList, isXOnlyTweaks := isXOnlyTweaks.toList, message }
-
-/-- Round 2: the caller's partial signature, self-verified. Returns the PSBT and the secret nonce, which
-comes back zeroed once signing was attempted (as the Swift `inout` does). -/
-def signMuSig2 (p : PSBT) (index : Int) (id : MuSig2KeyID) (secretNonce secretKey : ByteArray) (session : MuSig.Session) :
-    RM PSBT × ByteArray :=
-  match p.checkIndex index with
-  | .error e => (.error e, secretNonce)
-  | .ok k =>
-    let i := p.inputs[k]!
-    match lookupId i.musig2PubNonces id with
-    | none => (perr (.missingField s!"input {k} own musig2 nonce"), secretNonce)
-    | some ownNonce =>
-      let (partial?, zeroed) := MuSig.partialSign secretNonce secretKey session
-      let r : RM PSBT := do
-        let partial_ ← liftM2 partial?
-        let ok ← liftM2 (MuSig.partialVerify partial_ ownNonce id.participant session)
-        unless ok do perr (.malformed "self-produced partial signature failed verification")
-        return p.modifyInput k fun i => i.setMusig2PartialSigs (i.musig2PartialSigs.push (id, partial_))
-      (r, zeroed)
-
-/-- PartialSigAgg into PSBT_IN_TAP_KEY_SIG, every partial verified first. -/
-def aggregateMuSig2 (p : PSBT) (index : Int) (session : MuSig.Session) : RM PSBT := do
-  let k ← p.checkIndex index
-  let i := p.inputs[k]!
-  let partials := i.musig2PartialSigs
-  let nonces := i.musig2PubNonces
-  let aggregate ← liftM2 (MuSig.aggregateTweaked session.publicKeys session.tweaks session.isXOnlyTweaks)
-  let mut ordered : Array ByteArray := #[]
-  for participant in session.publicKeys do
-    let id : MuSig2KeyID := { participant, aggregate }
-    let (some partial_, some nonce) := (lookupId partials id, lookupId nonces id)
-      | perr (.missingField s!"input {k} musig2 partial sig for {hex participant}")
-    unless ← liftM2 (MuSig.partialVerify partial_ nonce participant session) do
-      perr (.malformed s!"invalid partial signature from {hex participant}")
-    ordered := ordered.push partial_
-  let signature ← liftM2 (MuSig.partialSigAggregate ordered.toList session)
-  let aggregateXonly ← liftM2 (MuSig.aggregateXonlyTweaked session.publicKeys session.tweaks session.isXOnlyTweaks)
-  let valid ← (schnorrVerify aggregateXonly session.message signature).mapError (PSBTRoleError.sign ∘ .crypto)
-  unless valid do perr (.malformed "aggregate signature failed verification")
-  let ht := (i.sighashType.getD 0).toUInt8
-  let item := if ht == 0 then signature else signature.push ht
-  return p.modifyInput k (·.setTapKeySignature (some item))
-
-/-! ## Combiner -/
 
 def mergeMaps (maps : Array (Array KeyValue)) : RM (Array KeyValue) := do
   let mut merged : Array KeyValue := #[]
@@ -343,8 +263,7 @@ def finalize (p : PSBT) : RM PSBT := do
       let some w := witness | perr (.missingField s!"input {k} tap script sigs below threshold")
       witnesses := witnesses.push w
     else perr (.missingField s!"input {k} tap key sig")
-  let removed : List UInt8 := [InType.tapKeySignature, InType.sighashType, InType.tapScriptSignature, InType.tapLeafScript,
-    InType.musig2PubNonce, InType.musig2PartialSig]
+  let removed : List UInt8 := [InType.tapKeySignature, InType.sighashType, InType.tapScriptSignature, InType.tapLeafScript]
   let inputs := (p.inputs.zip witnesses).map fun (i, w) =>
     let i := i.setFinalScriptWitness (some w)
     (⟨i.pairs.filter (fun q => !removed.contains q.type)⟩ : Input)

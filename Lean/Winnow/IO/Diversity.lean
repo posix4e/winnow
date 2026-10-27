@@ -152,7 +152,7 @@ def _root_.Winnow.Net.PeerEndpoint.netblock (e : PeerEndpoint) : Option String :
 /-! ## Candidates and the diversity policy -/
 
 def _root_.Winnow.Net.PeerSource.rawValue : PeerSource → String
-  | .manual => "manual" | .persisted => "persisted" | .fallback => "fallback" | .dnsSeed => "dnsSeed"
+  | .manual => "manual" | .persisted => "persisted" | .census => "fallback" | .dnsSeed => "dnsSeed"
 
 structure PeerCandidate where
   endpoint : PeerEndpoint

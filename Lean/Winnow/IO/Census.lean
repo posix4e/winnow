@@ -1,18 +1,16 @@
 import Winnow.IO.Diversity
-import Winnow.Keys.Census
+import Winnow.Keys.Unicode
 
-/-! # The census peer list (`Network/Peers/CensusCatalog.swift`, `CensusCatalogStore.swift`)
+/-! # The census peer list (`Network/Peers/CensusCatalog.swift`)
 
-Untrusted discovery input: a signed daily list of reachable nodes (`peers.json` + `peers.json.sig`,
-the signature being the Keys area's `CensusSignature`). Validation keeps the clearnet array only:
-schema 1, a strict `yyyy-MM-dd` UTC date no newer than today (and, when fresh is required, at most
-7 days old), a positive tip; entries on port 8333 with a printable user agent ≤ 256 bytes, a numeric
-public host (canonicalized: IPv4-mapped IPv6 collapses to IPv4, IPv6 is printed as `inet_ntop` does),
-within 100 blocks of the tip, unique by endpoint and by netblock; sorted by (host, port).
-
-The store keeps the original bytes and the signature beside them (atomic writes) and verifies both on
-every load. The fetch of a fresh list is the routed HTTP client (`CensusCatalog.endpoint`); it is not
-exercised by the tests (no network). -/
+Untrusted discovery input: the census's daily list of reachable nodes (`peers.json`). Since upstream
+e5ce950 the app ships the list current at build time (`scripts/import-census` fetches it into
+`build/census/peers.json`, the app bundles it) and reads it with `bundled`; there is no download, no
+signature and no expiry (peer churn, not a clock, ages it). Validation keeps the clearnet array only:
+schema 1, a strict `yyyy-MM-dd` date, a positive tip; entries on port 8333 with a printable user agent
+≤ 256 bytes, a numeric public host (canonicalized: IPv4-mapped IPv6 collapses to IPv4, IPv6 is printed
+as `inet_ntop` does), within 100 blocks of the tip, unique by endpoint and by netblock; sorted by
+(host, port). -/
 
 namespace Winnow.IO
 open Winnow.Net Lean
@@ -35,31 +33,27 @@ structure CensusCatalog where
   deriving BEq, Inhabited, Repr
 
 inductive CensusInvalid where
-  | schema | date | expired | future | size | endpoint | height | duplicate | diversity | thin
+  | schema | date | size | endpoint | height | duplicate | diversity | thin
   deriving BEq, Inhabited, Repr
 
 def CensusInvalid.name : CensusInvalid → String
-  | .schema => "schema" | .date => "date" | .expired => "expired" | .future => "future" | .size => "size"
+  | .schema => "schema" | .date => "date" | .size => "size"
   | .endpoint => "endpoint" | .height => "height" | .duplicate => "duplicate" | .diversity => "diversity"
   | .thin => "thin"
 
 inductive CensusError where
   | invalid (e : CensusInvalid)
-  | signature (e : Winnow.Keys.CensusSignature.Invalid)
   /-- `JSONDecoder` refused the document's shape. -/
   | decoding (reason : String)
-  | io (reason : String)
   deriving Inhabited
 
 def CensusError.name : CensusError → String
-  | .invalid e => e.name | .signature e => e.name | .decoding _ => "dataCorrupted" | .io _ => "io"
+  | .invalid e => e.name | .decoding _ => "dataCorrupted"
 
 namespace CensusCatalog
 
-def endpointURL : String := "https://census.winnowwallet.com/census/peers.json"
 def maximumBytes : Nat := 4 * 1_024 * 1_024
 def maximumEntries : Nat := 65_536
-def maximumAgeDays : Int := 7
 def minimumClearnetEntries : Nat := 50
 
 def clearnet (c : CensusCatalog) : Option (Array CensusEntry) := (c.networks.find? (·.1 == "clearnet")).map (·.2)
@@ -153,14 +147,11 @@ private def validatedEntries (tip : Int32) (entries : Array CensusEntry) (minimu
     out := out.push e
   return out.qsort fun a b => a.host < b.host || (a.host == b.host && a.port < b.port)
 
-/-- `validated(now:requireFresh:minimumEntries:)`; `nowSeconds` is the wall clock. -/
-def validated (c : CensusCatalog) (nowSeconds : Int) (requireFresh : Bool := true) (minimumEntries : Nat := 0) :
-    Except CensusInvalid CensusCatalog := do
+/-- `validated(minimumEntries:)`: `minimumEntries` is the floor the wallet applies to a list it will use
+(`minimumClearnetEntries`); the tests validate shape alone. -/
+def validated (c : CensusCatalog) (minimumEntries : Nat := 0) : Except CensusInvalid CensusCatalog := do
   let some entries := (if c.schemaVersion == 1 then c.clearnet else none) | throw .schema
-  let some observed := day c.date | throw .date
-  let age := nowSeconds / 86_400 - observed   -- Int division floors here
-  if age < 0 then throw .future
-  if requireFresh && age > maximumAgeDays then throw .expired
+  if (day c.date).isNone then throw .date
   if !(c.tip > 0) then throw .height
   return { c with networks := #[("clearnet", ← validatedEntries c.tip entries minimumEntries)] }
 
@@ -183,66 +174,24 @@ def ofJson (j : Json) : Except String CensusCatalog := do
     networks := networks.push (k, ← xs.mapM entryOf)
   return { schemaVersion, date, tip := Int32.ofInt tip, networks }
 
-def decode (data : ByteArray) (nowSeconds : Int) (requireFresh : Bool := true) (minimumEntries : Nat := 0) :
-    Except CensusError CensusCatalog := do
+def decode (data : ByteArray) (minimumEntries : Nat := 0) : Except CensusError CensusCatalog := do
   if data.size > maximumBytes then throw (.invalid .size)
   let some text := String.fromUTF8? data | throw (.decoding "not UTF-8")
   let j ← (Json.parse text).mapError CensusError.decoding
   let c ← (ofJson j).mapError CensusError.decoding
-  (c.validated nowSeconds requireFresh minimumEntries).mapError CensusError.invalid
+  (c.validated minimumEntries).mapError CensusError.invalid
 
-/-- Whether the catalog's date is 0 … 7 days before `nowSeconds` (the pool's freshness rule). -/
-def isFresh (c : CensusCatalog) (nowSeconds : Int) : Bool :=
-  match day c.date with
-  | some d => let age := nowSeconds / 86_400 - d; 0 ≤ age && age ≤ maximumAgeDays
-  | none => false
+/-- `CensusCatalog.bundled`: the census the app was built with, `peers.json` in the app bundle (beside
+the executable, which on iOS is the bundle's root), held to `minimumClearnetEntries`. None when the
+build carries no list or it does not validate, and outside an app bundle (the tests). -/
+def bundled : IO (Option CensusCatalog) := do
+  try
+    let some dir := (← IO.appPath).parent | return none
+    let path := dir / "peers.json"
+    unless ← path.pathExists do return none
+    return (decode (← readUpTo path maximumBytes) minimumClearnetEntries).toOption
+  catch _ => return none
 
 end CensusCatalog
 
-/-! ## The store -/
-
-structure CensusDownload where
-  catalog : CensusCatalog
-  sha256 : String
-
-structure CensusCatalogStore where
-  path : System.FilePath
-  minimumEntries : Nat := CensusCatalog.minimumClearnetEntries
-
-namespace CensusCatalogStore
-
-def signaturePath (s : CensusCatalogStore) : System.FilePath := s.path.toString ++ ".sig"
-
-private def readUpToMax (p : System.FilePath) (limit : Nat) : IO (Option ByteArray) := do
-  try return some (← readUpTo p limit) catch _ => return none
-
-/-- The stored list, when it still verifies and validates. -/
-def load (s : CensusCatalogStore) (nowSeconds : Int) (keys : List ByteArray := Winnow.Keys.CensusPublisher.trustedKeys) :
-    IO (Option CensusDownload) := do
-  let some data ← readUpToMax s.path CensusCatalog.maximumBytes | return none
-  let sig ← readUpToMax s.signaturePath Winnow.Keys.CensusSignature.maximumBytes
-  if (Winnow.Keys.CensusPublisher.verify data sig keys).toBool == false then return none
-  match CensusCatalog.decode data nowSeconds (minimumEntries := s.minimumEntries) with
-  | .ok catalog => return some { catalog, sha256 := hex (sha256 data) }
-  | .error _ => return none
-
-/-- Verifies, validates, then stores the list and its signature (a missing signature removes the old one). -/
-def replace (s : CensusCatalogStore) (data : ByteArray) (signature : Option ByteArray) (nowSeconds : Int)
-    (keys : List ByteArray := Winnow.Keys.CensusPublisher.trustedKeys) : IO (Except CensusError CensusDownload) := do
-  match Winnow.Keys.CensusPublisher.verify data signature keys with
-  | .error e => return .error (.signature e)
-  | .ok () => pure ()
-  match CensusCatalog.decode data nowSeconds (minimumEntries := s.minimumEntries) with
-  | .error e => return .error e
-  | .ok catalog =>
-    try
-      if let some dir := s.path.parent then IO.FS.createDirAll dir
-      writeAtomic s.path data
-      match signature with
-      | some sig => writeAtomic s.signaturePath sig
-      | none => try IO.FS.removeFile s.signaturePath catch _ => pure ()
-      return .ok { catalog, sha256 := hex (sha256 data) }
-    catch e => return .error (.io (toString e))
-
-end CensusCatalogStore
 end Winnow.IO

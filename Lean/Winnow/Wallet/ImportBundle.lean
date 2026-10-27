@@ -1,4 +1,4 @@
-import Winnow.Wallet.VaultRecord
+import Winnow.Wallet.Types
 import Winnow.Wallet.Characters
 
 /-! # Import bundles (port of `Sources/WalletCore/Wallet/ImportBundle.swift`, data half)
@@ -44,7 +44,10 @@ structure ImportBundle where
   lastKnownHeight : UInt32
   utxos : Array ImportBundle.UTXO := #[]
   transactions : Array ImportBundle.KnownTransaction := #[]
-  vaults : Option (Array VaultRecord) := none
+  /-- The accounts a shared-account Winnow wrote under `vaults` (upstream: `[MultisigAccountRecord]`).
+  This build restores none, so a bundle that carries any is refused (`decodeData`) rather than restored
+  without their coins; the records are kept as raw JSON, never interpreted. -/
+  vaults : Option (Array JV) := none
   nextReceiveIndex : Option UInt32 := none
   nextChangeIndex : Option UInt32 := none
   deriving Inhabited, BEq
@@ -101,11 +104,11 @@ def ofJV (v : JV) : D KnownTransaction := do
 end KnownTransaction
 
 def toJV (b : ImportBundle) : JV :=
-  obj [("vaults", b.vaults.map (.arr ∘ Array.map VaultRecord.toJV)), ("version", some (ofInt b.version)),
+  obj [("version", some (ofInt b.version)),
     ("network", some (.str b.network)), ("descriptor", b.descriptor.map .str), ("mnemonic", b.mnemonic.map .str),
     ("lastKnownHeight", some (ofInt b.lastKnownHeight.toNat)), ("utxos", some (.arr (b.utxos.map UTXO.toJV))),
     ("transactions", some (.arr (b.transactions.map KnownTransaction.toJV))),
-    ("nextReceiveIndex", b.nextReceiveIndex.map (ofInt ·.toNat)), ("nextChangeIndex", b.nextChangeIndex.map (ofInt ·.toNat))]
+    ("nextReceiveIndex", b.nextReceiveIndex.map (ofInt ·.toNat)), ("nextChangeIndex", b.nextChangeIndex.map (ofInt ·.toNat)), ("vaults", b.vaults.map .arr)]
 
 def ofJV (v : JV) : D ImportBundle := do
   let kvs ← asObject v
@@ -116,7 +119,7 @@ def ofJV (v : JV) : D ImportBundle := do
   let lastKnownHeight ← key kvs "lastKnownHeight" asUInt32
   let utxos ← key kvs "utxos" (asArray UTXO.ofJV)
   let transactions ← key kvs "transactions" (asArray KnownTransaction.ofJV)
-  let vaults ← keyIfPresent kvs "vaults" (asArray VaultRecord.ofJV)
+  let vaults ← keyIfPresent kvs "vaults" (asArray pure)
   let nextReceiveIndex ← keyIfPresent kvs "nextReceiveIndex" asUInt32
   let nextChangeIndex ← keyIfPresent kvs "nextChangeIndex" asUInt32
   return { version, network, descriptor, mnemonic, lastKnownHeight, utxos, transactions, vaults, nextReceiveIndex, nextChangeIndex }
@@ -142,8 +145,11 @@ def decodeData (data : ByteArray) : Except Failure ImportBundle := do
   if b.transactions.size > maximumEntries then
     throw (.wallet (.invalidBundle s!"bundle declares {b.transactions.size} transactions, above the {maximumEntries} limit"))
   let vs := b.vaults.getD #[]
-  unless vs.size ≤ maximumVaults && vs.foldl (fun a r => a + r.allUtxos.size) 0 ≤ maximumEntries do
-    throw (.wallet (.invalidBundle "too many shared accounts or account coins"))
+  unless vs.size ≤ maximumVaults do
+    throw (.wallet (.invalidBundle "too many multisig accounts or account coins"))
+  -- Accounts from the shared-account Winnow (MuSig2, vaults) have no home in this build; their coins
+  -- must not vanish from a restore, so the whole bundle is refused.
+  unless vs.isEmpty do throw (.wallet .unsupportedWalletData)
   return b
 
 /-- `decode(json:)`. -/

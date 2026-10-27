@@ -11,7 +11,7 @@ filter headers equal to the node's `getblockfilter`, filters.json round trip and
 reorg; the mempool window seeing a new transaction; broadcast of a raw transaction the node then holds
 in its mempool; peers.json and broadcast.json round trips. Offline policy checks: HTTP permits and
 redirects against a local Python server through the curl fetch, seed filtering and dns-json, the
-census catalog and its signed store. The node is killed by PID at the end, also on failure.
+census catalog (the list each build ships). The node is killed by PID at the end, also on failure.
 
 Usage: `io-test [--swift <oracle-io binary>]` (the binary compares Winnow's Swift side on the same node). -/
 
@@ -146,9 +146,9 @@ def offlineChecks (dir : String) : IO Unit := do
   -- Diversity
   let pol : DiversityPolicy := { peerCount := 3 }
   let c (h : String) (s : PeerSource) : PeerCandidate := { endpoint := { host := h, port := 8333 }, source := s }
-  check "diversity: one netblock once" (!pol.admits (c "8.8.1.1" .fallback) #[c "8.8.2.2" .dnsSeed])
+  check "diversity: one netblock once" (!pol.admits (c "8.8.1.1" .census) #[c "8.8.2.2" .dnsSeed])
   check "diversity: a class may not hold every seat"
-    (!pol.admits (c "9.9.9.9" .fallback) #[c "1.1.1.1" .fallback, c "2.2.2.2" .fallback] &&
+    (!pol.admits (c "9.9.9.9" .census) #[c "1.1.1.1" .census, c "2.2.2.2" .census] &&
       pol.admits (c "9.9.9.9" .manual) #[c "1.1.1.1" .manual, c "2.2.2.2" .manual])
   check "cooldown doubles to the cap" (PeerPool.cooldown 1 == 30_000 && PeerPool.cooldown 2 == 60_000 &&
     PeerPool.cooldown 5 == 480_000 && PeerPool.cooldown 6 == 600_000 && PeerPool.cooldown 40 == 600_000)
@@ -162,6 +162,10 @@ def offlineChecks (dir : String) : IO Unit := do
   check "peers.json v2 encodes as JSONEncoder does"
     (String.fromUTF8! enc == "{\"version\":2,\"peers\":[{\"host\":\"1.2.3.4\",\"port\":8333,\"source\":\"dnsSeed\"},{\"host\":\"::1\",\"port\":8333,\"source\":\"manual\"}]}")
   check "peers.json v2 round trip" (PersistedPeers.decode enc == some #[c "1.2.3.4" .dnsSeed, c "::1" .manual])
+  let censusEnc := PersistedPeers.encode #[c "5.6.7.8" .census]
+  check "a census peer keeps the legacy source name \"fallback\""
+    (((String.fromUTF8! censusEnc).splitOn "\"source\":\"fallback\"").length == 2 &&
+      PersistedPeers.decode censusEnc == some #[c "5.6.7.8" .census])
   check "peers.json other versions are refused" ((PersistedPeers.decode "{\"version\":3,\"peers\":[]}".toUTF8).isNone)
   -- HTTP policy
   check "permits" (permits "https://1.1.1.1/dns-query" && permits "http://a:8080/x" && !permits "ftp://a/x" &&
@@ -213,7 +217,7 @@ def offlineChecks (dir : String) : IO Unit := do
     check "cancelled client refuses" (match r7 with | .error (.http .unavailable) => true | _ => false)
   finally
     server.kill
-  -- Census catalog and its signed store.
+  -- The census catalog (shipped with each build: no signature, no expiry).
   let now ← wallSeconds
   let today := now / 86_400
   let civil (days : Int) : String := Id.run do
@@ -234,30 +238,19 @@ def offlineChecks (dir : String) : IO Unit := do
   let doc (date : String) (hosts : List String) :=
     s!"\{\"schemaVersion\":1,\"date\":\"{date}\",\"tip\":900010,\"networks\":\{\"clearnet\":[{",".intercalate (hosts.map entry)}],\"tor\":[]}}"
   let good := doc (civil today) ["9.9.9.9", "::FFFF:8.8.8.8", "2a01:4f8:0:0::1"]
-  match CensusCatalog.decode good.toUTF8 now with
+  match CensusCatalog.decode good.toUTF8 with
   | .ok cat => check "census validates and canonicalizes" ((cat.clearnet.map (·.map (·.host))) == some #["2a01:4f8::1", "8.8.8.8", "9.9.9.9"])
                  s!"{cat.clearnet.map (·.map (·.host))}"
   | .error e => check "census validates and canonicalizes" false e.name
   let nameOf (r : Except CensusError CensusCatalog) := match r with | .ok _ => "ok" | .error e => e.name
-  check "census expired" (nameOf (CensusCatalog.decode (doc (civil (today - 8)) ["9.9.9.9"]).toUTF8 now) == "expired")
-  check "census future" (nameOf (CensusCatalog.decode (doc (civil (today + 1)) ["9.9.9.9"]).toUTF8 now) == "future")
-  check "census duplicate" (nameOf (CensusCatalog.decode (doc (civil today) ["9.9.9.9", "::ffff:9.9.9.9"]).toUTF8 now) == "duplicate")
-  check "census diversity" (nameOf (CensusCatalog.decode (doc (civil today) ["9.9.9.9", "9.9.1.1"]).toUTF8 now) == "diversity")
-  check "census private host" (nameOf (CensusCatalog.decode (doc (civil today) ["192.168.1.1"]).toUTF8 now) == "endpoint")
-  check "census thin" (nameOf (CensusCatalog.decode (doc (civil today) ["9.9.9.9"]).toUTF8 now (minimumEntries := 50)) == "thin")
+  check "census of any age validates (no expiry)" (nameOf (CensusCatalog.decode (doc (civil (today - 400)) ["9.9.9.9"]).toUTF8) == "ok")
+  check "census dated ahead validates (no clock)" (nameOf (CensusCatalog.decode (doc (civil (today + 1)) ["9.9.9.9"]).toUTF8) == "ok")
+  check "census duplicate" (nameOf (CensusCatalog.decode (doc (civil today) ["9.9.9.9", "::ffff:9.9.9.9"]).toUTF8) == "duplicate")
+  check "census diversity" (nameOf (CensusCatalog.decode (doc (civil today) ["9.9.9.9", "9.9.1.1"]).toUTF8) == "diversity")
+  check "census private host" (nameOf (CensusCatalog.decode (doc (civil today) ["192.168.1.1"]).toUTF8) == "endpoint")
+  check "census thin" (nameOf (CensusCatalog.decode (doc (civil today) ["9.9.9.9"]).toUTF8 (minimumEntries := 50)) == "thin")
   check "census bad date" (CensusCatalog.day "2026-02-30" == none && CensusCatalog.day "2026-10-26" == some 20752)
-  let seed := ByteArray.mk (Array.replicate 32 7)
-  let pk := (Winnow.Keys.Ed25519.publicKey seed).toOption.get!
-  let .ok sig := Winnow.Keys.CensusSignature.sign good.toUTF8 seed | check "census sign" false; return
-  let store : CensusCatalogStore := { path := s!"{dir}/census/peers.json", minimumEntries := 0 }
-  let rep ← store.replace good.toUTF8 (some sig.encoded) now [pk]
-  check "census store replace" (match rep with | .ok d => d.sha256 == hex (sha256 good.toUTF8) | .error _ => false)
-  let loaded ← store.load now [pk]
-  check "census store load verifies again" (loaded.map (·.sha256) == some (hex (sha256 good.toUTF8)))
-  let other ← store.load now Winnow.Keys.CensusPublisher.trustedKeys
-  check "census store refuses an untrusted signer" other.isNone
-  let unsigned ← store.replace good.toUTF8 none now [pk]
-  check "census store refuses a missing signature" (match unsigned with | .error (.signature .missing) => true | _ => false)
+  check "no bundled census outside an app bundle" (← CensusCatalog.bundled).isNone
 
 /-! ## Against the node -/
 

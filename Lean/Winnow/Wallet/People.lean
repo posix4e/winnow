@@ -1,12 +1,13 @@
-import Winnow.Wallet.Vault
+import Winnow.Wallet.Wallet
 import Winnow.Wallet.Characters
 
-/-! # People, cards and payment labels (port of `Sources/WalletCore/Wallet/People.swift`)
+/-! # People and cards (port of `Sources/WalletCore/Wallet/People.swift`)
 
-Pay-to keys (`PersonPayTo`), signer identities and their human-comparable fingerprints (`PersonKeys`),
-the three cards (`PersonCard`, `SharedSavingsCard`, `ApprovalRequest`) in their one JSON shape (sorted
-keys, unescaped slashes, a `winnow` kind field, a 64 KiB ceiling), `DisplayName`, the Add-person paste
-parser and `PaymentLabeler`. -/
+Pay-to keys (`PersonPayTo`), the person card (`PersonCard`) in Winnow's one card shape (sorted keys,
+unescaped slashes, a `winnow` kind field, a 64 KiB ceiling), `DisplayName` and the Add-person paste
+parser. Upstream (1cf93fb) removed signer keys, cosigner fingerprints, the shared-savings and approval
+cards and the savings payment labels with vaults; a card or record written with a `signerKey` still
+decodes, the field ignored. Silent payment codes (upstream's `.silentPayment`) are not ported yet. -/
 
 namespace Winnow
 open SwiftJSON Keys
@@ -35,7 +36,7 @@ def description : PersonPayToError → String
   | .privateKey => "That is a private key. For safety, paste only the public account key—never a seed phrase or private key."
   | .singleAddressKey => "This key gives one address only — paste the address itself instead."
   | .notSingleKey =>
-    "Winnow pays a person from a single-key descriptor such as tr([…]xpub…/<0;1>/*). Multi-key descriptors belong in shared savings."
+    "Winnow pays a person from a single-key descriptor such as tr([…]xpub…/<0;1>/*)."
   | .wrongNetwork n => s!"That key is for a different Bitcoin network. This wallet is on {Wallet.networkName n}."
   | .unsupportedDerivation =>
     "This key derives addresses in a way Winnow cannot follow. Paste the account key ending in /<0;1>/* or /0/*."
@@ -46,22 +47,25 @@ abbrev PM := Except String
 
 namespace PersonPayTo
 
+/-- The receive/change shape every Winnow account key carries. -/
+def receiveChangeDerivation : Array Descriptor.Element := #[.multipath #[0, 1], .wildcard false]
+
+/-- The one other derivation a pay-to key may carry: receive chain only. -/
 def receiveOnlyDerivation : Array Descriptor.Element := #[.step 0, .wildcard false]
 
 /-- Validates a pay-to descriptor and returns it in canonical form. -/
 def ofDescriptor (text : String) (network : BitcoinNetwork) : Except PersonPayToError PersonPayTo := do
   let trimmed := Unicode.trimWhitespace text
   let some d := (Descriptor.parse trimmed).toOption | throw .malformed
-  let .tr keyExpression tree := d.expression | throw .notSingleKey
-  let (none, .single key) := (tree, keyExpression) | throw .notSingleKey
+  let .tr key none := d.expression | throw .notSingleKey
   match key.base with
   | .privateKey .. => throw .privateKey
   | .publicKey _ => throw .singleAddressKey
   | .extended hd keyNetwork =>
     if hd.isPrivate then throw .privateKey
-    unless keyNetwork == Vault.hdNetwork network do throw (.wrongNetwork network)
+    unless keyNetwork == Wallet.hdNetwork network do throw (.wrongNetwork network)
   let els := key.derivation.elements
-  unless els == VaultCosignerRole.scriptPath.requiredDerivation || els == receiveOnlyDerivation do
+  unless els == receiveChangeDerivation || els == receiveOnlyDerivation do
     throw (if key.derivation.isRanged then .unsupportedDerivation else .singleAddressKey)
   if (d.derived 0 network).toOption.isNone then throw .malformed
   return .descriptor d.serialized
@@ -112,24 +116,6 @@ def ofJV (v : JV) : D PersonPayTo := do
   | _ => dataCorrupted
 
 end PersonPayTo
-
-/-! ## Signer keys -/
-
-namespace PersonKeys
-
-def signerIdentity (expression : String) (network : BitcoinNetwork) : PM ByteArray := do
-  let k ← (VaultCosignerKey.make expression .scriptPath network).mapError (·.name)
-  k.publicKey 0 0
-
-/-- The first four bytes of the identity's SHA-256, as `ab12 cd34`. -/
-def fingerprint (identity : ByteArray) : String :=
-  let h := hex ((sha256 identity).extract 0 4)
-  (h.take 4).toString ++ " " ++ (h.drop 4).toString
-
-def signerFingerprint (expression : String) (network : BitcoinNetwork) : PM String :=
-  return fingerprint (← signerIdentity expression network)
-
-end PersonKeys
 
 /-! ## Display names -/
 
@@ -212,25 +198,24 @@ structure PersonCard where
   version : Int := 1
   network : String
   name : String
+  /-- Canonical pay-to descriptor, or a plain address. -/
   payTo : Option String := none
-  signerKey : Option String := none
   deriving Inhabited, BEq
 
 namespace PersonCard
 def kind : String := "person-card"
 
-def make (network : BitcoinNetwork) (name : String) (payTo signerKey : Option String) : PersonCard :=
-  { network := Wallet.networkName network, name, payTo, signerKey }
+def make (network : BitcoinNetwork) (name : String) (payTo : Option String) : PersonCard :=
+  { network := Wallet.networkName network, name, payTo }
 
 def toJV (c : PersonCard) : JV :=
   obj [("winnow", some (.str c.winnow)), ("version", some (ofInt c.version)), ("network", some (.str c.network)),
-    ("name", some (.str c.name)), ("payTo", c.payTo.map .str), ("signerKey", c.signerKey.map .str)]
+    ("name", some (.str c.name)), ("payTo", c.payTo.map .str)]
 
 def ofJV (v : JV) : D PersonCard := do
   let kvs ← asObject v
   return { winnow := ← key kvs "winnow" asString, version := ← key kvs "version" asInt, network := ← key kvs "network" asString,
-           name := ← key kvs "name" asString, payTo := ← keyIfPresent kvs "payTo" asString,
-           signerKey := ← keyIfPresent kvs "signerKey" asString }
+           name := ← key kvs "name" asString, payTo := ← keyIfPresent kvs "payTo" asString }
 
 def serialized (c : PersonCard) : String := WinnowCardCoding.serialize c.toJV
 
@@ -239,81 +224,6 @@ def decode (text : String) : Except PersonCardError PersonCard := do
   unless cardVersionOK c.version do throw (.unsupportedVersion c.version)
   return c
 end PersonCard
-
-structure SharedSavingsCard where
-  winnow : String := "shared-savings"
-  version : Int := 1
-  network : String
-  name : String
-  descriptor : String
-  deriving Inhabited, BEq
-
-namespace SharedSavingsCard
-def kind : String := "shared-savings"
-
-def make (network : BitcoinNetwork) (name descriptor : String) : SharedSavingsCard :=
-  { network := Wallet.networkName network, name, descriptor }
-
-def toJV (c : SharedSavingsCard) : JV :=
-  .obj #[("winnow", .str c.winnow), ("version", ofInt c.version), ("network", .str c.network), ("name", .str c.name),
-    ("descriptor", .str c.descriptor)]
-
-def ofJV (v : JV) : D SharedSavingsCard := do
-  let kvs ← asObject v
-  return { winnow := ← key kvs "winnow" asString, version := ← key kvs "version" asInt, network := ← key kvs "network" asString,
-           name := ← key kvs "name" asString, descriptor := ← key kvs "descriptor" asString }
-
-def serialized (c : SharedSavingsCard) : String := WinnowCardCoding.serialize c.toJV
-
-/-- Decodes and proves the descriptor is a vault this wallet's network can hold. -/
-def decode (text : String) (network : BitcoinNetwork) : PM (SharedSavingsCard × Vault) := do
-  let c ← (WinnowCardCoding.decode text kind ofJV).mapError (·.name)
-  unless cardVersionOK c.version do throw "unsupportedVersion"
-  unless c.network == Wallet.networkName network do throw "wrongNetwork"
-  let v ← (Vault.parse c.descriptor network).mapError (·.name)
-  return (c, v)
-end SharedSavingsCard
-
-structure ApprovalRequest where
-  winnow : String := "approval"
-  version : Int := 1
-  network : String
-  vault : Option String := none
-  name : Option String := none
-  psbt : String
-  deriving Inhabited, BEq
-
-namespace ApprovalRequest
-def kind : String := "approval"
-
-def make (network : BitcoinNetwork) (vault name : Option String) (psbt : PSBT) : ApprovalRequest :=
-  { network := Wallet.networkName network, vault, name, psbt := psbt.base64 }
-
-def toJV (r : ApprovalRequest) : JV :=
-  obj [("winnow", some (.str r.winnow)), ("version", some (ofInt r.version)), ("network", some (.str r.network)),
-    ("vault", r.vault.map .str), ("name", r.name.map .str), ("psbt", some (.str r.psbt))]
-
-def ofJV (v : JV) : D ApprovalRequest := do
-  let kvs ← asObject v
-  return { winnow := ← key kvs "winnow" asString, version := ← key kvs "version" asInt, network := ← key kvs "network" asString,
-           vault := ← keyIfPresent kvs "vault" asString, name := ← keyIfPresent kvs "name" asString,
-           psbt := ← key kvs "psbt" asString }
-
-def serialized (r : ApprovalRequest) : String := WinnowCardCoding.serialize r.toJV
-
-/-- The envelope, or a bare Base64 PSBT. -/
-def decode (text : String) (network : BitcoinNetwork) : PM ApprovalRequest := do
-  let trimmed := Unicode.trimWhitespace text
-  if trimmed.startsWith "{" then
-    let r ← (WinnowCardCoding.decode trimmed kind ofJV).mapError (·.name)
-    unless cardVersionOK r.version do throw "unsupportedVersion"
-    unless r.network == Wallet.networkName network do throw "wrongNetwork"
-    return r
-  let p ← (PSBT.ofBase64 trimmed).mapError (·.name)
-  return make network none none p
-
-def decodedPSBT (r : ApprovalRequest) : PM PSBT := (PSBT.ofBase64 r.psbt).mapError (·.name)
-end ApprovalRequest
 
 /-! ## Paste -/
 
@@ -327,21 +237,10 @@ def PersonImport.Source.name : PersonImport.Source → String
 structure PersonImport where
   name : Option String
   payTo : Option PersonPayTo
-  signerKey : Option String
   source : PersonImport.Source
   deriving Inhabited, BEq
 
 namespace PersonPaste
-
-/-- `tr(KEY)#checksum` → `KEY`. -/
-def innerKeyExpression (canonical : String) : Option String :=
-  if !canonical.startsWith "tr(" then none
-  else
-    let body := match canonical.splitOn "#" with
-      | b :: _ => if b.isEmpty then canonical else b
-      | [] => canonical
-    if !body.endsWith ")" then none
-    else some ((body.drop 3).dropEnd 1).toString
 
 def asciiLower (s : String) : String := s.map Char.toLower
 
@@ -362,67 +261,33 @@ def parseCard (text : String) (network : BitcoinNetwork) : PM PersonImport := do
     if !raw.isEmpty then
       payTo ← if raw.startsWith "tr(" then (PersonPayTo.ofDescriptor raw network).mapError (·.name) |>.map some
         else (PersonPayTo.ofAddress raw network).map some
-  let mut signerKey : Option String := none
-  if let some raw := card.signerKey.map Unicode.trimWhitespace then
-    if !raw.isEmpty then
-      signerKey := some (← (VaultCosignerKey.make raw .scriptPath network).mapError (·.name)).expression
-  return { name := DisplayName.normalized card.name, payTo, signerKey, source := .card }
+  return { name := DisplayName.normalized card.name, payTo, source := .card }
 
-def parseDescriptor (text : String) (network : BitcoinNetwork) : PM PersonImport := do
-  let payTo ← (PersonPayTo.ofDescriptor text network).mapError (·.name)
-  let mut signerKey : Option String := none
-  if let .descriptor canonical := payTo then
-    if let some inner := innerKeyExpression canonical then
-      if let .ok s := VaultCosignerKey.make inner .scriptPath network then signerKey := some s.expression
-  return { name := none, payTo := some payTo, signerKey, source := .descriptor }
-
+/-- A bare key expression: `[fp/path]tpub…/<0;1>/*` as Winnow exports it, or an account key without a
+suffix, which gets the receive/change shape (or, for a key with no origin, the receive chain) added. A
+private key or a key for another network is refused by name; anything else is unrecognised. -/
 def parseKeyExpression (text : String) (network : BitcoinNetwork) : PM PersonImport := do
-  match VaultCosignerKey.make text .scriptPath network with
-  | .ok signer =>
-    let payTo ← (PersonPayTo.ofDescriptor s!"tr({signer.expression})" network).mapError (·.name)
-    return { name := none, payTo := some payTo, signerKey := some signer.expression, source := .keyExpression }
-  | .error .scriptPathDerivationRequired =>
-    let some signer := (VaultCosignerKey.make (text ++ "/<0;1>/*") .scriptPath network).toOption | throw "unrecognised"
-    let some payTo := (PersonPayTo.ofDescriptor s!"tr({signer.expression})" network).toOption | throw "unrecognised"
-    return { name := none, payTo := some payTo, signerKey := some signer.expression, source := .keyExpression }
-  | .error .missingOrigin =>
-    for candidate in [text, text ++ "/0/*"] do
-      if let .ok payTo := PersonPayTo.ofDescriptor s!"tr({candidate})" network then
-        return { name := none, payTo := some payTo, signerKey := none, source := .keyExpression }
-    discard <| (PersonPayTo.ofDescriptor s!"tr({text}/0/*)" network).mapError (·.name)
-    throw "unrecognised"
-  | .error .malformed => throw "unrecognised"
-  | .error e => throw e.name
+  for candidate in [text, text ++ "/<0;1>/*", text ++ "/0/*"] do
+    match PersonPayTo.ofDescriptor s!"tr({candidate})" network with
+    | .ok payTo => return { name := none, payTo := some payTo, source := .keyExpression }
+    | .error .privateKey => throw "privateKey"
+    | .error (.wrongNetwork _) => throw "wrongNetwork"
+    | .error _ => continue
+  throw "unrecognised"
 
 /-- Whatever was pasted on the Add-person screen, validated into a person's fields. -/
 def parse (text : String) (network : BitcoinNetwork) : PM PersonImport := do
   let trimmed := Unicode.trimWhitespace text
   if trimmed.isEmpty then throw "empty"
   if trimmed.startsWith "{" then return ← parseCard trimmed network
-  if trimmed.startsWith "tr(" || trimmed.startsWith "rawtr(" then return ← parseDescriptor trimmed network
+  if trimmed.startsWith "tr(" || trimmed.startsWith "rawtr(" then
+    let payTo ← (PersonPayTo.ofDescriptor trimmed network).mapError (·.name)
+    return { name := none, payTo := some payTo, source := .descriptor }
   if let .ok payTo := PersonPayTo.ofAddress trimmed network then
-    return { name := none, payTo := some payTo, signerKey := none, source := .address }
+    return { name := none, payTo := some payTo, source := .address }
   if let some e := addressError trimmed network then throw e
   parseKeyExpression trimmed network
 
 end PersonPaste
-
-/-! ## Labels -/
-
-inductive PaymentLabel where
-  | savings (name : String) | person (name : String) | you | unknown
-  deriving Inhabited, BEq
-
-structure PaymentLabeler where
-  savingsName : String
-  personScripts : Array (ByteArray × String)
-  ownScripts : Array ByteArray
-  deriving Inhabited
-
-def PaymentLabeler.label (l : PaymentLabeler) (script : ByteArray) (isVaultOwned : Bool) : PaymentLabel :=
-  if isVaultOwned then .savings l.savingsName
-  else match (l.personScripts.reverse.find? (·.1 == script)) with
-    | some (_, n) => .person n
-    | none => if l.ownScripts.contains script then .you else .unknown
 
 end Winnow

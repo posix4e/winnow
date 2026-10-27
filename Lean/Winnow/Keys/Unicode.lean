@@ -161,3 +161,31 @@ def trimWhitespace (s : String) : String :=
   String.ofList ((s.toList.dropWhile isWhitespaceOrNewline).reverse.dropWhile isWhitespaceOrNewline).reverse
 
 end Winnow.Keys.Unicode
+
+namespace Winnow.Keys
+
+/-- WalletCore's `Data(hex:)`: trims whitespace and newlines, then pairs of characters, each parsed as
+Swift's `UInt8(_, radix: 16)` (which takes a sign: `+f` is 15, `-0` is 0). -/
+def dataOfHex? (s : String) : Option ByteArray := Id.run do
+  let cs := (Unicode.trimWhitespace s).toList.toArray
+  if cs.isEmpty || cs.size % 2 != 0 then return none
+  let digit (c : Char) : Option Nat :=
+    if '0' ≤ c ∧ c ≤ '9' then some (c.toNat - '0'.toNat)
+    else if 'a' ≤ c ∧ c ≤ 'f' then some (c.toNat - 'a'.toNat + 10)
+    else if 'A' ≤ c ∧ c ≤ 'F' then some (c.toNat - 'A'.toNat + 10)
+    else none
+  let mut out := ByteArray.empty
+  for i in [0:cs.size / 2] do
+    let a := cs[2 * i]!
+    let b := cs[2 * i + 1]!
+    let v : Option Nat := match a, digit a, digit b with
+      | _, some x, some y => some (16 * x + y)
+      | '+', none, some y => some y
+      | '-', none, some 0 => some 0
+      | _, _, _ => none
+    match v with
+    | some x => out := out.push x.toUInt8
+    | none => return none
+  return some out
+
+end Winnow.Keys

@@ -6,7 +6,9 @@ import Winnow.Tx.AddressDecoder
 
 Port of `Sources/WalletCore/Descriptors/Descriptor.swift`: parse (with the optional `#checksum`),
 canonical serialization, validation, and derivation of `tr(KEY)`, `tr(KEY,TREE)` and `rawtr(KEY)` with
-`pk` / `multi_a` / `sortedmulti_a` leaves, BIP389 multipath and BIP390 `musig()` keys.
+`pk` / `multi_a` / `sortedmulti_a` leaves and BIP389 multipath. Every key is one key with an optional origin
+and derivation suffix (`SingleKey`); `musig()` aggregation is not part of this build (upstream removed it
+with MuSig2), so `musig(…)` is refused as a key (`invalidKey`).
 
 The Swift parser walks `Character`s and classifies them with `isLetter` / `isNumber`. Descriptors are
 ASCII (the BIP380 charset); for other characters `isLetter`/`isNumber` here cover the Latin, Greek,
@@ -26,7 +28,7 @@ inductive DescriptorError where
   | unexpectedCharacter (c : Char)
   | unknownExpression (s : String)
   | invalidOrigin | originTooDeep | keyDepthExhausted | invalidKey | invalidPath | invalidThreshold
-  | invalidContext | invalidMuSig | derivationFailed | treeTooDeep
+  | invalidContext | derivationFailed | treeTooDeep
   deriving Inhabited, BEq
 
 def DescriptorError.name : DescriptorError → String
@@ -35,20 +37,19 @@ def DescriptorError.name : DescriptorError → String
   | .unknownExpression _ => "unknownExpression" | .invalidOrigin => "invalidOrigin"
   | .originTooDeep => "originTooDeep" | .keyDepthExhausted => "keyDepthExhausted" | .invalidKey => "invalidKey"
   | .invalidPath => "invalidPath" | .invalidThreshold => "invalidThreshold" | .invalidContext => "invalidContext"
-  | .invalidMuSig => "invalidMuSig" | .derivationFailed => "derivationFailed" | .treeTooDeep => "treeTooDeep"
+  | .derivationFailed => "derivationFailed" | .treeTooDeep => "treeTooDeep"
 
 /-- What derivation can throw: the descriptor's own errors, or those of the layers it calls (as the Swift
 original lets them through). -/
 inductive DescriptorFailure where
   | descriptor (e : DescriptorError)
   | taproot (e : TaprootError)
-  | musig (e : MuSigError)
   | multisig (e : MultisigError)
   | bech32 (e : Bech32Error)
   deriving Inhabited
 
 def DescriptorFailure.name : DescriptorFailure → String
-  | .descriptor e => e.name | .taproot e => e.name | .musig e => e.name | .multisig e => e.name
+  | .descriptor e => e.name | .taproot e => e.name | .multisig e => e.name
   | .bech32 e => e.name
 
 /-- Legacy address prefix of an extended-key network. -/
@@ -93,15 +94,10 @@ structure SingleKey where
   derivation : Derivation := {}
   deriving Inhabited
 
-inductive KeyExpression where
-  | single (k : SingleKey)
-  | musig (participants : Array SingleKey) (derivation : Derivation)
-  deriving Inhabited
-
 inductive Leaf where
-  | pk (key : KeyExpression)
-  | multiA (threshold : Int) (keys : Array KeyExpression)
-  | sortedMultiA (threshold : Int) (keys : Array KeyExpression)
+  | pk (key : SingleKey)
+  | multiA (threshold : Int) (keys : Array SingleKey)
+  | sortedMultiA (threshold : Int) (keys : Array SingleKey)
   deriving Inhabited
 
 inductive ScriptTree where
@@ -110,8 +106,8 @@ inductive ScriptTree where
   deriving Inhabited
 
 inductive ScriptExpression where
-  | tr (key : KeyExpression) (tree : Option ScriptTree)
-  | rawtr (key : KeyExpression)
+  | tr (key : SingleKey) (tree : Option ScriptTree)
+  | rawtr (key : SingleKey)
   deriving Inhabited
 
 structure DerivedOutput where
@@ -330,27 +326,12 @@ def parseKeyBase : PM KeyBase := do
     return .extended key (if token.startsWith "t" then .testnet else .mainnet)
   StateT.lift (wifPrivateKey token)
 
-def parseSingle : PM SingleKey := do
+def parseKeyExpression : PM SingleKey := do
   let origin ← parseOrigin
   let base ← parseKeyBase
   let derivation ← parseDerivation
   if !base.isExtended && !derivation.elements.isEmpty then throw .invalidPath
   return { origin, base, derivation }
-
-def parseKeyExpression : PM KeyExpression := do
-  let s0 ← get
-  let origin ← parseOrigin
-  if ← consumeStr "musig(" then
-    let mut participants : Array SingleKey := #[]
-    repeat
-      participants := participants.push (← parseSingle)
-      unless ← consume ',' do break
-    expect ')'
-    if origin.isSome then throw .invalidMuSig
-    return .musig participants (← parseDerivation)
-  -- not musig: the origin parsed above belongs to a single key
-  set s0
-  return .single (← parseSingle)
 
 partial def parseTree (depth : Nat := 0) : PM ScriptTree := do
   unless depth ≤ maximumTreeDepth do throw .treeTooDeep
@@ -374,7 +355,7 @@ partial def parseTree (depth : Nat := 0) : PM ScriptTree := do
         (parseRadix thresholdText 10).bind fun v => if v < 2 ^ 63 then some (v : Int) else none
       else none
     let some threshold := threshold? | throw .invalidThreshold
-    let mut keys : Array KeyExpression := #[]
+    let mut keys : Array SingleKey := #[]
     while ← consume ',' do keys := keys.push (← parseKeyExpression)
     expect ')'
     unless threshold ≥ 1 && threshold ≤ keys.size && keys.size ≤ Multisig.maxKeys do throw .invalidThreshold
@@ -404,37 +385,23 @@ structure Descriptor where
 
 namespace Descriptor
 
-partial def collectKeys : ScriptTree → Array KeyExpression
+partial def collectKeys : ScriptTree → Array SingleKey
   | .leaf (.pk k) => #[k]
   | .leaf (.multiA _ ks) | .leaf (.sortedMultiA _ ks) => ks
   | .branch l r => collectKeys l ++ collectKeys r
 
-def allKeys (d : Descriptor) : Array KeyExpression :=
+def allKeys (d : Descriptor) : Array SingleKey :=
   match d.expression with
   | .tr k t => #[k] ++ (t.map collectKeys).getD #[]
   | .rawtr k => #[k]
 
-def keyCounts : KeyExpression → Array Nat
-  | .single s => #[s.derivation.multipathCount]
-  | .musig ps d => ps.map (·.derivation.multipathCount) |>.push d.multipathCount
-
+/-- Every multipath element in the descriptor must offer the same number of choices (BIP389). -/
 def validate (d : Descriptor) : Except DescriptorError Unit := do
-  for key in d.allKeys do
-    let .musig participants derivation := key | continue
-    for e in derivation.elements do
-      match e with
-      | .step s => if s ≥ HDKey.hardenedOffset then throw .invalidMuSig
-      | .multipath vs => if vs.any (· ≥ HDKey.hardenedOffset) then throw .invalidMuSig
-      | .wildcard true => throw .invalidMuSig
-      | _ => pure ()
-    if !derivation.elements.isEmpty then
-      for p in participants do
-        unless p.base.isExtended && !p.derivation.isRanged && p.derivation.multipathCount == 1 do throw .invalidMuSig
-  let counts := (d.allKeys.flatMap keyCounts).filter (· > 1)
+  let counts := (d.allKeys.map (·.derivation.multipathCount)).filter (· > 1)
   if let some first := counts[0]? then
     if counts.any (· != first) then throw .invalidPath
 
-def multipathCount (d : Descriptor) : Nat := (d.allKeys.flatMap keyCounts).foldl max 1
+def multipathCount (d : Descriptor) : Nat := (d.allKeys.map (·.derivation.multipathCount)).foldl max 1
 
 /-- `Descriptor(_:)`: parse, with the `#checksum` (when present) validated. -/
 def parse (string : String) : Except DescriptorError Descriptor := do
@@ -478,9 +445,7 @@ def serializeSingle (k : SingleKey) : String :=
     | .extended key network => key.serialized network
   origin ++ base ++ serializeDerivation k.derivation
 
-def serializeKey : KeyExpression → String
-  | .single s => serializeSingle s
-  | .musig ps d => "musig(" ++ ",".intercalate (ps.toList.map serializeSingle) ++ ")" ++ serializeDerivation d
+def serializeKey : SingleKey → String := serializeSingle
 
 def serializeLeaf : Leaf → String
   | .pk k => s!"pk({serializeKey k})"
@@ -501,10 +466,7 @@ def serialized (d : Descriptor) : String :=
   let body := serializeExpression d.expression
   body ++ "#" ++ Checksum.create body
 
-def isRanged (d : Descriptor) : Bool :=
-  d.allKeys.any fun
-    | .single s => s.derivation.isRanged
-    | .musig ps dv => dv.isRanged || ps.any (·.derivation.isRanged)
+def isRanged (d : Descriptor) : Bool := d.allKeys.any (·.derivation.isRanged)
 
 /-! ## Derivation -/
 
@@ -548,15 +510,8 @@ def compressed : KeyBase → DM ByteArray
 
 def xonly (k : ByteArray) : ByteArray := k.extract 1 k.size
 
-def resolveKey (key : KeyExpression) (index : UInt32) (choice : Nat) : DM ByteArray := do
-  match key with
-  | .single s => compressed (← deriveSingle s index choice)
-  | .musig ps derivation =>
-    let keys ← ps.mapM fun p => do compressed (← deriveSingle p index choice)
-    let aggregate ← (MuSig.aggregate (MuSig.keySort keys.toList)).mapError .musig
-    if derivation.elements.isEmpty then return aggregate
-    let synthetic ← (MuSig.syntheticExtendedKey aggregate).mapError .musig
-    return (← apply derivation synthetic index choice).publicKey
+def resolveKey (key : SingleKey) (index : UInt32) (choice : Nat) : DM ByteArray := do
+  compressed (← deriveSingle key index choice)
 
 def resolveLeaf (l : Leaf) (index : UInt32) (choice : Nat) : DM ByteArray := do
   match l with
@@ -609,7 +564,7 @@ def resolvedTaproot (d : Descriptor) (index : UInt32) (choice : Nat := 0) : DM (
   return (internal, t)
 
 /-- A key expression's compressed public key at (`index`, `choice`). -/
-def publicKey (key : KeyExpression) (index : UInt32) (choice : Nat := 0) : DM ByteArray :=
+def publicKey (key : SingleKey) (index : UInt32) (choice : Nat := 0) : DM ByteArray :=
   resolveKey key index choice
 
 end Descriptor

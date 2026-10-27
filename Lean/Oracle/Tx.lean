@@ -284,10 +284,6 @@ def originsJ (os : Array (ByteArray × PSBT.KeyOrigin)) : Json := Json.arr (os.m
   ("key", hexJ k), ("leafHashes", hexArr o.leafHashes), ("fingerprint", natJ o.masterFingerprint.toNat),
   ("path", Json.arr (o.path.map (natJ ·.toNat)))])
 
-def musigJ (vs : Array (PSBT.MuSig2KeyID × ByteArray)) : Json := Json.arr (vs.map fun (id, v) => Json.mkObj [
-  ("participant", hexJ id.participant), ("aggregate", hexJ id.aggregate), ("leafHash", optJ hexJ id.leafHash),
-  ("value", hexJ v)])
-
 def psbtInputJ (i : PSBT.Input) : Json := Json.mkObj [
   ("previousTxid", optJ hexJ i.previousTxid), ("outputIndex", optJ (natJ ·.toNat) i.outputIndex),
   ("sequence", optJ (natJ ·.toNat) i.sequence), ("sighashType", optJ (natJ ·.toNat) i.sighashType),
@@ -299,10 +295,7 @@ def psbtInputJ (i : PSBT.Input) : Json := Json.mkObj [
   ("tapLeafScripts", Json.arr (i.tapLeafScripts.map fun l => Json.mkObj [("controlBlock", controlBlockJ l.controlBlock),
     ("script", hexJ l.script), ("leafVersion", natJ l.leafVersion.toNat), ("leafHash", hexJ l.leafHash)])),
   ("tapScriptSignatures", Json.arr (i.tapScriptSignatures.map fun (id, sig) => Json.mkObj [
-    ("publicKey", hexJ id.publicKey), ("leafHash", hexJ id.leafHash), ("signature", hexJ sig)])),
-  ("musig2ParticipantPubKeys", Json.arr (i.musig2ParticipantPubKeys.map fun (a, ps) => Json.mkObj [
-    ("aggregate", hexJ a), ("participants", hexArr ps)])),
-  ("musig2PubNonces", musigJ i.musig2PubNonces), ("musig2PartialSigs", musigJ i.musig2PartialSigs)]
+    ("publicKey", hexJ id.publicKey), ("leafHash", hexJ id.leafHash), ("signature", hexJ sig)]))]
 
 def psbtOutputJ (o : PSBT.Output) : Json := Json.mkObj [
   ("amount", optJ i64J o.amount), ("script", optJ hexJ o.script), ("tapInternalKey", optJ hexJ o.tapInternalKey),
@@ -324,11 +317,6 @@ def originsOf (v : Json) : Except String (Array (ByteArray × PSBT.KeyOrigin)) :
   (← v.getArr?).mapM fun o => do
     pure (← bytes o "key", { leafHashes := ← bytesArr o "leafHashes", masterFingerprint := (← nat o "fingerprint").toUInt32,
                              path := ← (← arr o "path").mapM fun n => do pure (← n.getNat?).toUInt32 })
-
-def musigOf (v : Json) : Except String (Array (PSBT.MuSig2KeyID × ByteArray)) := do
-  (← v.getArr?).mapM fun o => do
-    pure ({ participant := ← bytes o "participant", aggregate := ← bytes o "aggregate", leafHash := ← optBytes o "leafHash" },
-          ← bytes o "value")
 
 def optField {α} (v : Json) (f : Json → Except String α) : Except String (Option α) :=
   match v with | .null => pure none | v => some <$> f v
@@ -353,10 +341,6 @@ def editInput (i : PSBT.Input) (field : String) (v : Json) : Except String PSBT.
   | "tapScriptSignatures" => return i.setTapScriptSignatures (← (← v.getArr?).mapM fun s => do
       pure (({ publicKey := ← bytes s "publicKey", leafHash := ← bytes s "leafHash" } : PSBT.TapScriptSignatureID),
             ← bytes s "signature"))
-  | "musig2ParticipantPubKeys" => return i.setMusig2ParticipantPubKeys (← (← v.getArr?).mapM fun m => do
-      pure (← bytes m "aggregate", ← bytesArr m "participants"))
-  | "musig2PubNonces" => return i.setMusig2PubNonces (← musigOf v)
-  | "musig2PartialSigs" => return i.setMusig2PartialSigs (← musigOf v)
   | other => throw s!"input field {other}"
 
 def editOutput (o : PSBT.Output) (field : String) (v : Json) : Except String PSBT.Output := do

@@ -53,11 +53,15 @@ def FilterSyncStorageError.name : FilterSyncStorageError → String
 
 /-- Where a peer came from (`PeerSource`, Network/Peers/PeerDiversity.swift). -/
 inductive PeerSource where
-  | manual | persisted | fallback | dnsSeed
+  | manual | persisted
+  /-- The census list (upstream renamed `fallback` to `census` and kept the raw value `"fallback"`, so a
+  saved peer keeps its provenance). -/
+  | census
+  | dnsSeed
   deriving BEq, Inhabited, Repr, DecidableEq
 
 def PeerSource.ofRaw? : String → Option PeerSource
-  | "manual" => some .manual | "persisted" => some .persisted | "fallback" => some .fallback
+  | "manual" => some .manual | "persisted" => some .persisted | "fallback" => some .census
   | "dnsSeed" => some .dnsSeed | _ => none
 
 inductive PersistenceState where

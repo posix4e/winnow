@@ -10,9 +10,6 @@ import Winnow.Wallet.Descriptor
 import Winnow.Wallet.Signer
 import Winnow.Wallet.PSBTRoles
 import Winnow.Wallet.Characters
-import Winnow.Wallet.VaultRecord
 import Winnow.Wallet.ImportBundle
 import Winnow.Wallet.Wallet
-import Winnow.Wallet.VaultSetup
-import Winnow.Wallet.Vault
 import Winnow.Wallet.People
