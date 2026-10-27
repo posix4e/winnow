@@ -156,13 +156,13 @@ def walletDerivation : Array Descriptor.Element := #[.multipath #[0, 1], .wildca
 
 /-- The canonical multipath `tr()` descriptor for an account key. -/
 def makeDescriptor (accountKey : HDKey) (origin : Descriptor.KeyOrigin) (network : BitcoinNetwork) : Descriptor :=
-  { expression := .tr ({ origin := some origin, base := .extended accountKey.neutered (hdNetwork network),
-                                 derivation := { elements := walletDerivation } }) none }
+  { expression := .tr { origin := some origin, base := .extended accountKey.neutered (hdNetwork network),
+                        derivation := { elements := walletDerivation } } }
 
 /-- Validates the wallet descriptor shape and returns its key origin. -/
 def origin (d : Descriptor) : Except WalletError Descriptor.KeyOrigin := do
   let bad : WalletError := .invalidDescriptor "expected tr([fp/86'/c'/a']xpub/<0;1>/*)"
-  let .tr key none := d.expression | throw bad
+  let .tr key := d.expression | throw bad
   let some o := key.origin | throw bad
   unless key.derivation.elements == walletDerivation do throw bad
   if let .extended account _ := key.base then
@@ -242,7 +242,7 @@ def «open» (storagePath : System.FilePath) (keyStore : KeyStore IO) (random : 
     | throw (.wallet (.invalidBundle s!"unknown network {ImportBundle.excerpt state.network}"))
   let descriptor ← WM.liftE (·.name) (Descriptor.parse state.descriptor)
   discard <| WM.wallet (origin descriptor)
-  let .tr key none := descriptor.expression | throw (.wallet (.invalidDescriptor state.descriptor))
+  let .tr key := descriptor.expression | throw (.wallet (.invalidDescriptor state.descriptor))
   let .extended accountKey _ := key.base | throw (.wallet (.invalidDescriptor state.descriptor))
   make network descriptor accountKey.neutered keyStore (some storagePath) random state
 
@@ -861,7 +861,7 @@ def importedKeyMaterial (bundle : ImportBundle) (network : BitcoinNetwork) (keyS
   let some text := bundle.descriptor | throw (.wallet (.invalidBundle "no usable descriptor"))
   let parsed ← WM.liftE (·.name) (Descriptor.parse text)
   discard <| WM.wallet (origin parsed)
-  let .tr key none := parsed.expression | throw (.wallet (.invalidDescriptor text))
+  let .tr key := parsed.expression | throw (.wallet (.invalidDescriptor text))
   let .extended account _ := key.base | throw (.wallet (.invalidDescriptor text))
   return (parsed, account.neutered)
 

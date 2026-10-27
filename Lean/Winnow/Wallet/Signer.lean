@@ -80,7 +80,8 @@ def scriptPathSignature (tx : Transaction) (inputIndex : Int) (spentOutputs : Ar
 leaf script and the control block. `signatures` maps x-only keys to signature items. -/
 def multisigWitness (signatures : Array (ByteArray × ByteArray)) (leafScript : Script)
     (controlBlock : Tx.Taproot.ControlBlock) : Except SignerError (Array ByteArray) := do
-  let some (_, keys) := Multisig.parse leafScript | throw .malformedLeafScript
+  let some policy := Multisig.parsePolicy leafScript | throw .malformedLeafScript
+  let keys := policy.keys
   let stack := keys.reverse.map fun k => ((signatures.find? (·.1 == k)).map (·.2)).getD .empty
   return (stack.push leafScript.bytes).push controlBlock.serialized
 

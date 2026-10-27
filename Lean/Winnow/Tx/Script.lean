@@ -46,6 +46,10 @@ def oneNegate : UInt8 := 0x4f
 def checkSig : UInt8 := 0xac
 def checkSigAdd : UInt8 := 0xba
 def numEqual : UInt8 := 0x9c
+def numEqualVerify : UInt8 := 0x9d
+def checkSigVerify : UInt8 := 0xad
+/-- OP_CHECKSEQUENCEVERIFY (BIP112). -/
+def checkSequenceVerify : UInt8 := 0xb2
 def greaterThanOrEqual : UInt8 := 0xa2
 /-- OP_1 through OP_16 (0x51…0x60); the Swift original traps outside 1…16. -/
 def n (value : Nat) : UInt8 := 0x50 + value.toUInt8

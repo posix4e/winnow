@@ -118,16 +118,23 @@ def derived (k : HDKey) (path : String) : Except BIP32Error HDKey := do
   let comps := match comps with
     | c :: r => if c == "m" || c == "M" then r else c :: r
     | [] => []
-  let mut key := k
+  -- Every component is read before any child is derived (upstream 1cf93fb), so a bad component is
+  -- `invalidPath` even after a step that would exhaust the depth.
+  let mut indices : Array UInt32 := #[]
   for c in comps do
     let hardened := c.endsWith "'" || c.endsWith "h" || c.endsWith "H"
     let digits := if hardened then String.ofList c.toList.dropLast else c
     match parseUInt32 digits with
     | some index =>
       if index ≥ hardenedOffset then throw .invalidPath
-      key ← key.child (index + (if hardened then hardenedOffset else 0))
+      indices := indices.push (index + (if hardened then hardenedOffset else 0))
     | none => throw .invalidPath
-  return key
+  indices.foldlM (fun key i => key.child i) k
+
+/-- `derived(path: [UInt32])`: derives along already-numeric child indices (hardened ones carry
+`hardenedOffset`). -/
+def derivedPath (k : HDKey) (path : Array UInt32) : Except BIP32Error HDKey :=
+  path.foldlM (fun key i => key.child i) k
 
 /-- Base58Check serialization (78-byte payload: version/depth/fingerprint/index/chain/key). -/
 def serialized (k : HDKey) (network : Network := .mainnet) : String :=

@@ -3,9 +3,12 @@ import Winnow.Wallet.Signer
 
 /-! # PSBT roles (BIP370 / 371 / 373)
 
-Port of `Sources/WalletCore/PSBT/PSBTRoles.swift` on top of the Tx area's PSBT document: creator,
-signer (key path, `multi_a` script path), combiner, finalizer and extractor (the MuSig2 rounds went
-with MuSig2 upstream).
+Port of `Sources/WalletCore/PSBT/PSBTRoles.swift` (upstream 1cf93fb) on top of the Tx area's PSBT
+document: creator, signer (key path, script path over every signable leaf of an input), combiner,
+finalizer and extractor (the MuSig2 rounds went with MuSig2 upstream). Script-path inputs may carry
+several leaves (a signers' `multi_a` leaf and a timelocked recovery leaf): a signer signs every leaf its
+key is in whose timelock the input's sequence already meets, and the finalizer tries the leaves without a
+timelock first and puts exactly the leaf's threshold of signatures in the witness.
 (`unsignedTransaction` itself is in `Winnow.Tx.PSBT`.) Dictionaries of the Swift original are arrays of
 pairs here, with the last value per key kept and keys in byte order (`PSBT.dictSorted`). -/
 
@@ -121,13 +124,40 @@ def attachScriptPath (p : PSBT) (index : Int) (controlBlock : Tx.Taproot.Control
     i := i.setTapBIP32Derivation origins
   return p.modifyInput k fun _ => i
 
-/-- The signable leaf, its keys and its hash type. -/
-def leafSigningContext (p : PSBT) (index : Int) : RM (Nat × TapLeafScript × Array ByteArray × SighashBIP341.HashType) := do
+/-- Script-path fields for a tree of leaves: the internal key (from the first leaf's control block), one
+PSBT_IN_TAP_LEAF_SCRIPT per leaf, and the given origins, whose leaf hashes the caller sets. -/
+def attachScriptPaths (p : PSBT) (index : Int) (leaves : Array (Tx.Taproot.ControlBlock × Script × UInt8))
+    (keyOrigins : Array (ByteArray × KeyOrigin)) : RM PSBT := do
+  unless 0 ≤ index && index < p.inputs.size do perr (.missingField s!"input {index}")
+  let some (first, _, _) := leaves[0]? | perr (.missingField s!"input {index}")
+  let k := index.toNat
+  let i := (p.inputs[k]!.setTapInternalKey (some first.internalKey)).setTapLeafScripts
+    (leaves.map fun (cb, sc, v) => { controlBlock := cb, script := sc.bytes, leafVersion := v })
+  let mut origins := i.tapBIP32Derivation
+  for (key, o) in keyOrigins do
+    origins := match origins.findIdx? (·.1 == key) with
+      | some j => origins.set! j (key, o)
+      | none => origins.push (key, o)
+  return p.modifyInput k fun _ => i.setTapBIP32Derivation origins
+
+/-- Whether the leaf's relative timelock, if any, is met by the input's sequence (BIP68/BIP112). -/
+def lockIsMet (policy : LeafPolicy) (index : Nat) (tx : Transaction) : Bool :=
+  match policy.relativeLock with
+  | none => true
+  | some blocks => match tx.inputs[index]? with
+    | some input => RelativeLock.isSatisfied blocks input.sequence tx.version
+    | none => false
+
+/-- The signable leaves of one input with their policies and the input's hash type: leaf scripts that
+parse as multisig, and an output-committing sighash type. -/
+def leafSigningContexts (p : PSBT) (index : Int) : RM (Nat × Array (TapLeafScript × LeafPolicy) × SighashBIP341.HashType) := do
   let k ← p.checkIndex index
-  let some leaf := p.inputs[k]!.tapLeafScripts[0]? | perr (.missingField s!"input {k} tap leaf script")
-  let some (_, leafKeys) := Multisig.parse ⟨leaf.script⟩ | perr (.malformed s!"input {k} leaf script")
+  let leaves := p.inputs[k]!.tapLeafScripts
+  if leaves.isEmpty then perr (.missingField s!"input {k} tap leaf script")
   let hashType ← committingHashType p.inputs[k]!
-  return (k, leaf, leafKeys, hashType)
+  let contexts := leaves.filterMap fun leaf => (Multisig.parsePolicy ⟨leaf.script⟩).map (leaf, ·)
+  if contexts.isEmpty then perr (.malformed s!"input {k} leaf script")
+  return (k, contexts, hashType)
 
 def isP2TR (s : ByteArray) : Bool := s.size == 34 && s[0]! == 0x51 && s[1]! == 0x20
 
@@ -148,17 +178,22 @@ def selfVerifiedLeafSignature (secret : ByteArray) (k : Nat) (leaf : TapLeafScri
   unless ok do perr (.malformed "self-produced signature failed verification")
   return some ({ publicKey := xonly, leafHash := leaf.leafHash }, sig)
 
-/-- PSBT_IN_TAP_SCRIPT_SIG for every given secret whose x-only key is a leaf key. -/
+/-- PSBT_IN_TAP_SCRIPT_SIG for every given secret whose x-only key is a leaf key, on every leaf whose
+timelock (if any) the input's sequence already meets. -/
 def signScriptPath (p : PSBT) (index : Int) (privateKeys : Array ByteArray) (auxiliaryRand : ByteArray) : RM PSBT := do
-  let (k, leaf, leafKeys, hashType) ← p.leafSigningContext index
   let tx ← liftP p.unsignedTransaction
   let spent ← liftP p.spentOutputs
+  let (k, contexts, hashType) ← p.leafSigningContexts index
   let mut signatures := p.inputs[k]!.tapScriptSignatures
   let mut signed := 0
-  for secret in privateKeys do
-    let some (id, sig) ← selfVerifiedLeafSignature secret k leaf leafKeys tx spent hashType auxiliaryRand | continue
-    signatures := signatures.push (id, sig)
-    signed := signed + 1
+  for (leaf, policy) in contexts do
+    unless lockIsMet policy k tx do continue
+    for secret in privateKeys do
+      let some (id, sig) ← selfVerifiedLeafSignature secret k leaf policy.keys tx spent hashType auxiliaryRand | continue
+      signatures := match signatures.findIdx? (fun (i, _) => i.publicKey == id.publicKey && i.leafHash == id.leafHash) with
+        | some j => signatures.set! j (id, sig)
+        | none => signatures.push (id, sig)
+      signed := signed + 1
   if signed == 0 then perr (.missingField s!"input {k} matching leaf key")
   return p.modifyInput k (·.setTapScriptSignatures signatures)
 
@@ -229,22 +264,38 @@ def validScriptPathSignatures (p : PSBT) (k : Nat) (leaf : TapLeafScript) (tx : 
       | none => valid.push (id.publicKey, signature)
   return valid
 
+/-- Whether a key appears twice. -/
+def hasRepeatedKey (keys : Array ByteArray) : Bool := Id.run do
+  for h : i in [0:keys.size] do
+    for h2 : j in [i+1:keys.size] do
+      if keys[i] == keys[j] then return true
+  return false
+
+/-- The BIP387 witness for one leaf, carrying exactly its threshold of signatures (the first valid ones in
+script order), or `none` when fewer are valid, the leaf repeats a key or its lock is not met. -/
 def finalizedScriptPathWitness (p : PSBT) (k : Nat) (leaf : TapLeafScript) (tx : Transaction)
     (spent : Array SighashBIP341.SpentOutput) : RM (Option (Array ByteArray)) := do
   if leaf.leafVersion != leaf.controlBlock.leafVersion then return none
   let spentScript := spent[k]!.scriptPubKey
   unless isP2TR spentScript do perr (.malformed s!"input {k} witness utxo is not P2TR")
   if !leafCommitsToOutput leaf spentScript then return none
-  let some (threshold, leafKeys) := Multisig.parse ⟨leaf.script⟩ | return none
-  let valid := p.validScriptPathSignatures k leaf tx spent leafKeys
-  if (valid.size : Int) < threshold then return none
-  return some (← (Signer.multisigWitness valid ⟨leaf.script⟩ leaf.controlBlock).mapError (PSBTRoleError.sign ∘ .signer))
+  let some policy := Multisig.parsePolicy ⟨leaf.script⟩ | return none
+  if hasRepeatedKey policy.keys || !lockIsMet policy k tx then return none
+  let valid := p.validScriptPathSignatures k leaf tx spent policy.keys
+  let mut chosen : Array (ByteArray × ByteArray) := #[]
+  for key in policy.keys do
+    if (chosen.size : Int) < policy.threshold then
+      if let some (_, sig) := valid.find? (·.1 == key) then chosen := chosen.push (key, sig)
+  if (chosen.size : Int) != policy.threshold then return none
+  return some (← (Signer.multisigWitness chosen ⟨leaf.script⟩ leaf.controlBlock).mapError (PSBTRoleError.sign ∘ .signer))
 
-/-- The leaf keys whose signatures on input `index` verify (what the finalizer will count). -/
-def verifiedScriptPathSigners (p : PSBT) (index : Int) (tx : Transaction) (spent : Array SighashBIP341.SpentOutput) :
-    RM (Array ByteArray) := do
-  let (k, leaf, leafKeys, _) ← p.leafSigningContext index
-  return sortBytes id ((p.validScriptPathSignatures k leaf tx spent leafKeys).map (·.1))
+/-- The keys of the leaf with `leafHash` whose signatures on input `index` verify (what the finalizer will
+count); none when the input has no such signable leaf. In byte order (a Swift `Set`). -/
+def verifiedScriptPathSigners (p : PSBT) (index : Int) (leafHash : ByteArray) (tx : Transaction)
+    (spent : Array SighashBIP341.SpentOutput) : RM (Array ByteArray) := do
+  let (k, contexts, _) ← p.leafSigningContexts index
+  let some (leaf, policy) := contexts.find? (·.1.leafHash == leafHash) | return #[]
+  return sortBytes id ((p.validScriptPathSignatures k leaf tx spent policy.keys).map (·.1))
 
 /-- Final witnesses for every input, the partial fields removed — all or nothing. -/
 def finalize (p : PSBT) : RM PSBT := do
@@ -257,7 +308,11 @@ def finalize (p : PSBT) : RM PSBT := do
       witnesses := witnesses.push (← validatedKeyPathWitness k sig tx spent)
     else if !i.tapLeafScripts.isEmpty then
       let mut witness : Option (Array ByteArray) := none
-      for leaf in i.tapLeafScripts do
+      -- A leaf without a timelock first: it spends without waiting.
+      let isLocked := fun (leaf : TapLeafScript) =>
+        ((Multisig.parsePolicy ⟨leaf.script⟩).bind (·.relativeLock)).isSome
+      let ordered := i.tapLeafScripts.filter (!isLocked ·) ++ i.tapLeafScripts.filter isLocked
+      for leaf in ordered do
         witness ← p.finalizedScriptPathWitness k leaf tx spent
         if witness.isSome then break
       let some w := witness | perr (.missingField s!"input {k} tap script sigs below threshold")

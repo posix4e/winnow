@@ -94,7 +94,7 @@ def formatPath (path : Array UInt32) : String :=
 
 /-- `ownKeyExpression(multipathSuffix:)`: `[fp/86'/coin'/0']xpub…`, plus `/<0;1>/*` (the key others pay). -/
 def ownKeyExpressionOf (d : Descriptor) (multipath : Bool) : RM String := do
-  let .tr key none := d.expression | throw (.app .noWallet)
+  let .tr key := d.expression | throw (.app .noWallet)
   let some origin := key.origin | throw (.app .noWallet)
   let .extended accountKey hdNetwork := key.base | throw (.app .noWallet)
   let base := s!"[{Wallet.hex8 origin.fingerprint}/{formatPath origin.path}]{accountKey.serialized hdNetwork}"

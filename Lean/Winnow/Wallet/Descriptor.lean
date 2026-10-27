@@ -5,8 +5,9 @@ import Winnow.Tx.AddressDecoder
 /-! # Output descriptors (BIP380 / 386 / 387 / 389 / 390)
 
 Port of `Sources/WalletCore/Descriptors/Descriptor.swift`: parse (with the optional `#checksum`),
-canonical serialization, validation, and derivation of `tr(KEY)`, `tr(KEY,TREE)` and `rawtr(KEY)` with
-`pk` / `multi_a` / `sortedmulti_a` leaves and BIP389 multipath. Every key is one key with an optional origin
+canonical serialization, validation, and derivation of `tr(KEY)`, `tr(KEY,TREE)` (`trTree`) and `rawtr(KEY)`
+with `pk` / `multi_a` / `sortedmulti_a` leaves, the timelocked miniscript leaves `and_v(v:pk(KEY),older(N))`
+and `and_v(v:multi_a(k,KEY,…),older(N))` (upstream 1cf93fb), and BIP389 multipath. Every key is one key with an optional origin
 and derivation suffix (`SingleKey`); `musig()` aggregation is not part of this build (upstream removed it
 with MuSig2), so `musig(…)` is refused as a key (`invalidKey`).
 
@@ -17,8 +18,8 @@ classify a stray non-ASCII character the way Swift does (refused, with the same 
 Unicode table. Combining sequences (multi-scalar `Character`s) are not modelled.
 
 Tree leaves are their own type here (`Leaf`), so the Swift `invalidContext` of a `tr` nested in a
-tree, which the parser can never produce, has no counterpart; `resolvedTaproot` of a `rawtr` still
-throws it. -/
+tree, which the parser can never produce, has no counterpart; `resolvedTaproot` of a descriptor without a
+tree still throws it. -/
 
 namespace Winnow
 open Keys
@@ -29,6 +30,8 @@ inductive DescriptorError where
   | unknownExpression (s : String)
   | invalidOrigin | originTooDeep | keyDepthExhausted | invalidKey | invalidPath | invalidThreshold
   | invalidContext | derivationFailed | treeTooDeep
+  /-- An `older(N)` outside miniscript's 1…2^31 − 1. -/
+  | invalidTimelock
   deriving Inhabited, BEq
 
 def DescriptorError.name : DescriptorError → String
@@ -38,6 +41,7 @@ def DescriptorError.name : DescriptorError → String
   | .originTooDeep => "originTooDeep" | .keyDepthExhausted => "keyDepthExhausted" | .invalidKey => "invalidKey"
   | .invalidPath => "invalidPath" | .invalidThreshold => "invalidThreshold" | .invalidContext => "invalidContext"
   | .derivationFailed => "derivationFailed" | .treeTooDeep => "treeTooDeep"
+  | .invalidTimelock => "invalidTimelock"
 
 /-- What derivation can throw: the descriptor's own errors, or those of the layers it calls (as the Swift
 original lets them through). -/
@@ -94,10 +98,23 @@ structure SingleKey where
   derivation : Derivation := {}
   deriving Inhabited
 
+/-- The keys a timelocked leaf requires. -/
+inductive TimelockedKeys where
+  | pk (key : SingleKey)
+  | multiA (threshold : Int) (keys : Array SingleKey)
+  deriving Inhabited
+
+def TimelockedKeys.keys : TimelockedKeys → Array SingleKey | .pk k => #[k] | .multiA _ ks => ks
+def TimelockedKeys.threshold : TimelockedKeys → Int | .pk _ => 1 | .multiA t _ => t
+
+/-- A tapscript leaf (BIP386/BIP387 `LeafExpression`); valid only inside a `tr()` tree. -/
 inductive Leaf where
   | pk (key : SingleKey)
   | multiA (threshold : Int) (keys : Array SingleKey)
   | sortedMultiA (threshold : Int) (keys : Array SingleKey)
+  /-- `and_v(v:pk(KEY),older(N))` or `and_v(v:multi_a(k,KEY,…),older(N))`: spendable once the coin is
+  `blocks` old (BIP68/BIP112). -/
+  | timelocked (keys : TimelockedKeys) (blocks : UInt32)
   deriving Inhabited
 
 inductive ScriptTree where
@@ -105,8 +122,11 @@ inductive ScriptTree where
   | branch (left right : ScriptTree)
   deriving Inhabited
 
+/-- Top-level script expressions. `tr(KEY,TREE)` is its own case (`trTree`), so every single-key caller,
+which matches `.tr`, keeps refusing descriptors with a tree. -/
 inductive ScriptExpression where
-  | tr (key : SingleKey) (tree : Option ScriptTree)
+  | tr (key : SingleKey)
+  | trTree (key : SingleKey) (tree : ScriptTree)
   | rawtr (key : SingleKey)
   deriving Inhabited
 
@@ -333,6 +353,51 @@ def parseKeyExpression : PM SingleKey := do
   if !base.isExtended && !derivation.elements.isEmpty then throw .invalidPath
   return { origin, base, derivation }
 
+/-- `k,KEY,…)` after `multi_a(` or `sortedmulti_a(`: at most `Multisig.maxKeys` keys (the next one is
+refused before it is read), then the threshold within 1…n. -/
+def parseMultiArguments : PM (Int × Array SingleKey) := do
+  let thresholdText ← takeWhile isNumber
+  let threshold? : Option Int :=
+    if thresholdText.toList.all (fun c => '0' ≤ c && c ≤ '9') then
+      (parseRadix thresholdText 10).bind fun v => if v < 2 ^ 63 then some (v : Int) else none
+    else none
+  let some threshold := threshold? | throw .invalidThreshold
+  let mut keys : Array SingleKey := #[]
+  while ← consume ',' do
+    unless keys.size < Multisig.maxKeys do throw .invalidThreshold
+    keys := keys.push (← parseKeyExpression)
+  expect ')'
+  unless threshold ≥ 1 && threshold ≤ keys.size do throw .invalidThreshold
+  return (threshold, keys)
+
+/-- `v:pk(KEY),older(N))` or `v:multi_a(k,KEY,…),older(N))` after `and_v(`: the only miniscript this wallet
+reads. -/
+def parseTimelockedLeaf : PM Leaf := do
+  unless ← consumeStr "v:" do throw (.unknownExpression "and_v")
+  let inner ← takeWhile fun c => isLetter c || c == '_'
+  expect '('
+  let keys ← match inner with
+    | "pk" =>
+      let key ← parseKeyExpression
+      expect ')'
+      pure (TimelockedKeys.pk key)
+    | "multi_a" =>
+      let (threshold, ks) ← parseMultiArguments
+      pure (TimelockedKeys.multiA threshold ks)
+    | _ => throw (.unknownExpression s!"and_v(v:{inner}")
+  expect ','
+  unless ← consumeStr "older(" do throw (.unknownExpression "and_v")
+  let digits ← takeWhile isNumber
+  let blocks? : Option Nat :=
+    if !digits.isEmpty && digits.length ≤ 10 && digits.toList.all (fun c => '0' ≤ c && c ≤ '9') then
+      parseRadix digits 10
+    else none
+  let some blocks := blocks? | throw .invalidTimelock
+  unless blocks ≥ 1 && blocks < 0x8000_0000 do throw .invalidTimelock
+  expect ')'
+  expect ')'
+  return .timelocked keys blocks.toUInt32
+
 partial def parseTree (depth : Nat := 0) : PM ScriptTree := do
   unless depth ≤ maximumTreeDepth do throw .treeTooDeep
   if ← consume '{' then
@@ -349,17 +414,9 @@ partial def parseTree (depth : Nat := 0) : PM ScriptTree := do
     expect ')'
     return .leaf (.pk key)
   | "multi_a" | "sortedmulti_a" =>
-    let thresholdText ← takeWhile isNumber
-    let threshold? : Option Int :=
-      if thresholdText.toList.all (fun c => '0' ≤ c && c ≤ '9') then
-        (parseRadix thresholdText 10).bind fun v => if v < 2 ^ 63 then some (v : Int) else none
-      else none
-    let some threshold := threshold? | throw .invalidThreshold
-    let mut keys : Array SingleKey := #[]
-    while ← consume ',' do keys := keys.push (← parseKeyExpression)
-    expect ')'
-    unless threshold ≥ 1 && threshold ≤ keys.size && keys.size ≤ Multisig.maxKeys do throw .invalidThreshold
+    let (threshold, keys) ← parseMultiArguments
     return .leaf (if name == "multi_a" then .multiA threshold keys else .sortedMultiA threshold keys)
+  | "and_v" => return .leaf (← parseTimelockedLeaf)
   | _ => throw (.unknownExpression name)
 
 def parseTopLevel : PM ScriptExpression := do
@@ -368,9 +425,12 @@ def parseTopLevel : PM ScriptExpression := do
   match name with
   | "tr" =>
     let key ← parseKeyExpression
-    let tree ← if ← consume ',' then some <$> parseTree else pure none
+    if ← consume ',' then
+      let tree ← parseTree
+      expect ')'
+      return .trTree key tree
     expect ')'
-    return .tr key tree
+    return .tr key
   | "rawtr" =>
     let key ← parseKeyExpression
     expect ')'
@@ -388,12 +448,19 @@ namespace Descriptor
 partial def collectKeys : ScriptTree → Array SingleKey
   | .leaf (.pk k) => #[k]
   | .leaf (.multiA _ ks) | .leaf (.sortedMultiA _ ks) => ks
+  | .leaf (.timelocked c _) => c.keys
   | .branch l r => collectKeys l ++ collectKeys r
 
+/-- The top-level key: the only key of `tr(KEY)` and `rawtr(KEY)`, the internal key of `tr(KEY,TREE)`. -/
+def key (d : Descriptor) : SingleKey :=
+  match d.expression with
+  | .tr k | .rawtr k | .trTree k _ => k
+
+/-- Every key expression: the top-level key, then the leaf keys left to right. -/
 def allKeys (d : Descriptor) : Array SingleKey :=
   match d.expression with
-  | .tr k t => #[k] ++ (t.map collectKeys).getD #[]
-  | .rawtr k => #[k]
+  | .trTree k t => #[k] ++ collectKeys t
+  | _ => #[d.key]
 
 /-- Every multipath element in the descriptor must offer the same number of choices (BIP389). -/
 def validate (d : Descriptor) : Except DescriptorError Unit := do
@@ -451,14 +518,17 @@ def serializeLeaf : Leaf → String
   | .pk k => s!"pk({serializeKey k})"
   | .multiA t ks => s!"multi_a({t},{",".intercalate (ks.toList.map serializeKey)})"
   | .sortedMultiA t ks => s!"sortedmulti_a({t},{",".intercalate (ks.toList.map serializeKey)})"
+  | .timelocked (.pk k) blocks => s!"and_v(v:pk({serializeKey k})),older({blocks}))"
+  | .timelocked (.multiA t ks) blocks =>
+    s!"and_v(v:multi_a({t},{",".intercalate (ks.toList.map serializeKey)})),older({blocks}))"
 
 partial def serializeTree : ScriptTree → String
   | .leaf l => serializeLeaf l
   | .branch l r => "{" ++ serializeTree l ++ "," ++ serializeTree r ++ "}"
 
 def serializeExpression : ScriptExpression → String
-  | .tr k (some t) => s!"tr({serializeKey k},{serializeTree t})"
-  | .tr k none => s!"tr({serializeKey k})"
+  | .trTree k t => s!"tr({serializeKey k},{serializeTree t})"
+  | .tr k => s!"tr({serializeKey k})"
   | .rawtr k => s!"rawtr({serializeKey k})"
 
 /-- Canonical text with a freshly computed checksum. -/
@@ -524,6 +594,12 @@ def resolveLeaf (l : Leaf) (index : UInt32) (choice : Nat) : DM ByteArray := do
   | .sortedMultiA t keys =>
     let xs ← keys.mapM fun k => do pure (xonly (← resolveKey k index choice))
     return (← (Multisig.script t xs true).mapError .multisig).bytes
+  | .timelocked (.pk key) blocks =>
+    let k := xonly (← resolveKey key index choice)
+    return (← (Multisig.timelockedKeyScript k blocks).mapError .multisig).bytes
+  | .timelocked (.multiA t keys) blocks =>
+    let xs ← keys.mapM fun k => do pure (xonly (← resolveKey k index choice))
+    return (← (Multisig.timelockedMultiScript t xs blocks).mapError .multisig).bytes
 
 partial def resolveTree (t : ScriptTree) (index : UInt32) (choice : Nat) : DM Taproot.Tree := do
   match t with
@@ -532,12 +608,13 @@ partial def resolveTree (t : ScriptTree) (index : UInt32) (choice : Nat) : DM Ta
 
 def resolveExpression (e : ScriptExpression) (index : UInt32) (choice : Nat) : DM ByteArray := do
   match e with
-  | .tr key tree =>
+  | .tr key =>
     let internal := xonly (← resolveKey key index choice)
-    let root ← match tree with
-      | some t => pure (some (Taproot.merkleRoot (← resolveTree t index choice)))
-      | none => pure none
-    (Taproot.scriptPubKey internal root).mapError .taproot
+    (Taproot.scriptPubKey internal none).mapError .taproot
+  | .trTree key tree =>
+    let internal := xonly (← resolveKey key index choice)
+    let root := Taproot.merkleRoot (← resolveTree tree index choice)
+    (Taproot.scriptPubKey internal (some root)).mapError .taproot
   | .rawtr key => return ByteArray.mk #[0x51, 0x20] ++ xonly (← resolveKey key index choice)
 
 /-- The output(s) at `index`, one per multipath choice, with the Bitcoin network's address prefix. -/
@@ -554,14 +631,12 @@ def derived (d : Descriptor) (index : UInt32) (network : Tx.BitcoinNetwork) : DM
 def derivedForKeyNetwork (d : Descriptor) (index : UInt32) (network : HDKey.Network := .mainnet) : DM (Array DerivedOutput) :=
   d.derived index (if network == .mainnet then .mainnet else .signet)
 
-/-- The `tr()` internal key and resolved script tree at (`index`, `choice`). -/
-def resolvedTaproot (d : Descriptor) (index : UInt32) (choice : Nat := 0) : DM (ByteArray × Option Taproot.Tree) := do
-  let .tr key tree := d.expression | dErr .invalidContext
+/-- The `tr(KEY,TREE)` internal key and resolved script tree at (`index`, `choice`); `invalidContext` for a
+descriptor without a tree. -/
+def resolvedTaproot (d : Descriptor) (index : UInt32) (choice : Nat := 0) : DM (ByteArray × Taproot.Tree) := do
+  let .trTree key tree := d.expression | dErr .invalidContext
   let internal := xonly (← resolveKey key index choice)
-  let t ← match tree with
-    | some t => pure (some (← resolveTree t index choice))
-    | none => pure none
-  return (internal, t)
+  return (internal, ← resolveTree tree index choice)
 
 /-- A key expression's compressed public key at (`index`, `choice`). -/
 def publicKey (key : SingleKey) (index : UInt32) (choice : Nat := 0) : DM ByteArray :=

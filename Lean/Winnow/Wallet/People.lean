@@ -57,7 +57,7 @@ def receiveOnlyDerivation : Array Descriptor.Element := #[.step 0, .wildcard fal
 def ofDescriptor (text : String) (network : BitcoinNetwork) : Except PersonPayToError PersonPayTo := do
   let trimmed := Unicode.trimWhitespace text
   let some d := (Descriptor.parse trimmed).toOption | throw .malformed
-  let .tr key none := d.expression | throw .notSingleKey
+  let .tr key := d.expression | throw .notSingleKey
   match key.base with
   | .privateKey .. => throw .privateKey
   | .publicKey _ => throw .singleAddressKey

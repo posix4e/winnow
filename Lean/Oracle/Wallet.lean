@@ -113,7 +113,7 @@ def descJ (j : Json) : Except String (Except String Descriptor) := do
   return (Descriptor.parse (← str j "s")).mapError (·.name)
 
 def topKey (d : Descriptor) : Descriptor.SingleKey :=
-  match d.expression with | .tr k _ => k | .rawtr k => k
+  d.key
 
 /-- Run a refusable computation: its error name becomes the reply. -/
 def answerE (r : Except String Json) : Json := match r with | .ok v => ok v | .error e => err e
@@ -188,7 +188,10 @@ def flowStep (st : Json) (s : FlowState) : Except String (Except (String × List
     | .error e => pure (.error e)
   | "verifiedSigners" =>
     let r : PSBT.RM (Array ByteArray) := do
-      p.verifiedScriptPathSigners index (← PSBT.liftP p.unsignedTransaction) (← PSBT.liftP p.spentOutputs)
+      -- The leaf named by `leafHash`, else the input's first leaf (the pre-1cf93fb single-leaf call).
+      let first := ((p.inputs[index.toNat]?.bind (·.tapLeafScripts[0]?)).map (·.leafHash)).getD .empty
+      let leafHash := ((st.getObjValAs? String "leafHash").toOption.bind Wire.dataOfHex?).getD first
+      p.verifiedScriptPathSigners index leafHash (← PSBT.liftP p.unsignedTransaction) (← PSBT.liftP p.spentOutputs)
     match r with
     | .ok xs => done p [("signers", Json.arr ((sortBytes id xs).map hexJ))]
     | .error e => pure (.error (e.name, []))
@@ -288,7 +291,7 @@ def walletOps : List (String × Handler) := [
     return answerE do
       let d ← d?
       let (k, t) ← (d.resolvedTaproot index choice).mapError (·.name)
-      return Json.mkObj [("internalKey", hexJ k), ("tree", optJ treeJ t)]),
+      return Json.mkObj [("internalKey", hexJ k), ("tree", treeJ t)]),
   ("desc.publicKey", fun j => do
     let d? ← descJ j
     let index := (← nat j "index").toUInt32
