@@ -1,10 +1,11 @@
 import WinnowApp.Real.Send
 
-/-! # Networking controls: start/stop, reconnect, retry, the census catalog, peers
+/-! # Networking controls: start/stop, reconnect, retry, the census line, peers
 
 AppModel.swift: `scenePhaseChanged` (:553: active → `activate`, background → suspend + stop),
-`retryPeerDiscovery` (:593), `reconnect` (:2586), `refreshPeerCatalog` (:2612), `candidateCount`
-(:2636), `resetPeers` (:2642); SettingsView's catalog line and peer rows. -/
+`retryPeerDiscovery` (:593), `reconnect` (:2586), `candidateCount` (:2636), `resetPeers` (:2642);
+SettingsView's census line (the list each build ships; upstream e5ce950 removed the download and its
+Refresh button) and peer rows. -/
 
 namespace WinnowApp.Real
 open Winnow Winnow.IO Winnow.Net
@@ -44,45 +45,12 @@ def candidateCount (c : CensusCatalog) : String :=
   let n := (c.clearnet.map (·.size)).getD 0
   s!"{n} {if n == 1 then "candidate" else "candidates"}"
 
-def catalogStore (env : Env) (dir : String) : CensusCatalogStore :=
-  let root := (System.FilePath.mk dir).parent.getD (System.FilePath.mk dir)
-  { path := root / "mainnet" / "downloaded-census.json", minimumEntries := env.deps.censusMinimumEntries }
-
-def cancelledRefreshText : String := "Refresh cancelled; previous peer list retained."
-
-/-- `refreshPeerCatalog()`: the signed list through the routed client; the notice. -/
-def refreshCatalog (env : Env) (progress : Nat → IO Unit) : IO String := do
-  let claim ← env.modifyGet fun c =>
-    if c.refreshingCatalog || !c.active then (none, c)
-    else (some (c.generation, c.http, c.dir, c.network), { c with refreshingCatalog := true })
-  let some (epoch, http, dir, network) := claim | failText cancelledRefreshText
-  try
-    let url ← env.deps.censusURL
-    let data ← runNet (http.get url CensusCatalog.maximumBytes (progress := some progress))
-    let signature ← runNet (http.get (url ++ ".sig") Keys.CensusSignature.maximumBytes)
-    let c ← env.get
-    let some dir := dir | failText cancelledRefreshText
-    if c.generation != epoch || !c.active then failText cancelledRefreshText
-    let download ← match ← (catalogStore env dir).replace data (some signature) (← env.deps.wallSeconds) env.deps.censusKeys with
-      | .ok d => pure d
-      | .error e => failText (censusErrorText e)
-    if network == some .mainnet then
-      if let some s := c.stack then
-        match ← s.pool.updateCensusCatalog download.catalog with
-        | .ok () => pure ()
-        | .error e => failText s!"Invalid census peer list: {e.name}."
-    env.journal "peers.catalogRefreshed" [("date", download.catalog.date), ("sha256", download.sha256)]
-    return s!"Observed {download.catalog.date}: {candidateCount download.catalog}. Active peers unchanged."
-  finally
-    env.modify fun c => { c with refreshingCatalog := false }
-
-/-- SettingsView's catalog line when no refresh notice is showing. -/
+/-- SettingsView's census line: the list this build ships (`CensusCatalog.bundled`), or the sentence for
+a build without one. -/
 def catalogStatus (env : Env) : IO String := do
-  let fallback := "Using bundled candidates. Downloaded catalogs expire after seven days."
-  let some dir := (← env.get).dir | return fallback
-  match ← (catalogStore env dir).load (← env.deps.wallSeconds) env.deps.censusKeys with
-  | some d => return s!"Observed {d.catalog.date}: {candidateCount d.catalog}."
-  | none => return fallback
+  match ← env.deps.census with
+  | some c => return s!"Observed {c.date}: {candidateCount c}."
+  | none => return "This build carries no peer list. Winnow uses saved peers and, when clearnet is allowed, DNS seeds."
 
 /-- SettingsView's connected-peer rows. -/
 def connectedPeers (env : Env) : IO (List PeerInfo) := do
@@ -93,7 +61,7 @@ def connectedPeers (env : Env) : IO (List PeerInfo) := do
                       startHeight := (← p.peerStartHeight).toInt, feeFilter := (← p.feeFilter).map natOf }
   return out.toList
 
-/-- `resetPeers()`: forget learned peers (manual peers and the catalog stay), avoid the current ones
+/-- `resetPeers()`: forget learned peers (manual peers and the shipped list stay), avoid the current ones
 first next time, and come back up. -/
 def resetPeers (env : Env) : IO Unit := do
   let c ← env.get

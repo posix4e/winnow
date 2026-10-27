@@ -1,6 +1,6 @@
 import WinnowApp.Common
 
-/-! HomeView.swift and BeginnerHomeView.swift: the balance, sync, savings rows and activity; HistoryRow,
+/-! HomeView.swift and BeginnerHomeView.swift: the balance, sync and activity; HistoryRow,
 PaymentDetailView (recipients, receive labels, sender, details, transaction) and FeeBumpView. -/
 
 namespace WinnowApp
@@ -30,12 +30,12 @@ def Model.loadPayment (m : Model) : Model × List Cmd :=
 def Model.openPerson (m : Model) (mode : PersonMode) (address : String) : Model × List Cmd :=
   let name := (mode.personID.bind m.person?).map (·.name) |>.getD ""
   let m' := { m with person := { mode, name, pasted := address } }.present .addPerson
-  (m', if address.trimAscii.isEmpty then [] else [.parsePaste m.generation address mode.forSigning])
+  (m', if address.trimAscii.isEmpty then [] else [.parsePaste m.generation address])
 
 /-- A fresh Send form addressed to a saved person (SendView's `consumeRequestedPerson`). -/
-def Model.sendTo (m : Model) (personID : Option String) (accountID : Option String) : Model × List Cmd :=
+def Model.sendTo (m : Model) (personID : Option String) : Model × List Cmd :=
   let p := personID.bind m.person?
-  let inputs : SendInputs := { network := m.settings.network, walletID := m.walletID, accountID,
+  let inputs : SendInputs := { network := m.settings.network, walletID := m.walletID,
                                personID := p.map (·.id), paymentIndex := p.map (·.nextPaymentIndex) }
   let m := { m with send := { inputs } }
   if m.settings.advancedMode then ({ m with tab := 1, routes := [] }, [.resolveRate m.generation inputs m.status.feeFloorMilli])
@@ -47,7 +47,6 @@ def stepHome (msg : HomeMsg) (m : Model) : Model × List Cmd :=
   let g := m.generation
   match msg with
   | .openPayment txid => { m with routes := m.routes ++ [Route.payment txid], payment := {}, expanded := [] }.loadPayment
-  | .openAccount id => ({ m with routes := m.routes ++ [Route.account id], expanded := [] }, [])
   | .openBackup => ({ m with routes := m.routes ++ [Route.backup] }, [])
   | .pop => ({ m with routes := m.routes.dropLast, payment := {}, expanded := [] }, [])
   | .loadPayment => m.loadPayment
@@ -65,7 +64,7 @@ def stepHome (msg : HomeMsg) (m : Model) : Model × List Cmd :=
   | .removeSenderLabel => match m.currentPayment? with
     | some t => (m, [.removeSenderLabel g t])
     | none => (m, [])
-  | .sendToPerson pid => m.sendTo (some pid) none
+  | .sendToPerson pid => m.sendTo (some pid)
   | .openFeeBump => match m.currentPayment? with
     | some t => ({ m with feeBump := { txid := t } }.present .feeBump, [.pendingFeeRate g t])
     | none => (m, [])
@@ -125,19 +124,10 @@ def activitySection (m : Model) : H :=
     (if m.status.history.isEmpty then [caption "Nothing yet. Payments appear here once they are confirmed."]
      else m.status.history.map (historyRow m))
 
-/-- Beginner mode's shared savings rows. -/
-def beginnerSavings (m : Model) : H :=
-  .section (if m.records.vaults.isEmpty then "" else "Shared savings") ""
-    ((m.records.vaults.map fun v =>
-        .row [.col [.button v.name .plain (some (.home (.openAccount v.id))), caption (vaultRule v)], .spacer,
-              caption (satsText v.balance)]) ++
-     [.button "Save with someone…" .plain (some (.vault .openChooser))])
-
 def beginnerSections (m : Model) : List H :=
   [ balanceSection m
   , .section "" "" [.row [.button "Receive" .plain (some .openReceive), .button "Send" .primary (some .openSend)]]
   , activitySection m
-  , beginnerSavings m
   , .section "" "" [.button "Back up wallet" .plain (some (.home .openBackup)), caption "Backup file and recovery words"] ]
 
 /-- Advanced mode's Sync section. -/
@@ -158,14 +148,6 @@ def syncSection (m : Model) : H :=
 
 def walletSections (m : Model) : List H :=
   [ .section "" "" [caption "Balance · confirmed", .text (satsText m.status.balance) .title, caption s!"{m.status.utxoCount} UTXO(s)"]
-  , .section "Savings" ""
-      ((m.records.vaults.map fun v =>
-          .col [.button v.name .plain (some (.home (.openAccount v.id))),
-                caption s!"{v.threshold} of {v.signerCount} keys required · {satsText v.balance}"]) ++
-       [ .button "Save with other people" .plain (some (.vault .openSavingsCreate))
-       , .button "Add a shared account" .plain (some (.vault .openSavingsAdd))
-       , .button "New account with custom rules" .plain (some (.vault (.openCreate .scriptPath)))
-       , .button "Require another signing device" .plain (some (.vault (.openCreate .muSig2))) ])
   , syncSection m
   , .section "Transactions" ""
       (if m.status.history.isEmpty then [caption "No transactions yet. Payments appear here once they confirm in a block."]

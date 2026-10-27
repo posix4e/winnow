@@ -26,7 +26,6 @@ targets:
       - { path: ../../docs/mobile.html, buildPhase: resources }
       - { path: ../../docs/read-side.html, buildPhase: resources }
       - { path: ../../docs/write-side.html, buildPhase: resources }
-      - { path: ../../docs/vaults.html, buildPhase: resources }
       - { path: ../../docs/import.html, buildPhase: resources }
     info:
       path: build/Info.plist

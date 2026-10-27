@@ -1,14 +1,16 @@
 import Lean.Data.Json
-import WinnowApp.Real.RecordsSession
+import WinnowApp.Real.Records
 
 /-! `oracle-records`: the Lean side of `LeanOracle/Records/main.swift` (lockstep generator
 `LeanOracle/gen/f_records.py`). One JSON request per line on stdin, one reply per line.
 
-Ops: `seal.seal` / `seal.open` (the sealed file format), `store.open` (configure a vault or people store
-over a given file: result, records, the file afterwards), `people.script` (a sequence of people-store
-mutations, person ids renamed by creation order), `records.derive` (AppModel's derived data over given
-files), `own.key` (`ownKeyExpression` and the own card), `paste` (the Add-person preview), `labels.run`
-(the receive-label store over a given file), `lookup.parse` (an explorer answer). -/
+Ops: `seal.seal` / `seal.open` (the sealed file format), `store.open` (configure a people store over a
+given file: result, records, the file afterwards), `people.script` (a sequence of people-store mutations,
+person ids renamed by creation order), `records.derive` (AppModel's derived data over a given people
+file), `own.key` (`ownKeyExpression` and the own card), `paste` (the Add-person preview), `labels.run` (the
+receive-label store over a given file), `lookup.parse` (an explorer answer). The vault store, the
+shared-savings reading and signer fingerprints went with vaults (upstream 1cf93fb); the archived Swift
+generator needs the same trim. -/
 
 open Lean Winnow WinnowApp WinnowApp.RecordsReal
 open Tx (BitcoinNetwork)
@@ -47,35 +49,11 @@ def memoryKeys : IO (IO.Ref (Std.HashMap String ByteArray) × StoreKeyVault) := 
 
 /-! ## Files -/
 
-/-- `@s:<descriptor>:<choice>:<index>@` → the vault script hex. -/
-partial def substitute (text : String) (descriptors : Array String) (network : BitcoinNetwork) : String :=
-  match text.splitOn "@s:" with
-  | [] | [_] => text
-  | first :: rest => first ++ String.join (rest.map piece)
-where
-  piece (p : String) : String :=
-    match p.splitOn "@" with
-    | spec :: tail =>
-      if tail.isEmpty then "@s:" ++ p
-      else
-        let parts := (spec.splitOn ":").map (·.toNat?)
-        let script := match parts with
-          | [some k, some c, some i] =>
-            match descriptors[k]? with
-            | some d => match Vault.parse d network with
-              | .ok v => match v.scriptPubKey i.toUInt32 c with | .ok s => hex s | .error _ => "00"
-              | .error _ => "00"
-            | none => "00"
-          | _ => "00"
-        script ++ "@".intercalate tail
-    | [] => p
-
 def otherNetwork (n : BitcoinNetwork) : BitcoinNetwork := if n == .regtest then .signet else .regtest
 
 def fileBytes (j : Json) (store : String) (network : BitcoinNetwork) (key : Option ByteArray) : IO (Option ByteArray) := do
   let some template := optS j "payload" | return none
-  let descriptors := ((j.getObjValAs? (Array String) "descriptors").toOption).getD #[]
-  let payload := (((optS j "prefix").bind ofHex?).getD .empty) ++ (substitute template descriptors network).toUTF8
+  let payload := (((optS j "prefix").bind ofHex?).getD .empty) ++ template.toUTF8
   let k := key.getD (ByteArray.mk (Array.replicate 32 7))
   match (optS j "wrap").getD "plain" with
   | "plain" => return some payload
@@ -92,22 +70,13 @@ def fileBytes (j : Json) (store : String) (network : BitcoinNetwork) (key : Opti
 
 /-! ## Summaries -/
 
-def utxoJ (u : WalletUTXO) : Json :=
-  arr [jstr (hex u.txid), jnat u.vout.toNat, jstr (toString u.amount.toInt), jstr (hex u.scriptPubKey), jnat u.chain.rawValue,
-    jnat u.index.toNat, jnat u.height.toNat, .bool u.isCoinbase, jopt (jstr ∘ hex) (u.spent.map (·.spentBy)),
-    jopt (jnat ∘ UInt32.toNat) (u.spent.bind (·.height)), .bool u.spent.isSome]
-
-def vaultJ (v : VaultRecord) : Json :=
-  arr [jstr v.id, jstr v.name, jstr v.descriptor, jnat v.createdAtHeight.toNat, jnat v.nextReceiveIndex.toNat,
-    jnat v.nextChangeIndex.toNat, arr (v.allUtxos.toList.map utxoJ)]
-
 def payToJ : Option PersonPayTo → Json
   | some (.descriptor t) => arr [jstr "descriptor", jstr t]
   | some (.address t) => arr [jstr "address", jstr t]
   | none => .null
 
 def personJ (p : PersonRecord) (ids : String → String := id) : Json :=
-  arr [jstr (ids p.id), jstr p.name, payToJ p.payTo, jopt jstr p.signerKey, jnat p.nextPaymentIndex.toNat,
+  arr [jstr (ids p.id), jstr p.name, payToJ p.payTo, jnat p.nextPaymentIndex.toNat,
     jopt Json.bool p.savedRecipient, jopt (jstr ∘ PersonRecord.provenanceRaw) p.destinationProvenance,
     jopt jstr p.destinationSource]
 
@@ -132,11 +101,7 @@ def afterJ (path : System.FilePath) (store : String) (network : BitcoinNetwork)
     | none => none
   match opened with
   | some payload =>
-    out := out ++ [("verifies", .bool true)]
-    if store == "people" then out := out ++ [("payload", jstr (hex payload))]
-    else
-      let records := ((← (VaultStore.decode payload).run).toOption).getD #[]
-      out := out ++ [("records", arr (records.toList.map vaultJ))]
+    out := out ++ [("verifies", .bool true), ("payload", jstr (hex payload))]
   | none => out := out ++ [("verifies", .bool false)]
   return Json.mkObj out
 
@@ -159,13 +124,10 @@ def storeOpen (j : Json) : IO Json := do
   withTemp fun dir => do
     let path := dir / s!"{store}.json"
     if let some b ← fileBytes j store network key then IO.FS.writeBinFile path b
-    let mut out : List (String × Json) := []
-    if store == "vaults" then
-      let (s, r) ← VaultStore.configure keys (some path) network
-      out := resultJ r ++ [("records", arr (s.records.toList.map vaultJ))]
-    else
-      let (s, r) ← PeopleStore.configure keys (some path) network
-      out := resultJ r ++ [("records", arr (s.records.toList.map (personJ ·))), ("labels", labelsJ s.senderByTxid)]
+    unless store == "people" do bad "kind: only the people store remains"
+    let (s, r) ← PeopleStore.configure keys (some path) network
+    let mut out : List (String × Json) :=
+      resultJ r ++ [("records", arr (s.records.toList.map (personJ ·))), ("labels", labelsJ s.senderByTxid)]
     out := out ++ [("keyNow", .bool ((← ref.get).contains s!"{store}.{networkRaw network}")),
                    ("after", ← afterJ path store network ref)]
     return ok (Json.mkObj out)
@@ -196,14 +158,12 @@ def peopleScript (j : Json) : IO Json := do
       let attempt : RM (PeopleStore × Option String × List (String × Json)) := do
         match op with
         | "add" =>
-          let (payTo, signer) ← match optS step "paste" with
-            | some paste => do
-              let parsed ← liftNamed network (PersonPaste.parse paste network)
-              pure (parsed.payTo, if (step.getObjValAs? Bool "signer").toOption.getD true then parsed.signerKey else none)
-            | none => pure (none, none)
+          let payTo ← match optS step "paste" with
+            | some paste => do pure (← liftNamed network (PersonPaste.parse paste network)).payTo
+            | none => pure none
           let provenance := (optS step "provenance").bind provenanceOf
           let id ← RM.io uuidString
-          let (s, r) ← store.add keys wd id ((optS step "name").getD "") payTo signer provenance (optS step "source")
+          let (s, r) ← store.add keys wd id ((optS step "name").getD "") payTo provenance (optS step "source")
           return (s, some r.id, [])
         | "update" =>
           let (s, _) ← store.updateRecipient keys wd refId (optS step "name") ((step.getObjValAs? Bool "saved").toOption.getD true)
@@ -249,40 +209,20 @@ def peopleScript (j : Json) : IO Json := do
 
 def recordsDerive (j : Json) : IO Json := do
   let network ← netJ j
-  let descriptors := ((j.getObjValAs? (Array String) "descriptors").toOption).getD #[]
   let (_, keys) ← memoryKeys
   withTemp fun dir => do
-    let vp := dir / "vaults.json"
     let pp := dir / "people.json"
-    if let some v := optS j "vaults" then IO.FS.writeFile vp (substitute v descriptors network)
     if let some p := optS j "people" then IO.FS.writeFile pp p
-    let (vs, vr) ← VaultStore.configure keys (some vp) network
     let (ps, pr) ← PeopleStore.configure keys (some pp) network
-    let vaults := vs.records
     let people := ps.records
-    let ownKey := (optS j "own").bind fun e => (PersonKeys.signerIdentity e network).toOption
-    let savings := recomputeSharedSavings vaults people network ownKey
     let recipients := (recipientByScript people network).toList.map fun (s, p) => (hex s, p.id)
     let resultName : OpenResult → String | .missing => "missing" | .loaded => "loaded" | .damaged _ => "damaged"
     return ok (Json.mkObj [
-      ("vaultsResult", jstr (resultName vr)), ("peopleResult", jstr (resultName pr)),
-      ("owned", arr ((sortStrings (((ownedVaultScripts vaults network).map hex).toList.eraseDups)).map jstr)),
+      ("peopleResult", jstr (resultName pr)),
       ("recipients", arr ((recipients.mergeSort (fun a b => decide (a.1 ≤ b.1))).map fun (s, i) => arr [jstr s, jstr i])),
-      ("savings", arr (savings.toList.map fun s => arr [jstr s.record.id, arr (s.coOwners.toList.map (jstr ·.id)),
-        .bool s.includesYou, (s.threshold : Json), jnat s.signerCount,
-        arr (s.signers.toList.map fun g => arr [jstr g.fingerprint, jopt jstr g.name, .bool g.isYou])])),
       ("people", arr (people.toList.map fun p => arr [jstr p.id,
-        jopt jstr (p.signerKey.bind fun k => (PersonKeys.signerFingerprint k network).toOption),
-        .bool p.derivesFreshAddresses, .bool p.isSavedRecipient, .bool p.canCoOwnSavings, .bool p.hasUnverifiedFundingDestination,
-        jopt jstr (p.payTo.bind fun t => (t.addressAt p.nextPaymentIndex network).toOption)])),
-      ("vaults", arr (vaults.toList.map fun v =>
-        let vault? := (Vault.parse v.descriptor network).toOption
-        arr [jstr v.id, jstr (toString v.balance.toInt), jopt (fun x : Vault => (x.threshold : Json)) vault?,
-          jopt (fun x : Vault => jnat x.signerCount) vault?, jopt (fun x : Vault => .bool x.isScriptPath) vault?,
-          jopt jstr (vault?.bind fun x => (x.address v.nextReceiveIndex 0).toOption),
-          arr (v.utxos.toList.map fun u => arr [jstr (displayHex u.txid), jnat u.vout.toNat, jstr (toString u.amount.toInt),
-            jnat u.height.toNat, .bool u.isCoinbase])])),
-      ("ownFingerprint", jopt (jstr ∘ PersonKeys.fingerprint) ownKey)])
+        .bool p.derivesFreshAddresses, .bool p.isSavedRecipient, .bool p.hasUnverifiedFundingDestination,
+        jopt jstr (p.payTo.bind fun t => (t.addressAt p.nextPaymentIndex network).toOption)]))])
 
 def ownKey (j : Json) : IO Json := do
   let network ← netJ j
@@ -291,17 +231,16 @@ def ownKey (j : Json) : IO Json := do
     | .error e => return errJ e.name
   let r : RM Json := do
     let bare ← ownKeyExpressionOf d false
-    let signer ← ownKeyExpressionOf d true
+    let multipath ← ownKeyExpressionOf d true
     let card ← ownPersonCardOf d network (← RM.io (need (str j "name")))
-    let fp ← liftNamed network (PersonKeys.signerIdentity signer network)
-    return ok (arr [jstr bare, jstr signer, jstr card.serialized, jstr (PersonKeys.fingerprint fp)])
+    return ok (arr [jstr bare, jstr multipath, jstr card.serialized])
   match ← r.run with
   | .ok v => return v
   | .error e => return errJ e.name
 
 def paste (j : Json) : IO Json := do
   match ← (parsePaste (← netJ j) (← need (str j "text"))).run with
-  | .ok p => return ok (arr [jopt jstr p.name, jopt Json.bool p.payTo, .bool p.hasSignerKey])
+  | .ok p => return ok (arr [jopt jstr p.name, jopt Json.bool p.payTo])
   | .error e => return errJ e.name
 
 def labelsRun (j : Json) : IO Json := do

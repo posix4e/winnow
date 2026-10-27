@@ -2,7 +2,7 @@ import Lean.Data.Json
 
 /-! The app-facing view of the wallet: what the screens show, already derived (the Model never holds
 WalletCore objects, only these summaries). Mirrors AppModel's `Status`, `SyncPhase`, settings, stage,
-and the records (people, vaults, labels) the screens read. The `Backend` fills them. -/
+and the records (people, labels) the screens read. The `Backend` fills them. -/
 
 namespace WinnowApp
 open Lean
@@ -88,8 +88,6 @@ structure TxOut where
   amount : Nat
   /-- One of the wallet's own watch scripts (receive or change). -/
   ownedByWallet : Bool
-  /-- A script of one of this phone's vaults. -/
-  ownedByVault : Bool := false
   deriving Repr, Inhabited, BEq
 
 /-- One row of the activity list (Winnow's `HistoryEntry`, with the transaction already decoded). -/
@@ -158,7 +156,7 @@ inductive Stage where
   | storageDamaged (message : String)
   deriving Repr, BEq, Inhabited
 
-/-! ## People, vaults, labels -/
+/-! ## People, labels -/
 
 inductive Provenance where
   | supplied
@@ -172,56 +170,19 @@ structure Person where
   name : String
   /-- Whether the person can be paid, and whether each payment derives a fresh address. -/
   payTo : Option Bool := none
-  signerKey : Option String := none
-  signerFingerprint : Option String := none
   nextPaymentIndex : Nat := 0
   savedRecipient : Option Bool := none
   provenance : Option Provenance := none
   deriving Repr, Inhabited, BEq
 
 def Person.isSavedRecipient (p : Person) : Bool := p.payTo.isSome && p.savedRecipient != some false
-def Person.canCoOwnSavings (p : Person) : Bool := p.signerKey.isSome
 def Person.derivesFreshAddresses (p : Person) : Bool := p.payTo == some true
 def Person.hasUnverifiedFundingDestination (p : Person) : Bool :=
   p.provenance == some .localFunding || p.provenance == some .explorerFunding
 
-/-- One approving key of shared savings (`SharedSavings.Signer`). -/
-structure Signer where
-  fingerprint : String
-  name : Option String
-  isYou : Bool
-  deriving Repr, Inhabited, BEq
-
-structure VaultUtxo where
-  txid : String
-  vout : Nat
-  amount : Nat
-  height : Nat
-  isCoinbase : Bool := false
-  deriving Repr, Inhabited, BEq
-
-/-- A `VaultRecord` with what its descriptor says (read from the descriptor, never from a label),
-and, for script-path vaults, the shared-savings reading (`SharedSavings`). -/
-structure VaultSummary where
-  id : String
-  name : String
-  descriptor : String
-  balance : Nat
-  threshold : Nat
-  signerCount : Nat
-  isScriptPath : Bool
-  /-- The address at `nextReceiveIndex`. -/
-  receiveAddress : Option String
-  utxos : List VaultUtxo := []
-  coOwners : List String := []
-  includesYou : Bool := false
-  signers : List Signer := []
-  deriving Repr, Inhabited, BEq
-
-/-- People, vaults and local labels, as one snapshot (each mutation answers with a fresh one). -/
+/-- People and local labels, as one snapshot (each mutation answers with a fresh one). -/
 structure Records where
   people : List Person := []
-  vaults : List VaultSummary := []
   /-- txid (display hex) → person id -/
   senderByTxid : List (String × String) := []
   /-- scriptPubKey hex → person id (`recipientByScript`) -/
@@ -230,7 +191,6 @@ structure Records where
   receiveLabels : List (String × String) := []
   peopleStorageNotice : Option String := none
   receiveLabelStorageNotice : Option String := none
-  ownSignerFingerprint : Option String := none
   deriving Repr, Inhabited
 
 /-! ## Results of individual operations -/
@@ -240,7 +200,6 @@ structure PastePreview where
   name : Option String := none
   /-- `some fresh` when it can be paid. -/
   payTo : Option Bool := none
-  hasSignerKey : Bool := false
   deriving Repr, Inhabited, BEq
 
 /-- A connected peer (SettingsView.PeerInfo). -/
@@ -259,15 +218,6 @@ structure FeeBumpPreview where
   change : Option Nat
   deriving Repr, Inhabited, BEq
 
-/-- A descriptor built in VaultCreateView, with what its policy says. -/
-structure VaultBuild where
-  descriptor : String
-  firstAddress : Option String
-  threshold : Nat
-  signerCount : Nat
-  isScriptPath : Bool
-  deriving Repr, Inhabited
-
 /-- One broadcaster or mempool-window event about a sent transaction. -/
 inductive RelayEvent where
   | announced (peerCount : Nat)
@@ -275,55 +225,6 @@ inductive RelayEvent where
   | echoed (peer : String)
   | feeFloorExceeded
   | confirmed
-  deriving Repr, Inhabited
-
-/-- `PaymentLabel` of a spend output. -/
-inductive PayLabel where
-  | savings (name : String)
-  | person (name : String)
-  | you
-  | unknown
-  deriving Repr, Inhabited, BEq
-
-structure SpendLine where
-  label : PayLabel
-  address : String
-  amount : Nat
-  isVaultOwned : Bool
-  deriving Repr, Inhabited
-
-/-- A shared-savings request after review (VaultSpendSession's state, without the PSBT object). -/
-structure ApprovalReview where
-  /-- The working PSBT, base64 (public data; dropped with the sheet). -/
-  working : String
-  /-- The envelope to share back. -/
-  output : String
-  rawPSBT : Option String := none
-  /-- none when the request cannot be reviewed against local state (the message says why). -/
-  lines : Option (List SpendLine)
-  reviewError : Option String := none
-  fee : Option Nat := none
-  threshold : Nat
-  /-- Signer positions that signed every input. -/
-  approvals : List Nat := []
-  signerNames : List (Nat × String) := []
-  ownPosition : Option Nat := none
-  deriving Repr, Inhabited
-
-/-- A MuSig2 proposal after review. The secret nonces never appear here: the backend keeps them. -/
-structure MusigReview where
-  working : String
-  output : String
-  lines : Option (List SpendLine)
-  reviewError : Option String := none
-  fee : Option Nat := none
-  sighashTypes : List Nat := []
-  version : Nat := 2
-  locktime : Option Nat := none
-  sequences : List Nat := []
-  participantCount : Option Nat := none
-  minNonces : Nat := 0
-  minPartialSigs : Nat := 0
   deriving Repr, Inhabited
 
 end WinnowApp

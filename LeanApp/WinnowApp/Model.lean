@@ -3,10 +3,10 @@ import WinnowApp.Format
 
 /-! The app's state, messages and commands (AppModel + the views' @State, as one Elm model).
 
-The state of each area is its own structure (Send, Receive, People, Vaults, Approval, MuSig2, …);
+The state of each area is its own structure (Send, Receive, People, …);
 user messages are grouped per area (`SendMsg`, `PeopleMsg`, …), host answers are one `Host` type, and
 commands one `Cmd` type, because `perform` runs them all. The area modules (`WinnowApp/Send.lean`,
-`People.lean`, `Vaults.lean`, …) hold each area's `step` and its views. -/
+`People.lean`, …) hold each area's `step` and its views. -/
 
 namespace WinnowApp
 open Lean
@@ -17,8 +17,6 @@ open Lean
 structure PersonMode where
   /-- Editing this person (rename, or adding a destination when it has none). -/
   personID : Option String := none
-  /-- Adding a co-owner: a signer key is what counts. -/
-  forSigning : Bool := false
   /-- Labelling the sender of this received payment. -/
   txid : Option String := none
   deriving Repr, BEq, Inhabited
@@ -38,19 +36,11 @@ inductive Sheet where
   | revealPhrase
   | papers
   | readSide
-  | vaultCreate
-  | sharedSavingsCreate
-  | savingsShare (vaultID : String)
-  | addSharedSavings
-  | savingsChooser
-  | approval
-  | musig
   deriving Repr, BEq, Inhabited
 
 /-- A pushed screen (NavigationLink destinations). -/
 inductive Route where
   | payment (txid : String)
-  | account (vaultID : String)
   /-- Beginner mode's Back up page. -/
   | backup
   deriving Repr, BEq, Inhabited
@@ -61,7 +51,6 @@ inductive Confirm where
   | deleteWallet
   | deleteFailed (message : String)
   | resetPeers
-  | removeSavings (vaultID : String)
   | exportWithPhrase
   | inferSender
   /-- WarnedExplorerLink / DesignPaperView: an external URL, and what it exposes. -/
@@ -80,9 +69,6 @@ inductive ClipPolicy where
 inductive PasteTarget where
   | destination
   | person
-  | savingsCard
-  | approval
-  | musig
   | importBundle
   deriving Repr, BEq, Inhabited
 
@@ -126,15 +112,7 @@ structure SendInputs where
   /-- A payment to a saved person, and the index its fresh address is derived at. -/
   personID : Option String := none
   paymentIndex : Option Nat := none
-  /-- none: the everyday wallet; some: a vault. -/
-  accountID : Option String := none
   walletID : Option String := none
-  deriving Repr, Inhabited, BEq
-
-inductive PreviewSource where
-  | wallet
-  /-- A vault spend: its PSBT goes to the approval screen. -/
-  | vault (vaultID name : String) (psbt : String) (isScriptPath : Bool) (threshold signerCount : Nat)
   deriving Repr, Inhabited, BEq
 
 structure PreviewRecipient where
@@ -146,7 +124,6 @@ structure PreviewRecipient where
 
 /-- Winnow's `SendPreview` as the screen shows it. -/
 structure Preview where
-  source : PreviewSource := .wallet
   recipient : Option PreviewRecipient := none
   destination : String
   /-- `amountSent` -/
@@ -189,21 +166,13 @@ structure FeeBump where
   replacement : Option String := none
   deriving Repr, Inhabited
 
-structure Catalog where
-  refreshing : Bool := false
-  bytes : Nat := 0
-  notice : Option String := none
-  /-- What is on disk: "Observed …" or the bundled-candidates sentence. -/
-  stored : Option String := none
-  error : Option String := none
-  deriving Repr, Inhabited
-
 structure SettingsDraft where
   manualPeer : String := ""
   error : Option String := none
   peers : List PeerInfo := []
   resettingPeers : Bool := false
-  catalog : Catalog := {}
+  /-- The census line: "Observed …: N candidates." for the list this build ships, or the no-list sentence. -/
+  catalog : Option String := none
   deriving Repr, Inhabited
 
 structure ExportState where
@@ -241,63 +210,6 @@ structure PersonForm where
 structure ShareCard where
   card : Option String := none
   error : Option String := none
-  deriving Repr, Inhabited
-
-inductive VaultRole where
-  | scriptPath
-  | muSig2
-  deriving Repr, BEq, Inhabited
-
-structure VaultCreate where
-  name : String := ""
-  role : VaultRole := .scriptPath
-  threshold : Nat := 1
-  cosigners : List String := []
-  pasted : String := ""
-  built : Option VaultBuild := none
-  error : Option String := none
-  saving : Bool := false
-  deriving Repr, Inhabited
-
-structure SavingsCreate where
-  selected : List String := []
-  threshold : Nat := 2
-  name : String := ""
-  nameEdited : Bool := false
-  error : Option String := none
-  creating : Bool := false
-  created : Option String := none
-  deriving Repr, Inhabited
-
-structure SavingsAdd where
-  pasted : String := ""
-  error : Option String := none
-  adding : Bool := false
-  deriving Repr, Inhabited
-
-/-- ApprovalView / VaultSpendSession. -/
-structure ApprovalState where
-  vaultID : String := ""
-  pasted : String := ""
-  review : Option ApprovalReview := none
-  error : Option String := none
-  busy : Bool := false
-  broadcastTxid : Option String := none
-  deriving Repr, Inhabited
-
-/-- MuSig2SignView. Only flags here: the secret nonces live in the backend's signing session. -/
-structure MusigState where
-  vaultID : String := ""
-  pasted : String := ""
-  review : Option MusigReview := none
-  error : Option String := none
-  broadcastTxid : Option String := none
-  broadcasting : Bool := false
-  authorizing : Bool := false
-  nonceSessionStarted : Bool := false
-  signedThisSession : Bool := false
-  /-- The backend holds round-1 secret nonces for this session. -/
-  holdsNonces : Bool := false
   deriving Repr, Inhabited
 
 /-- The wallet's answer at boot. -/
@@ -343,19 +255,12 @@ structure Model where
   person : PersonForm := {}
   shareCard : ShareCard := {}
   recipientsError : Option String := none
-  vaultCreate : VaultCreate := {}
-  savingsCreate : SavingsCreate := {}
-  savingsAdd : SavingsAdd := {}
-  /-- The savings card being shown: vault id, card text. -/
-  savingsCardText : Option (String × String) := none
-  approval : ApprovalState := {}
-  musig : MusigState := {}
   /-- Paper shown in the Design papers sheet. -/
   paper : Option Nat := none
   /-- Bumped on suspend, network switch and rebuild: an answer from an older generation is dropped. -/
   generation : Nat := 0
   /-- `SensitivePresentationEpoch`: bumped whenever a sensitive presentation opens, resets or closes,
-  and on background. A sensitive answer (phrase, export, signing round) counts only for its epoch. -/
+  and on background. A sensitive answer (phrase, export) counts only for its epoch. -/
   epoch : Nat := 0
   /-- `AppModel.exclusively(.spending)`: one payment is signed and broadcast at a time. -/
   spendingInFlight : Bool := false
@@ -364,15 +269,11 @@ structure Model where
 
 /-! ## Messages -/
 
-/-- What changed in people/vaults, and what the screen does next. -/
+/-- What changed in people or labels, and what the screen does next. -/
 inductive Done where
   | none
   | personSaved
   | senderLabeled
-  | vaultSaved
-  | vaultRemoved (id : String)
-  | savingsCreated (id : String)
-  | savingsAdded
   | labelSaved
   deriving Repr, Inhabited, BEq
 
@@ -396,13 +297,10 @@ inductive Host where
   | sent (gen : Nat) (txid : String)
   | rawTransaction (gen : Nat) (txid : String) (hex : Option String)
   | relay (gen : Nat) (txid : String) (e : RelayEvent)
-  | approvalPrepared (gen : Nat) (forInputs : SendInputs)
   | paymentLoaded (gen : Nat) (txid : String)
   | pendingRate (gen : Nat) (txid : String) (milli : Nat) (suggested : String)
   | bumpPreviewed (gen : Nat) (txid rateText : String) (p : FeeBumpPreview)
   | bumped (gen : Nat) (txid replacement : String)
-  | catalogProgress (gen : Nat) (bytes : Nat)
-  | catalogRefreshed (gen : Nat) (notice : String)
   | catalogStored (gen : Nat) (stored : String)
   | peers (gen : Nat) (ps : List PeerInfo)
   | peersReset (gen : Nat)
@@ -411,16 +309,6 @@ inductive Host where
   | card (gen : Nat) (name : String) (card : String)
   | pasteParsed (gen : Nat) (text : String) (r : Except String PastePreview)
   | senderLookup (gen : Nat) (txid source : String) (addresses : List String)
-  | ownKey (gen : Nat) (expression : String)
-  | cosignerChecked (gen : Nat) (expression : String)
-  | vaultBuilt (gen : Nat) (forCosigners : List String) (b : VaultBuild)
-  | savingsCard (gen : Nat) (vaultID card : String)
-  | approvalReviewed (gen : Nat) (vaultID : String) (r : ApprovalReview) (clearPasted : Bool)
-  | approvalSent (gen : Nat) (vaultID txid : String)
-  | musigReviewed (gen : Nat) (vaultID : String) (r : MusigReview) (clearPasted : Bool)
-  | musigNonces (gen epoch : Nat) (vaultID : String) (r : MusigReview)
-  | musigSigned (gen epoch : Nat) (vaultID : String) (r : MusigReview)
-  | musigSent (gen epoch : Nat) (vaultID txid : String)
   | pasted (target : PasteTarget) (text : String)
   | copiedExpired (key : String)
   | scene (active : Bool)
@@ -435,7 +323,6 @@ inductive SendMsg where
   | setAmount (s : String)
   | setPriority (i : Nat)
   | setOverride (s : String)
-  | setAccount (i : Nat)
   | pasteDestination
   | openRecipients
   | choosePerson (id : String)
@@ -459,7 +346,6 @@ inductive ReceiveMsg where
 
 inductive HomeMsg where
   | openPayment (txid : String)
-  | openAccount (vaultID : String)
   | openBackup
   | pop
   | loadPayment
@@ -488,7 +374,6 @@ inductive SettingsMsg where
   | openPapers
   | openPaper (i : Nat)
   | closePaper
-  | refreshCatalog
   | refreshPeers
   | askResetPeers
   | resetPeers
@@ -519,55 +404,6 @@ inductive PeopleMsg where
   | choose (personID : String)
   | rename (personID : String)
   | remove (personID : String)
-  deriving Inhabited
-
-inductive VaultMsg where
-  | openCreate (role : VaultRole)
-  | setName (s : String)
-  | setRole (i : Nat)
-  | setThreshold (n : Nat)
-  | setPasted (s : String)
-  | addPasted
-  | addOwn
-  | removeCosigner (i : Nat)
-  | build
-  | save
-  | newAddress (vaultID : String)
-  | send (vaultID : String)
-  | openSigning (vaultID : String)
-  | openBackup
-  | openShare (vaultID : String)
-  | askRemove (vaultID : String)
-  | remove (vaultID : String)
-  | openChooser
-  | openSavingsCreate
-  | openSavingsAdd
-  | toggleCoOwner (personID : String)
-  | setSavingsThreshold (n : Nat)
-  | setSavingsName (s : String)
-  | addCoOwner
-  | createSavings
-  | setSavingsCard (s : String)
-  | pasteSavingsCard
-  | addSavings
-  deriving Inhabited
-
-inductive ApprovalMsg where
-  | setPasted (s : String)
-  | paste
-  | review
-  | approve
-  | finish
-  deriving Inhabited
-
-inductive MusigMsg where
-  | setPasted (s : String)
-  | paste
-  | addReply
-  | prepare
-  | sign
-  | broadcast
-  | restart
   deriving Inhabited
 
 inductive Msg where
@@ -602,9 +438,6 @@ inductive Msg where
   | settings (m : SettingsMsg)
   | backup (m : BackupMsg)
   | people (m : PeopleMsg)
-  | vault (m : VaultMsg)
-  | approval (m : ApprovalMsg)
-  | musig (m : MusigMsg)
   | host (h : Host)
   deriving Inhabited
 
@@ -638,14 +471,12 @@ inductive Cmd where
   | resolveRate (gen : Nat) (inputs : SendInputs) (floor : Option Nat)
   | previewSend (gen : Nat) (inputs : SendInputs)
   | sendPayment (gen : Nat) (inputs : SendInputs) (p : Preview)
-  | prepareVaultApproval (gen : Nat) (inputs : SendInputs) (p : Preview)
   | rawTransaction (gen : Nat) (txid : String)
   | watchRelay (gen : Nat) (txid : String)
   | loadPaymentDetails (gen : Nat) (txid : String)
   | pendingFeeRate (gen : Nat) (txid : String)
   | previewFeeBump (gen : Nat) (txid rateText : String) (milli : Nat)
   | bumpFee (gen : Nat) (txid : String) (p : FeeBumpPreview)
-  | refreshCatalog (gen : Nat)
   | catalogStatus (gen : Nat)
   | connectedPeers (gen : Nat)
   | resetPeers (gen : Nat)
@@ -655,8 +486,8 @@ inductive Cmd where
   | removeExport (file : String)
   | revealPhrase (gen epoch : Nat)
   | ownCard (gen : Nat) (name : String)
-  | parsePaste (gen : Nat) (text : String) (forSigning : Bool)
-  | addPerson (gen : Nat) (name : String) (paste : Option String) (forSigning : Bool)
+  | parsePaste (gen : Nat) (text : String)
+  | addPerson (gen : Nat) (name : String) (paste : Option String)
       (provenance : Option Provenance) (source : Option String) (labelTxid : Option String)
   /-- Rename a person and keep them saved, first attaching a destination when they had none. -/
   | editPerson (gen : Nat) (personID name : String) (attach : Option (String × Provenance × Option String))
@@ -664,28 +495,6 @@ inductive Cmd where
   | labelSender (gen : Nat) (txid personID : String)
   | removeSenderLabel (gen : Nat) (txid : String)
   | lookupSender (gen : Nat) (txid baseURL : String)
-  | ownKeyExpression (gen : Nat) (multipath : Bool)
-  | checkCosigner (gen : Nat) (role : VaultRole) (existing : List String) (expression : String)
-  | buildVault (gen : Nat) (role : VaultRole) (threshold : Nat) (cosigners : List String)
-  | addVault (gen : Nat) (name descriptor : String)
-  | removeVault (gen : Nat) (vaultID : String)
-  | advanceVaultReceive (gen : Nat) (vaultID : String)
-  | createSharedSavings (gen : Nat) (name : String) (personIDs : List String) (threshold : Nat)
-  | addSharedSavings (gen : Nat) (card : String)
-  | savingsCard (gen : Nat) (vaultID : String)
-  | approvalAdd (gen : Nat) (vaultID : String) (working : Option String) (text : String)
-  | approvalRecheck (gen : Nat) (vaultID working : String)
-  | approvalApprove (gen : Nat) (vaultID working : String)
-  | approvalFinish (gen : Nat) (vaultID working : String)
-  | musigAdd (gen : Nat) (vaultID : String) (working : Option String) (text : String)
-  | musigNonces (gen epoch : Nat) (vaultID working : String)
-  | musigSign (gen epoch : Nat) (vaultID working : String)
-  | musigBroadcast (gen epoch : Nat) (vaultID working : String)
-  | musigRestart (gen : Nat) (vaultID working : String)
-  /-- Re-review the working proposal against trusted local state (the coins or frontier moved). -/
-  | musigRecheck (gen : Nat) (vaultID working : String)
-  /-- Drop (scrub) the backend's MuSig2 secret nonces. -/
-  | musigClear
   | paste (target : PasteTarget)
   /-- `e2e?.journal(name, fields:)` for what happens in the Model (test mode only; nothing otherwise). -/
   | journal (name : String) (fields : List (String × String))
@@ -710,7 +519,6 @@ def Model.hasSheet (m : Model) (s : Sheet) : Bool := m.sheets.contains s
 def Model.present (m : Model) (s : Sheet) : Model := { m with sheets := m.sheets ++ [s], confirm := none }
 def Model.isExpanded (m : Model) (key : String) : Bool := m.expanded.contains key
 def Model.person? (m : Model) (id : String) : Option Person := m.records.people.find? (·.id == id)
-def Model.vault? (m : Model) (id : String) : Option VaultSummary := m.records.vaults.find? (·.id == id)
 def Model.historyItem? (m : Model) (txid : String) : Option HistoryItem := m.status.history.find? (·.txid == txid)
 
 /-- Leave the current wallet/network generation: every answer still in flight is dropped. -/

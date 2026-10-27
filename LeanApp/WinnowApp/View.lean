@@ -55,20 +55,13 @@ def sheetView (m : Model) (s : Sheet) (inner : List H) : H :=
   | .revealPhrase => revealSheet m inner
   | .papers => papersSheet m inner
   | .readSide => readSideSheet inner
-  | .vaultCreate => vaultCreateSheet m inner
-  | .sharedSavingsCreate => savingsCreateSheet m inner
-  | .savingsShare id => savingsShareSheet m id inner
-  | .addSharedSavings => addSavingsSheet m inner
-  | .savingsChooser => savingsChooserSheet inner
-  | .approval => approvalSheet m inner
-  | .musig => musigSheet m inner
 
 def cancel : H := .button "Cancel" .plain (some .dismissConfirm)
 
 def confirms (m : Model) : List H :=
   match m.confirm with
   | some .advancedMode =>
-    [.alert "Turn on Advanced mode?" "The app changes to three tabs — Wallet, Send and Settings — with fee controls, network settings, signing tools and technical details. Simple, on the Wallet tab, brings this screen back and keeps every setting you changed."
+    [.alert "Turn on Advanced mode?" "The app changes to three tabs — Wallet, Send and Settings — with fee controls, network settings and technical details. Simple, on the Wallet tab, brings this screen back and keeps every setting you changed."
        [.button "Turn on" .primary (some (.setAdvanced true)), cancel]]
   | some .deleteWallet =>
     [.alert "Delete this wallet?" "This deletes the key from this device. Anyone holding the recovery phrase can still restore it; without that phrase, any money in this wallet is unrecoverable. Check you have the phrase written down before continuing."
@@ -76,11 +69,8 @@ def confirms (m : Model) : List H :=
   | some (.deleteFailed msg) =>
     [.alert "Could not delete the wallet" msg [.button "OK" .plain (some .dismissConfirm)]]
   | some .resetPeers =>
-    [.alert "Reset and shuffle peers?" "Disconnects all peers, forgets saved peers, and finds new ones from DNS seeds and the built-in list. Your manual peers and downloaded catalog are kept."
+    [.alert "Reset and shuffle peers?" "Disconnects all peers, forgets saved peers, and finds new ones from the downloaded peer list and, when clearnet is allowed, DNS seeds. Your manual peers and downloaded catalog are kept."
        [.button "Reset and shuffle peers" .destructive (some (.settings .resetPeers)), cancel]]
-  | some (.removeSavings id) =>
-    [.alert "Remove these savings from this phone?" ""
-       [.button "Remove" .destructive (some (.vault (.remove id))), cancel]]
   | some .exportWithPhrase =>
     [.alert "Include the recovery phrase?" "This adds your phone's signing key to the file. Anyone with the file can use that key."
        [.button "Export with phrase" .destructive (some (.backup .confirmExport)), cancel]]
@@ -130,7 +120,6 @@ def onboardingView (m : Model) : H :=
 def mainScreen (m : Model) : H :=
   match m.routes.getLast? with
   | some (.payment t) => .screen "Payment" (some (.home .pop)) ([.list (paymentSections m t)] ++ overlays m)
-  | some (.account id) => accountScreen m id (overlays m)
   | some .backup => backupScreen m (overlays m)
   | none =>
     if m.settings.advancedMode then

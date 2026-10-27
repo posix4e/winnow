@@ -15,8 +15,9 @@ Release with `#if DEBUG`) and the app is launched with `WINNOW_E2E=1`. Then:
   with it); `WINNOW_E2E_RESET=1` wipes both;
 * the wallet's entropy is pinned (`WINNOW_E2E_ENTROPY` hex or `WINNOW_E2E_MNEMONIC`) — without one the
   launch fails closed, because capture runs publish their screenshots;
-* a manual peer, a custom signet challenge, the peer count, the sync interval, the census URL and keys,
-  the network, the first tab, advanced mode and the clipboard can be set;
+* a manual peer, a custom signet challenge, the peer count, the sync interval, the network, the first
+  tab, advanced mode and the clipboard can be set (the census URL and keys went with the census download,
+  upstream e5ce950);
 * device authentication is skipped unless `WINNOW_E2E_DEVICE_AUTH=1`;
 * events are appended to `story-events.jsonl` in the run's storage directory, refusing any field that
   looks like a secret.
@@ -41,10 +42,6 @@ structure Mode where
   controlFile : Option String
   peerCount : Option Nat
   syncIntervalSeconds : Option Float
-  /-- `WINNOW_E2E_CENSUS_URL` (the control file's `censusURL` wins when set). -/
-  censusURL : Option String
-  /-- `WINNOW_E2E_CENSUS_KEYS`: none when unset; an empty list rejects every catalog. -/
-  censusKeys : Option (List ByteArray)
 
 inductive Resolution where
   | inactive
@@ -110,11 +107,7 @@ def resolve (env : String → Option String) : Resolution :=
         advancedMode := env "WINNOW_E2E_ADVANCED" == some "1"
         controlFile := env "WINNOW_E2E_CONTROL_FILE"
         peerCount := (env "WINNOW_E2E_PEER_COUNT").bind swiftInt? |>.bind fun n => if n > 0 then some n.toNat else none
-        syncIntervalSeconds := (env "WINNOW_E2E_SYNC_INTERVAL").bind parseDouble |>.bind fun d => if d > 0 then some d else none
-        censusURL := env "WINNOW_E2E_CENSUS_URL"
-        censusKeys := (env "WINNOW_E2E_CENSUS_KEYS").map fun list =>
-          ((list.splitOn ",").filter (!·.isEmpty)).filterMap fun k =>
-            (Wire.dataOfHex? k).bind fun b => if b.size == 32 then some b else none }
+        syncIntervalSeconds := (env "WINNOW_E2E_SYNC_INTERVAL").bind parseDouble |>.bind fun d => if d > 0 then some d else none }
 
 namespace Mode
 
@@ -131,21 +124,13 @@ def networkParams (m : Mode) : Option Net.NetworkParams :=
 /-- `Control`: what the runner writes to the control file while the app runs; read when needed. -/
 structure Control where
   clipboard : Option String := none
-  censusURL : Option String := none
 
 def control (m : Mode) : IO (Option Control) := do
   let some path := m.controlFile | return none
   let text ← try IO.FS.readFile path catch _ => return none
   match Lean.Json.parse text with
-  | .ok j => return some { clipboard := (j.getObjValAs? String "clipboard").toOption,
-                           censusURL := (j.getObjValAs? String "censusURL").toOption }
+  | .ok j => return some { clipboard := (j.getObjValAs? String "clipboard").toOption }
   | .error _ => return none
-
-/-- The control file's census URL when the runner set one, else the launch environment's. -/
-def currentCensusURL (m : Mode) : IO (Option String) := do
-  match (← m.control).bind (·.censusURL) with
-  | some u => return some u
-  | none => return m.censusURL
 
 end Mode
 

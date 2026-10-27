@@ -76,7 +76,6 @@ def rollBackStores (env : Env) (dir : Option String) (w : Wallet) (b : TxBroadca
   let some dir := dir | failWith .noStorage
   writeAtomic (dirFile dir rollbackMarkerName) (toString fork).toUTF8
   env.walletOp (w.rollBack fork)
-  env.hooks.vaultRollBack fork
   runNet (b.rollBack fork)
 
 /-- `resumeInterruptedRollback()`: redo a rollback a crash interrupted, before anything scans. -/
@@ -87,7 +86,6 @@ def resumeInterruptedRollback (env : Env) (dir : String) (w : Option Wallet) (s 
   if fork > 0xFFFF_FFFF then return
   let fork := fork.toUInt32
   if let some w := w then env.walletOp (w.rollBack fork)
-  env.hooks.vaultRollBack fork
   runNet (s.broadcaster.rollBack fork)
   if let some f := s.filters then runNet (f.rollBack fork)
   finishRollback dir
@@ -126,16 +124,12 @@ partial def buildStackIfNeeded (env : Env) : IO Unit := do
       let params := env.deps.networkParams.getD (NetworkParams.params (Network.net network))
       let key := keyFor c.settings network
       let manual := key.manualPeers.filterMap parsePeerEndpoint
-      let catalog ← if network == .mainnet then do
-          let root := (System.FilePath.mk dir).parent.getD (System.FilePath.mk dir)
-          let store : CensusCatalogStore := { path := root / "mainnet" / "downloaded-census.json",
-                                              minimumEntries := env.deps.censusMinimumEntries }
-          pure ((← store.load (← env.deps.wallSeconds) env.deps.censusKeys).map (·.catalog))
-        else pure none
+      -- `censusCatalog: network == .mainnet ? CensusCatalog.bundled : nil`
+      let catalog ← if network == .mainnet then env.deps.census else pure none
       let pool ← PeerPool.new params (peerCount := env.deps.peerCount) (manualPeers := manual.toArray)
         (peersFile := some (dirFile dir "peers.json")) (relayPreference := true) (dialTimeoutMs := 5_000)
         (seedResolver := some (SeedResolver.routed c.http)) (censusCatalog := catalog)
-        (catalogNow := env.deps.wallSeconds) (avoidOnReset := c.peersToAvoid) (httpFetch := env.deps.fetch)
+        (avoidOnReset := c.peersToAvoid) (httpFetch := env.deps.fetch)
       let start ← chainStart c.wallet params key.verifyFromGenesis
       let chain ← runNet (openOrRebuildChain params (dirFile dir "headers.bin") start)
       if (← env.get).generation != epoch then pool.stop; return
@@ -238,8 +232,8 @@ def startPhasePolling (env : Env) (epoch : Nat) : IO Unit := do
 
 /-! ## One sync pass -/
 
-/-- `syncOnce()`: the wallet's (and vaults') scripts in one filter stream; matched blocks update the
-wallet and the vaults and confirm pending broadcasts; the frontier is recorded either way. -/
+/-- `syncOnce()`: the wallet's scripts in one filter stream; matched blocks update the wallet and
+confirm pending broadcasts; the frontier is recorded either way. -/
 def syncOnce (env : Env) : IO Unit := do
   let claim ← env.modifyGet fun c =>
     match c.wallet, c.stack with
@@ -253,13 +247,11 @@ def syncOnce (env : Env) : IO Unit := do
   let some (w, s, f, gen, dir) := claim | return
   try
     let pass : NetM Unit := do
-      let mut scripts ← WM.toNet w.watchScripts
-      scripts := scripts ++ (← env.hooks.vaultWatchScripts)
+      let scripts ← WM.toNet w.watchScripts
       let b := s.broadcaster
       f.sync scripts (onReorg := some fun fork => (rollBackStores env dir w b fork : IO Unit)) (onMatch := fun m => do
         let effect ← env.walletOpNet (w.apply m)
         for discarded in effect.discardedReplacements do b.cancel discarded
-        (env.hooks.vaultApply m : IO Unit)
         let pending ← b.pendingTxids
         for tx in m.block.transactions do
           if pending.contains tx.txid then b.markConfirmed tx.txid m.height)

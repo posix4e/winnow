@@ -3,8 +3,6 @@ import WinnowApp.Send
 import WinnowApp.Receive
 import WinnowApp.Settings
 import WinnowApp.People
-import WinnowApp.Vaults
-import WinnowApp.Approval
 
 /-! `step msg m = (m', cmds)`; `update` and `cmds` of the app are its two halves (same pre-state).
 User messages go to their area's `step`; host answers are checked here — a network answer only
@@ -12,22 +10,8 @@ for the current generation, a sensitive one only for the current epoch while act
 
 namespace WinnowApp
 
-/-- Records changed: re-review an open approval or MuSig2 proposal against the new trusted state. -/
-def Model.onRecords (m : Model) (r : Records) : Model × List Cmd :=
-  let g := m.generation
-  let m := { m with records := r }
-  let cs : List Cmd :=
-    (match m.approval.review with
-     | some rv => if m.hasSheet .approval && m.approval.broadcastTxid.isNone then [.approvalRecheck g m.approval.vaultID rv.working] else []
-     | none => []) ++
-    (match m.musig.review with
-     | some rv => if m.hasSheet .musig && m.musig.broadcastTxid.isNone then [.musigRecheck g m.musig.vaultID rv.working] else []
-     | none => [])
-  -- a send from a vault that is gone falls back to the everyday wallet
-  let m := match m.send.inputs.accountID with
-    | some id => if (m.vault? id).isNone then { m with send := { m.send with inputs := { m.send.inputs with accountID := none } } } else m
-    | none => m
-  (m, cs)
+/-- Records changed. -/
+def Model.onRecords (m : Model) (r : Records) : Model × List Cmd := ({ m with records := r }, [])
 
 /-- Background: networking stops, answers in flight are dropped, sensitive presentations close and
 forget (the receive window closes; Receive itself stays). -/
@@ -90,12 +74,6 @@ def onHost (h : Host) (m : Model) : Model × List Cmd :=
     let (m, cs2) := match d with
       | .none => (m, [])
       | .personSaved | .senderLabeled => m.closeSheet .addPerson
-      | .vaultSaved => m.closeSheet .vaultCreate
-      | .vaultRemoved id =>
-        if m.routes.getLast? == some (.account id) then ({ m with routes := m.routes.dropLast }, []) else (m, [])
-      | .savingsCreated id =>
-        ({ m with savingsCreate := { m.savingsCreate with creating := false, created := some id } }, [.savingsCard g id])
-      | .savingsAdded => m.closeSheet .addSharedSavings
       | .labelSaved => m.finishLabel
     (m, cs ++ cs2)
   | .receiveAddress g a =>
@@ -122,14 +100,6 @@ def onHost (h : Host) (m : Model) : Model × List Cmd :=
   | .rawTransaction g txid hex =>
     if current g && m.send.sentTxid == some txid then ({ m with send := { m.send with rawTransaction := hex } }, []) else (m, [])
   | .relay g txid e => if current g then (m.onRelay txid e, []) else (m, [])
-  | .approvalPrepared g forInputs =>
-    if !current g || forInputs != m.sendInputs then ({ m with send := { m.send with sending := false } }, []) else
-    match m.send.preview with
-    | some { source := .vault id _ psbt isScriptPath .., .. } =>
-      let m := { m with send := { m.send with sending := false } }
-      if isScriptPath then ({ m with approval := { vaultID := id } }.present .approval, [.approvalAdd g id none psbt])
-      else ({ m with musig := { vaultID := id } }.present .musig, [.musigAdd g id none psbt])
-    | _ => ({ m with send := { m.send with sending := false } }, [])
   | .paymentLoaded g _ => if current g then ({ m with payment := { m.payment with loading := false } }, [.refresh g]) else (m, [])
   | .pendingRate g txid milli text =>
     if !current g || m.feeBump.txid != txid then (m, []) else
@@ -143,15 +113,8 @@ def onHost (h : Host) (m : Model) : Model × List Cmd :=
     if !current g then ({ m with spendingInFlight := false }, []) else
     if m.feeBump.txid != txid then ({ m with spendingInFlight := false }, [.refresh g]) else
     ({ m with feeBump := { m.feeBump with replacement := some r, bumping := false }, spendingInFlight := false }, [.refresh g])
-  | .catalogProgress g bytes =>
-    let d := m.settingsDraft
-    if current g then ({ m with settingsDraft := { d with catalog := { d.catalog with bytes } } }, []) else (m, [])
-  | .catalogRefreshed g notice =>
-    let d := m.settingsDraft
-    if current g then ({ m with settingsDraft := { d with catalog := { d.catalog with refreshing := false, notice := some notice } } }, []) else (m, [])
   | .catalogStored g stored =>
-    let d := m.settingsDraft
-    if current g then ({ m with settingsDraft := { d with catalog := { d.catalog with stored := some stored } } }, []) else (m, [])
+    if current g then ({ m with settingsDraft := { m.settingsDraft with catalog := some stored } }, []) else (m, [])
   | .peers g ps => if current g then ({ m with settingsDraft := { m.settingsDraft with peers := ps } }, []) else (m, [])
   | .peersReset g =>
     if !current g then (m, []) else
@@ -174,57 +137,11 @@ def onHost (h : Host) (m : Model) : Model × List Cmd :=
     if current g && m.person.mode.txid == some txid then
       ({ m with person := { m.person with inferring := false, inferredAddresses := addresses, inferredSource := some source } }, [])
     else (m, [])
-  | .ownKey g expr =>
-    if current g then (m, [.checkCosigner g m.vaultCreate.role m.vaultCreate.cosigners expr]) else (m, [])
-  | .cosignerChecked g expr =>
-    if !current g then (m, []) else
-    let v := m.vaultCreate
-    if v.cosigners.contains expr then (m, []) else
-    let cs := v.cosigners ++ [expr]
-    ({ m with vaultCreate := { v with cosigners := cs, threshold := reconcileThreshold v.threshold v.cosigners.length cs.length,
-                                      error := none, built := none,
-                                      pasted := if v.pasted.trimAscii.copy == expr then "" else v.pasted } }, [])
-  | .vaultBuilt g cs b =>
-    if current g && cs == m.vaultCreate.cosigners then ({ m with vaultCreate := { m.vaultCreate with built := some b, error := none } }, [])
-    else (m, [])
-  | .savingsCard g id card => if current g then ({ m with savingsCardText := some (id, card) }, []) else (m, [])
-  | .approvalReviewed g id r clr =>
-    if current g && m.approval.vaultID == id && m.hasSheet .approval then
-      let pasted := if clr then "" else m.approval.pasted
-      ({ m with approval := { m.approval with review := some r, busy := false, error := r.reviewError, pasted } }, [])
-    else (m, [])
-  | .approvalSent g id txid =>
-    let m := { m with spendingInFlight := false }
-    if current g && m.approval.vaultID == id then
-      ({ m with approval := { m.approval with broadcastTxid := some txid, busy := false } }, [.refresh g])
-    else (m, [.refresh m.generation])
-  | .musigReviewed g id r clr =>
-    if current g && m.musig.vaultID == id && m.hasSheet .musig then
-      ({ m with musig := { m.musig with review := some r, error := none, pasted := if clr then "" else m.musig.pasted } }, [])
-    else (m, [])
-  | .musigNonces g e id r =>
-    -- nonces made for a presentation that is gone are scrubbed, never installed
-    if sensitive g e && m.musig.vaultID == id && m.hasSheet .musig then
-      ({ m with musig := { m.musig with review := some r, holdsNonces := true, nonceSessionStarted := true, authorizing := false } }, [])
-    -- a live session's nonces are never scrubbed by a stale answer (closing already scrubbed the old one)
-    else (m, if m.musig.holdsNonces then [] else [.musigClear])
-  | .musigSigned g e id r =>
-    if sensitive g e && m.musig.vaultID == id && m.hasSheet .musig then
-      ({ m with musig := { m.musig with review := some r, holdsNonces := false, signedThisSession := true, authorizing := false } }, [])
-    else (m, if m.musig.holdsNonces then [] else [.musigClear])
-  | .musigSent g e id txid =>
-    let m := { m with spendingInFlight := false }
-    if sensitive g e && m.musig.vaultID == id then
-      ({ m with musig := { m.musig with broadcastTxid := some txid, broadcasting := false } }, [.refresh g])
-    else (m, [.refresh m.generation])
   | .pasted target text =>
     match target with
     | .destination =>
       m.editSend fun i => { i with destination := text.trimAscii.copy }
     | .person => m.setPersonPasted text
-    | .savingsCard => ({ m with savingsAdd := { m.savingsAdd with pasted := text } }, [])
-    | .approval => ({ m with approval := { m.approval with pasted := text } }, [])
-    | .musig => ({ m with musig := { m.musig with pasted := text } }, [])
     | .importBundle => ({ m with onboarding := { m.onboarding with importText := text } }, [])
   | .copiedExpired key => if m.copied == some key then ({ m with copied := none }, []) else (m, [])
   | .deleted g =>
@@ -257,7 +174,7 @@ def Model.switchNetwork (m : Model) (net : Network) : Model × List Cmd :=
   let m' := { m0 with settings := s, stage := Stage.loading, status := ({} : Status), records := ({} : Records),
                       phase := SyncPhase.idle, walletID := none, routes := [], sheets := [], confirm := none,
                       send := ({} : SendState), tab := 0 }
-  (m', [.stopNetworking, .stopWatchingAddress, .musigClear, .saveSettings s, .openWallet m'.generation net false])
+  (m', [.stopNetworking, .stopWatchingAddress, .saveSettings s, .openWallet m'.generation net false])
 
 def step (msg : Msg) (m : Model) : Model × List Cmd :=
   let g := m.generation
@@ -315,9 +232,6 @@ def step (msg : Msg) (m : Model) : Model × List Cmd :=
   | .settings s => stepSettings s m
   | .backup b => stepBackup b m
   | .people p => stepPeople p m
-  | .vault v => stepVault v m
-  | .approval a => stepApproval a m
-  | .musig s => stepMusig s m
   | .host h => onHost h m
 
 def update (msg : Msg) (m : Model) : Model := (step msg m).1

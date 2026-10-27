@@ -7,7 +7,7 @@ stdin, one reply per line.
 
 Ops: `e2e.resolve` (the launch environment → inactive, missing entropy, or the mode's fields, the sync
 interval in whole milliseconds and the custom signet's magic), `e2e.looksSecret`, `e2e.carriesSeed`,
-`e2e.censusKeys`, `e2e.fieldName` (the journal's field-name rule). -/
+`e2e.fieldName` (the journal's field-name rule). `e2e.censusKeys` went with the census download. -/
 
 open Lean Winnow WinnowApp
 
@@ -49,12 +49,6 @@ def ops : Std.HashMap String (Json → IO Json) := Std.HashMap.ofList
         | .active m => describe m)
   , ("e2e.looksSecret", fun j => do return ok (.bool (E2E.looksSecret (← strJ j "value"))))
   , ("e2e.carriesSeed", fun j => do return ok (.bool ((← modeOf (← strJ j "entropy")).carriesThisRunsSeed (← strJ j "value"))))
-  , ("e2e.censusKeys", fun j => do
-      let env := [("WINNOW_E2E", "1"), ("WINNOW_E2E_ENTROPY", "00112233445566778899aabbccddeeff")] ++
-        (match j.getObjValAs? String "value" with | .ok v => [("WINNOW_E2E_CENSUS_KEYS", v)] | .error _ => [])
-      match E2E.resolve (fun k => env.lookup k) with
-      | .active m => return ok (jopt (fun ks => .arr (ks.map (.str ∘ hex)).toArray) m.censusKeys)
-      | _ => bad "mode")
   , ("e2e.fieldName", fun j => do return ok (.bool (E2E.refusesFieldName (← strJ j "key")))) ]
 
 def answer (line : String) : IO Json := do

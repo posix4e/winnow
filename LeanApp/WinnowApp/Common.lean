@@ -40,9 +40,8 @@ def Model.fail (m : Model) (context message : String) : Model :=
   | "rate" => { m with send := { m.send with resolvedRateMilli := none } }
   | "settings" | "peers" => { m with settingsDraft := { m.settingsDraft with error := some message, resettingPeers := false } }
   | "delete" => { m with confirm := some (.deleteFailed message) }
-  | "catalog" =>
-    let c := m.settingsDraft.catalog
-    { m with settingsDraft := { m.settingsDraft with catalog := { c with refreshing := false, error := some message } } }
+  -- the census line is read from the shipped list; a failure leaves it unset
+  | "catalog" => m
   | "payment" => { m with payment := { loading := false, error := some message } }
   | "feeBump" => { m with feeBump := { m.feeBump with error := some message, bumping := false }, spendingInFlight := false }
   | "export" => { m with exportState := { m.exportState with busy := false, error := some message, file := none } }
@@ -50,20 +49,9 @@ def Model.fail (m : Model) (context message : String) : Model :=
   | "card" => { m with shareCard := { card := none, error := some message } }
   | "person" => { m with person := { m.person with saving := false, inferring := false, error := some message } }
   | "recipients" => { m with recipientsError := some message }
-  | "vaultCreate" => { m with vaultCreate := { m.vaultCreate with saving := false, built := none, error := some message } }
-  | "savingsCreate" => { m with savingsCreate := { m.savingsCreate with creating := false, error := some message } }
-  | "savingsAdd" => { m with savingsAdd := { m.savingsAdd with adding := false, error := some message } }
-  | "approval" => { m with approval := { m.approval with busy := false, error := some message }, spendingInFlight := false }
-  | "musig" => { m with musig := { m.musig with authorizing := false, broadcasting := false, error := some message }, spendingInFlight := false }
   | _ => { m with status := { m.status with lastSyncError := some message } }
 
 /-! ## Sheets -/
-
-/-- SendView resets when the approval it continued to is dismissed (`.sheet(item:onDismiss: reset)`). -/
-def Model.resetVaultSend (m : Model) (vaultID : String) : Model :=
-  match m.send.preview with
-  | some { source := .vault id .., .. } => if id == vaultID then { m with send := { inputs := { network := m.settings.network } } } else m
-  | _ => m
 
 /-- Forget what a sheet held when it goes away (the SwiftUI view's @State dies with it). -/
 def Model.forgetSheet (m : Model) : Sheet → Model × List Cmd
@@ -77,14 +65,8 @@ def Model.forgetSheet (m : Model) : Sheet → Model × List Cmd
   | .papers => ({ m with paper := none }, [])
   | .shareCard => ({ m with shareCard := {} }, [])
   | .savedRecipients => ({ m with recipientsError := none }, [])
-  | .vaultCreate => ({ m with vaultCreate := {} }, [])
-  | .sharedSavingsCreate => ({ m with savingsCreate := {} }, [])
-  | .addSharedSavings => ({ m with savingsAdd := {} }, [])
-  | .savingsChooser => ({ m with savingsCreate := {}, savingsAdd := {} }, [])
-  | .approval => ({ m.resetVaultSend m.approval.vaultID with approval := {} }, [])
-  | .musig => ({ m.resetVaultSend m.musig.vaultID with musig := {}, epoch := m.epoch + 1 }, [.musigClear])
   | .importWallet => ({ m with onboarding := { m.onboarding with importText := "", importReport := none } }, [])
-  | .mnemonic | .readSide | .savingsShare _ => (m, [])
+  | .mnemonic | .readSide => (m, [])
 
 /-- Close the sheets from index `i` up (an outer sheet takes the ones it presented with it). -/
 def Model.closeFrom (m : Model) (i : Nat) : Model × List Cmd :=
@@ -104,9 +86,9 @@ def Model.closeTop (m : Model) : Model × List Cmd :=
   if m.sheets.isEmpty then (m, []) else m.closeFrom (m.sheets.length - 1)
 
 /-- Sheets that never survive a background transition (BackupSection, ExportBundleView,
-RevealPhraseView, ApprovalView, MuSig2SignView, the onboarding phrase and import sheets). -/
+RevealPhraseView, the onboarding phrase and import sheets). -/
 def Sheet.isSensitive : Sheet → Bool
-  | .mnemonic | .importWallet | .exportBundle | .revealPhrase | .approval | .musig => true
+  | .mnemonic | .importWallet | .exportBundle | .revealPhrase => true
   | _ => false
 
 /-! ## View pieces (Components.swift) -/

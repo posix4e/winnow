@@ -68,12 +68,11 @@ def openWallet (env : Env) (n : WinnowApp.Network) (dir : String) : IO BootResul
 /-! ## The snapshot -/
 
 /-- One history row with its transaction decoded (what the payment screens read). -/
-def historyItem (e : HistoryEntry) (owned vaults : Std.HashSet ByteArray) (net : Tx.BitcoinNetwork) : HistoryItem :=
+def historyItem (e : HistoryEntry) (owned : Std.HashSet ByteArray) (net : Tx.BitcoinNetwork) : HistoryItem :=
   let outputs : Option (List TxOut) := match e.transaction with
     | .ok (some tx) => some ((List.range tx.outputs.size).zip tx.outputs.toList |>.map fun (i, o) =>
         { index := i, address := AddressDecoder.address o.scriptPubKey net, script := hex o.scriptPubKey,
-          amount := natOf o.value, ownedByWallet := owned.contains o.scriptPubKey,
-          ownedByVault := vaults.contains o.scriptPubKey })
+          amount := natOf o.value, ownedByWallet := owned.contains o.scriptPubKey })
     | _ => none
   { txid := Winnow.displayHex e.txid, height := e.height.toNat, received := e.received.toInt, spent := e.spent.toInt,
     fee := e.fee.map (·.toInt), replacedBy := e.replacedBy.map Winnow.displayHex, outputs,
@@ -86,7 +85,7 @@ def feeFloorMilli (pool : PeerPool) : IO (Option Nat) := do
     if let some f ← peer.feeFilter then floors := floors.push f
   return floors.foldl (fun acc f => some (max (acc.getD 0) (natOf f))) none
 
-/-- `journalSnapshotIfChanged()`: public facts only (txids, heights, counts, vault coin summaries),
+/-- `journalSnapshotIfChanged()`: public facts only (txids, heights, counts),
 journaled when they changed. `status.history` is the display order (`historyForDisplay`). -/
 def journalSnapshotIfChanged (env : Env) (s : Status) : IO Unit := do
   let some w := (← env.get).wallet | return
@@ -94,14 +93,12 @@ def journalSnapshotIfChanged (env : Env) (s : Status) : IO Unit := do
   let confirmed := (history.filter (·.height > 0)).map fun e => s!"{e.txid}@{e.height}"
   let pending := (history.filter fun e => e.height == 0 && e.replacedBy.isNone).map (·.txid)
   let replacements := history.filterMap fun e => e.replacedBy.map fun r => s!"{e.txid}>{r}"
-  let vaults := (← env.hooks.vaultSummaries).toList.map fun (id, balance, coins, confirmedCoins) =>
-    s!"{id}:{balance}:{coins}:{confirmedCoins}"
   env.journalIfChanged "wallet.snapshot"
     [("walletID", w.id), ("balance", toString s.balance), ("utxoCount", toString s.utxoCount),
      ("historyCount", toString s.history.length), ("nextScanHeight", toString s.nextScanHeight),
      ("tipHeight", toString s.tipHeight), ("peerCount", toString s.peerCount),
      ("confirmedTransactions", ",".intercalate confirmed), ("pendingTransactions", ",".intercalate pending),
-     ("replacements", ",".intercalate replacements), ("vaults", ",".intercalate vaults)]
+     ("replacements", ",".intercalate replacements)]
     (·.lastSnapshotFingerprint) fun c fp => { c with lastSnapshotFingerprint := fp }
 
 /-- `refresh()`'s `Status`, with the phase as the ticker last stored it (re-read now). -/
@@ -112,10 +109,9 @@ def snapshot (env : Env) : IO (Status × SyncPhase) := do
   if let some w := c.wallet then
     let st ← w.state
     let owned : Std.HashSet ByteArray := ((← (w.watchScripts).run).toOption.getD #[]).foldl (·.insert ·) {}
-    let vaults : Std.HashSet ByteArray := (← env.hooks.ownedVaultScripts).foldl (·.insert ·) {}
     let utxos := st.utxos
     s := { s with balance := (utxos.foldl (fun (a : Int64) (u : WalletUTXO) => a + u.amount) 0).toInt, utxoCount := utxos.size
-                  history := st.history.toList.map (historyItem · owned vaults w.network)
+                  history := st.history.toList.map (historyItem · owned w.network)
                   feeBumpable := (← w.feeBumpableTxids).toList.map Winnow.displayHex
                   nextScanHeight := st.nextScanHeight.toNat }
   if let some stack := c.stack then
@@ -249,13 +245,11 @@ def importBundle (env : Env) (n : WinnowApp.Network) (dir : String) (json : Stri
   let bundle ← match ImportBundle.decode json with
     | .ok b => pure b
     | .error e => failText (importFailureText e)
-  env.hooks.validateBundleVaults (bundle.vaults.getD #[]) n
   unless bundle.network == n.name do failWith (.wrongNetwork bundle.network)
   env.journal "import.started" (bundleFields bundle)
   switchTo env n dir
   let w ← runWM (Wallet.importing bundle env.deps.keyStore (some (walletPath dir)) env.deps.random)
   adopt env w false
-  env.hooks.restoreVaults (bundle.vaults.getD #[])
   try
     buildStackIfNeeded env
     let c ← env.get
@@ -266,8 +260,7 @@ def importBundle (env : Env) (n : WinnowApp.Network) (dir : String) (json : Stri
     let some filters := stack.filters | waiting "sync stack unavailable"
     stack.pool.start
     if !(← waitForPeer env stack.pool 60_000 c.generation) then return ← waiting "public peers unavailable"
-    let report ← runWM (w.verifyImport bundle (scanSource filters) (← env.hooks.vaultWatchScripts)
-      (onMatch := fun m => WM.io (env.hooks.vaultApply m)))
+    let report ← runWM (w.verifyImport bundle (scanSource filters))
     -- `await refresh()`, then the journal reads the refreshed status
     let (s, _) ← snapshot env
     env.journal "import.verified"
@@ -289,7 +282,6 @@ def exportBundle (env : Env) (includeMnemonic : Bool) : IO String := do
   let some w := c.wallet | failWith .noWallet
   if let some f := c.stack.bind (·.filters) then env.walletOp (w.recordScanHeight (← f.nextScanHeight))
   let b ← runWM (w.exportBundle includeMnemonic)
-  let b := { b with vaults := ← env.hooks.backupVaults }
   let serialized := b.serialized
   env.journal "wallet.exported" (bundleFields b)
   return serialized

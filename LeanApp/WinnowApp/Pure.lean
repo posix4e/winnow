@@ -3,8 +3,8 @@ import WinnowApp.Format
 import Winnow.Wallet.People
 
 /-! AppModel's and the views' pure helpers, ported as they are (APP-SURVEY "port the already-pure
-helpers as-is"): sync wording, history order, payment titles, explorer URLs, label validation,
-thresholds, and the approval/MuSig2 summaries. -/
+helpers as-is"): sync wording, history order, payment titles, explorer URLs, label validation and fee
+rates. (The vault, approval and MuSig2 helpers went with vaults, upstream 1cf93fb.) -/
 
 namespace WinnowApp
 
@@ -80,7 +80,7 @@ def paymentRecipients (r : Records) (h : HistoryItem) : List PaymentRecipient :=
   match h.outputs with
   | none => []
   | some outs => outs.filterMap fun o =>
-    if o.ownedByWallet || o.ownedByVault then none else
+    if o.ownedByWallet then none else
     o.address.map fun a =>
       { id := o.index, address := a, amount := o.amount,
         person := (lookup r.recipientByScript o.script).bind fun pid => r.people.find? (·.id == pid) }
@@ -495,82 +495,5 @@ def parseRateMilli (text : String) (trimNewlines : Bool := false) : Option Nat :
 /-- HomeView's suggested replacement rate (HomeView.swift:526: `String(format: "%.0f", ceil(rate + 1))`), from
 the exact pending rate (the backend computes it before rounding the rate to thousandths for display). -/
 def suggestedBumpText (rate : Float) : String := toString (rate + 1).ceil.toUInt64.toNat
-
-/-! ## Vaults and shared savings -/
-
-/-- `VaultThreshold.clamped` (WalletCore VaultSetup.swift:210). -/
-def clampThreshold (t keyCount : Nat) : Nat := min (max t 1) (max keyCount 1)
-
-/-- `VaultThreshold.reconciled` (VaultSetup.swift:216): adding the second signer makes the safest useful default, 2 of 2. -/
-def reconcileThreshold (t previous keyCount : Nat) : Nat :=
-  if previous < 2 && keyCount ≥ 2 then 2 else clampThreshold t keyCount
-
-/-- BeginnerHomeView's `rule(of:)` (BeginnerHomeView.swift:174): who can spend, in words. -/
-def vaultRule (v : VaultSummary) : String :=
-  if !v.isScriptPath then s!"All {v.signerCount} signers must approve"
-  else if v.threshold == 1 then s!"Any one of {v.signerCount} owners can spend"
-  else s!"Any {v.threshold} of {v.signerCount} owners can spend"
-
-/-- SharedSavingsShareView's `coOwnerNames` (SharedSavingsViews.swift:158): "Alice", "Alice and Bob",
-"Alice, Bob and Carol". -/
-def joinNames (names : List String) (none : String) : String :=
-  match names with
-  | [] => none
-  | [a] => a
-  | _ => ", ".intercalate names.dropLast ++ " and " ++ names.getLast!
-
-/-- `Wallet.coinbaseMaturity`. -/
-def coinbaseMaturity : Nat := 100
-
-/-- AccountDetailView's `maturityNote` (AccountDetailView.swift:43). -/
-def maturityNote (u : VaultUtxo) (tip : Nat) : String :=
-  if !u.isCoinbase || u.height == 0 then "" else
-  let matureAt := u.height + coinbaseMaturity - 1
-  if tip < matureAt then s!" · matures in {matureAt - tip} blocks" else ""
-
-/-- `VaultSpendSession.Line.title` (VaultSpendSession.swift:18). -/
-def PayLabel.title : PayLabel → String
-  | .savings n => s!"Back into {n}"
-  | .person n => s!"Pays {n}"
-  | .you => "Pays you (your wallet)"
-  | .unknown => "Pays an unsaved address"
-
-/-- `VaultSpendSession.approvedByYou` (VaultSpendSession.swift:74). -/
-def ApprovalReview.approvedByYou (r : ApprovalReview) : Bool :=
-  match r.ownPosition with
-  | some p => r.approvals.contains p
-  | none => false
-
-/-- `VaultSpendSession.canFinish` (VaultSpendSession.swift:78); the caller checks `broadcastTxid`. -/
-def ApprovalReview.canFinish (r : ApprovalReview) : Bool := r.lines.isSome && r.approvals.length ≥ r.threshold
-
-/-- `VaultSpendSession.progressText` (VaultSpendSession.swift:84): "Approved by you · waiting for Alice or Bob (1 of 2)". -/
-def ApprovalReview.progressText (r : ApprovalReview) : String :=
-  let name (p : Nat) : String := (r.signerNames.find? (·.1 == p)).map (·.2) |>.getD "a co-owner"
-  let sorted (xs : List Nat) := xs.mergeSort (· ≤ ·)
-  let approved := (sorted r.approvals).map name
-  let waiting := (sorted ((r.signerNames.map (·.1)).filter (!r.approvals.contains ·))).map name
-  let first := if approved.isEmpty then "No approvals yet" else "Approved by " ++ ", ".intercalate approved
-  let parts := if r.approvals.length < r.threshold && !waiting.isEmpty then [first, "waiting for " ++ " or ".intercalate waiting] else [first]
-  " · ".intercalate parts ++ s!" ({r.approvals.length} of {r.threshold})"
-
-/-- MuSig2SignView's `sighashLabel` (MuSig2SignView.swift:182); no review is `[]`. -/
-def sighashLabel (types : List Nat) : String :=
-  if types.isEmpty then "unavailable"
-  else if types.all (· == 0) then "DEFAULT — all inputs commit to every output"
-  else if types.all (· == 1) then "ALL — all inputs commit to every output"
-  else if types.all (fun t => t == 0 || t == 1) then "DEFAULT / ALL — all inputs commit to every output"
-  else "unavailable"
-
-/-- MuSig2SignView's `locktimeLabel` (MuSig2SignView.swift:193). -/
-def locktimeLabel : Option Nat → String
-  | none => "unavailable"
-  | some 0 => "none"
-  | some n => toString n
-
-/-- MuSig2SignView's `sequenceLabel` (MuSig2SignView.swift:198). No review is `[]` here (Swift: nil); a
-reviewed spend always has inputs, so Swift's "final" for an empty list is not reachable. -/
-def sequenceLabel (seqs : List Nat) : String :=
-  if seqs.isEmpty then "unavailable" else if seqs.any (· < 0xFFFFFFFE) then "replaceable (RBF)" else "final"
 
 end WinnowApp

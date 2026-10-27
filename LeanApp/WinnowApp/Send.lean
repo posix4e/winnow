@@ -1,8 +1,7 @@
 import WinnowApp.Common
 
-/-! SendView.swift: the form (account picker for vaults, address or saved person, amount, Advanced fee
-controls), the review with Winnow's four warnings, and the status with the relay log. A vault spend
-continues to ApprovalView or MuSig2SignView. -/
+/-! SendView.swift: the form (address or saved person, amount, Advanced fee controls), the review with
+Winnow's four warnings, and the status with the relay log. -/
 
 namespace WinnowApp
 open ElmLean
@@ -34,12 +33,6 @@ def stepSend (msg : SendMsg) (m : Model) : Model × List Cmd :=
   | .setAmount t => m.editSend fun i => { i with amount := t }
   | .setPriority p => m.editSend (fun i => { i with priority := p }) true
   | .setOverride t => m.editSend (fun i => { i with override := t }) true
-  | .setAccount idx =>
-    -- changing the account resets the form (`onChange(of: accountID) { reset() }`)
-    if m.send.sending then (m, []) else
-    let account := if idx == 0 then none else (m.records.vaults[idx - 1]?).map (·.id)
-    ({ m with send := { inputs := { network := m.settings.network, accountID := account,
-                                    priority := m.send.inputs.priority, override := m.send.inputs.override } } }, [])
   | .pasteDestination => (m, [.paste .destination])
   | .openRecipients => (m.present .savedRecipients, [])
   | .choosePerson id => m.editSend fun i => { i with personID := some id, destination := "" }
@@ -57,13 +50,10 @@ def stepSend (msg : SendMsg) (m : Model) : Model × List Cmd :=
     | none => (m, [])
     | some p =>
       if m.send.sending then (m, []) else
-      match p.source with
-      | .wallet =>
-        if m.spendingInFlight then
-          (m.fail "send" "Another payment is already being signed and broadcast. Wait for it to finish.", [])
-        else ({ m with send := { m.send with sending := true, error := none }, spendingInFlight := true },
-              [.sendPayment g m.sendInputs p])
-      | .vault .. => ({ m with send := { m.send with sending := true, error := none } }, [.prepareVaultApproval g m.sendInputs p])
+      if m.spendingInFlight then
+        (m.fail "send" "Another payment is already being signed and broadcast. Wait for it to finish.", [])
+      else ({ m with send := { m.send with sending := true, error := none }, spendingInFlight := true },
+            [.sendPayment g m.sendInputs p])
   | .editPayment => if m.send.sending then (m, []) else ({ m with send := { m.send with preview := none, error := none } }, [])
   | .newPayment =>
     ({ m with send := { inputs := { network := m.settings.network } } }, [.resolveRate g { network := m.settings.network } m.status.feeFloorMilli])
@@ -87,25 +77,11 @@ def Model.onRelay (m : Model) (txid : String) (e : RelayEvent) : Model :=
 
 /-! ## View -/
 
-def accountIndex (m : Model) : Nat :=
-  match m.send.inputs.accountID with
-  | none => 0
-  | some id => match m.records.vaults.findIdx? (·.id == id) with
-    | some i => i + 1
-    | none => 0
-
 def sendForm (m : Model) : List H :=
   let i := m.send.inputs
   let inputs := m.sendInputs
   let person := inputs.personID.bind m.person?
   let send (f : String → SendMsg) : String → Msg := fun s => .send (f s)
-  let fromSection : List H :=
-    if m.records.vaults.isEmpty then [] else
-    [.section "From" ""
-      [ .picker "Account" (["Everyday wallet"] ++ m.records.vaults.map (·.name)) (accountIndex m) (fun n => .send (.setAccount n))
-      , .labeled "Available" (satsText (match i.accountID.bind m.vault? with
-          | some v => (v.balance : Int)
-          | none => m.status.balance)) ]]
   let toSection : H :=
     .section "To" ""
       (match person with
@@ -114,7 +90,7 @@ def sendForm (m : Model) : List H :=
          [ .row [.input .plain "" "Bitcoin address" i.destination (send .setDestination) none,
                  .button "Paste" .plain (some (.send .pasteDestination))]
          , .button "Saved recipients" .plain (some (.send .openRecipients)) ])
-  fromSection ++ [toSection,
+  [toSection,
     .section "Amount" "You'll see the network fee before you send."
       [ .row [.input .number "" "0" i.amount (send .setAmount) none, caption "sats"] ] ] ++
   (if m.settings.advancedMode then
@@ -136,10 +112,6 @@ def paymentAmounts (p : Preview) : H :=
 def warning (iconName text : String) : H := .section "" "" [.row [.icon iconName, caption text]]
 
 def sendReview (m : Model) (p : Preview) : List H :=
-  let fromSection : List H := match p.source with
-    | .vault _ name _ isScriptPath k n =>
-      [.section "From" "" [body name, caption (if isScriptPath then s!"Any {k} of {n} keys must approve." else "Every signing device must approve.")]]
-    | .wallet => if m.records.vaults.isEmpty then [] else [.section "From" "" [body "Everyday wallet"]]
   let warnings : List H :=
     (match p.recipient with
      | some r =>
@@ -152,10 +124,7 @@ def sendReview (m : Model) (p : Preview) : List H :=
     (if p.locktimeLagsTip then
       [warning "clock.arrow.circlepath" "Your wallet is still syncing. Sending now can reveal that on the Bitcoin network. Wait for sync to finish for better privacy."]
      else [])
-  let action := if m.send.sending then "Working…" else match p.source with
-    | .wallet => "Send payment"
-    | .vault .. => "Continue to approvals"
-  fromSection ++
+  let action := if m.send.sending then "Working…" else "Send payment"
   [ .section "To" "" ((match p.recipient with | some r => [body r.name] | none => []) ++ [caption p.destination])
   , paymentAmounts p ] ++ warnings ++
   [ .section "" ""

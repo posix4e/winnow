@@ -14,7 +14,6 @@ def papers : List (String × String × String) :=
   [ ("mobile", "A phone wallet", "What the device forces, and what the product refuses.")
   , ("read-side", "The read side", "How the phone learns which coins are its own.")
   , ("write-side", "The write side", "Build, price, sign, and get a transaction out.")
-  , ("vaults", "Vaults", "Shared custody without a coordinator server.")
   , ("import", "Import", "The bundle is the history. There is no back-scan.") ]
 
 /-- What the Settings tab loads when it appears in Advanced mode (`.task(id: advancedMode)`). -/
@@ -48,9 +47,6 @@ def stepSettings (msg : SettingsMsg) (m : Model) : Model × List Cmd :=
   | .openPapers => ({ m with paper := none }.present .papers, [])
   | .openPaper i => ({ m with paper := some i }, [])
   | .closePaper => ({ m with paper := none }, [])
-  | .refreshCatalog =>
-    if d.catalog.refreshing || !m.active then (m, []) else
-    ({ m with settingsDraft := { d with catalog := { d.catalog with refreshing := true, bytes := 0, error := none } } }, [.refreshCatalog g])
   | .refreshPeers => (m, [.connectedPeers g])
   | .askResetPeers => ({ m with confirm := some .resetPeers }, [])
   | .resetPeers => ({ m with confirm := none, settingsDraft := { d with resettingPeers := true } }, [.resetPeers g])
@@ -81,11 +77,8 @@ def settingsSections (m : Model) : List H :=
     [.section "" (networkFooter m) [networkPicker m]] else []) ++
   [backupSection m] ++
   (if s.advancedMode then
-    [.section "Mainnet peer list" "Downloads candidates from census.winnowwallet.com. Refresh keeps active connections. Every selected peer still undergoes Winnow's normal checks."
-      ([ .button (if d.catalog.refreshing then s!"Refreshing… {d.catalog.bytes} bytes" else "Refresh peer list") .plain
-           (if d.catalog.refreshing then none else some (.settings .refreshCatalog))
-       , body ((d.catalog.notice <|> d.catalog.stored).getD "Using bundled candidates. Downloaded catalogs expire after seven days.") ] ++
-       errorRows d.catalog.error)] else []) ++
+    [.section "Mainnet peer list" "Each release carries the census of its day, the list it starts from. Every selected peer still undergoes Winnow's normal checks."
+      (match d.catalog with | some line => [body line] | none => [])] else []) ++
   (if s.showsManualPeers then
     [.section "Manual peers" "Manual peers are tried first. Seeds resolve over HTTPS (Cloudflare 1.1.1.1), with system DNS as the fallback. The default port is 8333 (mainnet) / 38333 (signet). Peers must advertise compact filters and pass Winnow's checks."
       ((s.manualPeers.zipIdx.map fun (p, i) => .row [caption p, .spacer, .button "Remove" .destructive (some (.settings (.removeManualPeer i)))]) ++
@@ -118,7 +111,7 @@ def settingsSections (m : Model) : List H :=
      (if s.advancedMode then [.labeled "Wallet ID" (m.walletID.getD "—")] else []) ++
      [.button "Design papers" .plain (some (.settings .openPapers))])] ++
   (if m.walletID.isSome then
-    [.section "Danger zone" s!"Removes this {s.network.name} wallet and its shared savings so you can create or import another. The key is deleted from this device — without your recovery phrase the money is gone. People you added stay on this phone, and block headers are kept, so the next wallet does not re-sync the chain."
+    [.section "Danger zone" s!"Removes this {s.network.name} wallet so you can create or import another. The key is deleted from this device — without your recovery phrase the money is gone. People you added stay on this phone, and block headers are kept, so the next wallet does not re-sync the chain."
       [.button "Delete wallet from this device" .destructive (some (.settings .askDelete))]] else [])
 
 /-- `DesignPapersView` and `DesignPaperView`. The pages are the HTML files the site serves, bundled

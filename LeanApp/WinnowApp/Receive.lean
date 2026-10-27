@@ -39,7 +39,7 @@ def stepReceive (msg : ReceiveMsg) (m : Model) : Model × List Cmd :=
     let name := m.settings.ownDisplayName.trimAscii.copy
     -- `journalCardShared()` as the card sheet appears
     ({ m with shareCard := {} }.present .shareCard,
-     [.journal "card.shared" [("hasSignerKey", "true")]] ++ (if name.isEmpty then [] else [.ownCard g name]))
+     [.journal "card.shared" []] ++ (if name.isEmpty then [] else [.ownCard g name]))
   | .setOwnName s =>
     let st := { m.settings with ownDisplayName := s }
     let name := s.trimAscii.copy
@@ -113,9 +113,8 @@ def shareCardSheet (m : Model) (inner : List H) : H :=
      , .section "" "" [.input .plain "" "Your name, as others will see it" m.settings.ownDisplayName (fun s => .receive (.setOwnName s)) none] ] ++
      (match m.shareCard.card with
       | some card =>
-        [.section "Your card" "This card carries public keys only. Anyone who has it can pay you and can see every address it derives, the same way your wallet does. People who pay you from their address book use the same list of addresses as your Receive screen, so two people paying at once can land on one address — a privacy detail, never a loss. Your key’s fingerprint is what a co-owner sees next to your name; if theirs reads differently, the card they hold is not yours."
-          ([ .qr card, copyableBlock m "card.text" card ] ++
-           (match m.records.ownSignerFingerprint with | some f => [.labeled "Your key" f] | none => []))]
+        [.section "Your card" "This card carries public keys only. Anyone who has it can pay you and can see every address it derives, the same way your wallet does. People who pay you from their address book use the same list of addresses as your Receive screen, so two people paying at once can land on one address — a privacy detail, never a loss."
+          [ .qr card, copyableBlock m "card.text" card ]]
       | none => [.section "" "" [caption "Add a name to make your card."]]) ++
      errorRows m.shareCard.error ++ inner)
 

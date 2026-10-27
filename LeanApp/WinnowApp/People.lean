@@ -1,7 +1,7 @@
 import WinnowApp.Home
 
 /-! RecipientsView.swift: SavedRecipientsView, and AddPersonView in all its modes — a new recipient, a
-payment's address, a co-owner's card, a rename, a destination for someone without one, and the
+payment's address, a rename, a destination for someone without one, and the
 sender of a received payment (a saved person, the funding addresses the payment reveals, or the
 consented explorer lookup). -/
 
@@ -28,7 +28,6 @@ def PersonForm.canSave (f : PersonForm) (m : Model) : Bool :=
   else if !f.pasted.trimAscii.isEmpty && f.parsed.isNone then false
   else if (f.person? m).isSome then true
   else if f.labelingSender then true
-  else if f.mode.forSigning then (f.parsed.map (·.hasSignerKey)).getD false
   else (f.parsed.bind (·.payTo)).isSome
 
 def PersonForm.provenance (f : PersonForm) : Option Provenance :=
@@ -49,12 +48,12 @@ def PersonForm.title (f : PersonForm) (m : Model) : String :=
   | some p =>
     if p.payTo.isNone then s!"Add destination for {p.name}"
     else if p.isSavedRecipient then "Rename recipient"
-    else if f.mode.forSigning then "Add co-owner" else "Save recipient"
-  | none => if f.mode.forSigning then "Add co-owner" else "Save recipient"
+    else "Save recipient"
+  | none => "Save recipient"
 
 def Model.setPersonPasted (m : Model) (s : String) : Model × List Cmd :=
   ({ m with person := { m.person with pasted := s, parsed := none, error := none } },
-   if s.trimAscii.isEmpty then [] else [.parsePaste m.generation s m.person.mode.forSigning])
+   if s.trimAscii.isEmpty then [] else [.parsePaste m.generation s])
 
 def stepPeople (msg : PeopleMsg) (m : Model) : Model × List Cmd :=
   let g := m.generation
@@ -91,8 +90,8 @@ def stepPeople (msg : PeopleMsg) (m : Model) : Model × List Cmd :=
     | none =>
       let paste := if f.pasted.trimAscii.isEmpty then none else some f.pasted
       if f.labelingSender then
-        (m', [.addPerson g f.effectiveName (if payable then paste else none) false f.provenance f.source f.mode.txid])
-      else (m', [.addPerson g f.effectiveName paste f.mode.forSigning none none none])
+        (m', [.addPerson g f.effectiveName (if payable then paste else none) f.provenance f.source f.mode.txid])
+      else (m', [.addPerson g f.effectiveName paste none none none])
   | .choose pid =>
     match m.person? pid with
     | some p =>
@@ -121,7 +120,7 @@ def addPersonSheet (m : Model) (inner : List H) : H :=
      , .section "" ""
          ([.input .plain "" "Name" f.name (fun s => .people (.setName s)) none] ++
           (if (person.bind (·.payTo)).isNone then
-            [ .input .multiline "" (if f.mode.forSigning then "Paste a card or signer key" else "Paste an address or card") f.pasted
+            [ .input .multiline "" "Paste an address or card" f.pasted
                 (fun s => .people (.setPasted s)) none
             , .button "Paste from clipboard" .plain (some (.people .paste)) ]
            else [])) ] ++
@@ -144,11 +143,9 @@ def addPersonSheet (m : Model) (inner : List H) : H :=
      (match f.parsed, person with
       | some p, none =>
         [.section "" ""
-          ((match p.payTo with
+          (match p.payTo with
             | some fresh => [caption (if fresh then "Fresh address each payment" else "Uses this same address each time")]
-            | none => []) ++
-           (if f.mode.forSigning then
-             [caption (if p.hasSignerKey then "Can approve shared payments" else "Ask for their signer key or Winnow card")] else []))]
+            | none => [])]
       | _, _ => []) ++
      errorRows f.error ++
      [.section "" "" [.button (if f.saving then "Saving…" else "Save") .primary (if f.canSave m then some (.people .save) else none)]] ++

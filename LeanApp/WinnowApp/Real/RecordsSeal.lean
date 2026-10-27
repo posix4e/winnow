@@ -4,7 +4,8 @@ import WinnowApp.Types
 
 /-! # Sealed store files and their keys (port of `Sources/WinnowApp/StoreAuthentication.swift`)
 
-The records side of the app keeps two sealed JSON files per network (`vaults.json`, `people.json`):
+The records side of the app keeps a sealed JSON file per network (`people.json`; `vaults.json` went with
+vaults upstream, and the app only deletes a leftover one with the wallet):
 
     winnow-store-mac-v1 <64 hex>⏎<the JSON payload, byte-exact>
 
@@ -61,40 +62,20 @@ inductive LabelStorageError where
   | unavailable | damaged | invalidLabel | full
   deriving Repr, BEq, Inhabited
 
-/-- The `AppModel.AppError` cases (and `VaultSpendError.unknownVault`) the records operations throw. -/
+/-- The `AppModel.AppError` cases the records operations throw. -/
 inductive AppError where
   | noWallet
-  | duplicateVault
   | sendReviewChanged
   | personCannotBePaid
-  | personCannotCoOwn (name : String)
-  /-- The transaction was broadcast but the vault's coins could not be updated. -/
-  | vaultSpendNotRecorded (txid : String) (reason : String)
-  | unknownVault
-  deriving Repr, BEq, Inhabited
-
-/-- `VaultSpendSession.SessionError` and `MuSig2SignView.SignError`, plus the button gates of both
-screens, enforced here as refusals (`notReady`). -/
-inductive SessionError where
-  | unknownSavings (name : Option String)
-  | notTheseSavings
-  | noWorkingPSBT
-  | unknownInput
-  | noMuSig2PSBT
-  /-- The operation is not available in the session's current state (a disabled button in Swift). -/
-  | notReady (reason : String)
   deriving Repr, BEq, Inhabited
 
 /-- Every failure of a records operation. -/
 inductive RecordsError where
   | seal (f : SealFailure)
   | keyVault (e : StoreKeyVaultError)
-  /-- `VaultStorageError.invalidState`. -/
-  | vaultStorage (reason : String)
   | people (e : PeopleStorageError)
   | labels (e : LabelStorageError)
   | app (e : AppError)
-  | session (e : SessionError)
   /-- `SenderLookupError.unavailable`. -/
   | lookup (message : String)
   /-- Another module's error: its Swift case name and its description. -/
@@ -109,18 +90,12 @@ def name : RecordsError → String
   | .seal f => f.name
   | .keyVault (.alreadyEstablished _) => "alreadyEstablished" | .keyVault .malformedKey => "malformedKey"
   | .keyVault (.keychain _) => "keychain"
-  | .vaultStorage _ => "invalidState"
   | .people (.invalidState _) => "invalidState" | .people .damaged => "damaged"
   | .people (.duplicate _) => "duplicate" | .people .unknownPerson => "unknownPerson" | .people .tooMany => "tooMany"
   | .labels .unavailable => "unavailable" | .labels .damaged => "damaged" | .labels .invalidLabel => "invalidLabel"
   | .labels .full => "full"
-  | .app .noWallet => "noWallet" | .app .duplicateVault => "duplicateVault"
+  | .app .noWallet => "noWallet"
   | .app .sendReviewChanged => "sendReviewChanged" | .app .personCannotBePaid => "personCannotBePaid"
-  | .app (.personCannotCoOwn _) => "personCannotCoOwn" | .app (.vaultSpendNotRecorded ..) => "vaultSpendNotRecorded"
-  | .app .unknownVault => "unknownVault"
-  | .session (.unknownSavings _) => "unknownSavings" | .session .notTheseSavings => "notTheseSavings"
-  | .session .noWorkingPSBT => "noWorkingPSBT" | .session .unknownInput => "unknownInput"
-  | .session .noMuSig2PSBT => "noMuSig2PSBT" | .session (.notReady _) => "notReady"
   | .lookup _ => "unavailable"
   | .named n _ => n
   | .io _ => "ioError"
@@ -133,7 +108,6 @@ def description : RecordsError → String
   | .keyVault (.alreadyEstablished a) => s!"This device already holds a protected key for the {a} file."
   | .keyVault .malformedKey => "The protected key for a store file is damaged."
   | .keyVault (.keychain s) => s!"The device could not keep a store file's protected key (keychain status {s})."
-  | .vaultStorage r => s!"Invalid vault storage: {r}"
   | .people (.invalidState r) => s!"Invalid people storage: {r}"
   | .people .damaged =>
     "Winnow could not safely read your saved recipients, so they cannot be changed until the file is readable again."
@@ -146,23 +120,8 @@ def description : RecordsError → String
   | .labels .invalidLabel => "Use a single-line label of at most 120 characters."
   | .labels .full => "This wallet has reached its limit of 10,000 receive address labels."
   | .app .noWallet => "No wallet is open."
-  | .app .duplicateVault => "A vault with this descriptor already exists."
   | .app .sendReviewChanged => "The available coins, fee, or change changed. Review the payment again before signing."
   | .app .personCannotBePaid => "This person has no pay-to key or address yet. Ask them for their Winnow card."
-  | .app (.personCannotCoOwn n) =>
-    s!"{n} has no signer key yet. Ask them for their Winnow card before creating savings together."
-  | .app (.vaultSpendNotRecorded txid reason) =>
-    s!"The payment was sent ({txid}) but this account's coins could not be updated ({reason}). " ++
-      "Reopen the account before spending from it again."
-  | .app .unknownVault => "This vault is no longer on this phone."
-  | .session (.unknownSavings name) =>
-    let what := match name with | some n => s!"“{n}”" | none => "savings that are"
-    s!"This request is for {what} not on this phone. Ask the person who created them to share the savings card — money sent before you add them cannot be approved from this phone."
-  | .session .notTheseSavings => "This request belongs to different shared savings."
-  | .session .noWorkingPSBT => "Paste a request first."
-  | .session .unknownInput => "An input of this PSBT is not a known UTXO of the vault."
-  | .session .noMuSig2PSBT => "Add a PSBT first."
-  | .session (.notReady r) => r
   | .lookup m => m
   | .named _ d => d
   | .io e => toString e
@@ -193,12 +152,9 @@ The Lean port of WalletCore reports most failures by their Swift case name; the 
 sentence. These are the `errorDescription`s of the errors the records operations can meet. -/
 
 def describe (name : String) (network : Tx.BitcoinNetwork) : String :=
-  let cosigner : List VaultCosignerKeyError := [.malformed, .privateKey, .extendedPublicKeyRequired, .missingOrigin,
-    .originPathMismatch, .scriptPathDerivationRequired, .muSig2DerivationForbidden, .duplicateKey]
   let payTo : List PersonPayToError := [.malformed, .privateKey, .singleAddressKey, .notSingleKey,
     .unsupportedDerivation]
-  if let some e := cosigner.find? (·.name == name) then e.description
-  else if let some e := payTo.find? (·.name == name) then e.description
+  if let some e := payTo.find? (·.name == name) then e.description
   else if name == "wrongNetwork" then (PersonPayToError.wrongNetwork network).description
   else if name == "notACard" then PersonCardError.notACard.description
   else if name == "empty" then PersonPasteError.empty.description
@@ -208,17 +164,6 @@ def describe (name : String) (network : Tx.BitcoinNetwork) : String :=
   else s!"The operation could not be completed ({name})."
 
 def namedError (name : String) (network : Tx.BitcoinNetwork) : RecordsError := .named name (describe name network)
-
-def ofVaultFailure (network : Tx.BitcoinNetwork) : VaultFailure → RecordsError
-  | .vault e => .named e.name e.description
-  | .named n => namedError n network
-
-def liftVault {α} (network : Tx.BitcoinNetwork) (r : VM α) : RM α := RM.lift (ofVaultFailure network) r
-
-def liftVaultIO {α} (network : Tx.BitcoinNetwork) (x : ExceptT VaultFailure IO α) : RM α := do
-  match ← RM.io x.run with
-  | .ok a => pure a
-  | .error e => throw (ofVaultFailure network e)
 
 def liftNamed {α} (network : Tx.BitcoinNetwork) (r : Except String α) : RM α := RM.lift (namedError · network) r
 

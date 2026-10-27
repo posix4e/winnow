@@ -18,7 +18,7 @@ commit, record scan height, roll back, remember, receive index); wallet reads ar
 
 Platform dependencies come in as `Deps`: the secret store (`KeyStore IO`, the Keychain capability on
 iOS), the HTTPS fetch (`http.get`), randomness, the wall clock, and the loop intervals. `Hooks` is the
-seam for the records half (vaults, people, labels), which another module fills in; its defaults are
+seam for the records half (people, labels), which another module fills in; its defaults are
 "nothing stored" or `notPorted`. -/
 
 namespace WinnowApp.Real
@@ -33,31 +33,16 @@ def Network.net : WinnowApp.Network → Net.BitcoinNetwork
 
 /-! ## The seam for the records half -/
 
-/-- What the core needs from vaults, people and labels (the records half plugs these in). -/
+/-- What the core needs from people and labels (the records half plugs these in). -/
 structure Hooks where
-  /-- `vaultStore.configure` for the network's directory: `some message` when the store is damaged. -/
+  /-- `configurePeople` (and the receive labels) for the network's directory: `some message` when a
+  store is damaged. -/
   configure : WinnowApp.Network → (dir : String) → IO (Option String) := fun _ _ => pure none
-  /-- `vaultStore.watchScripts(network:)`. -/
-  vaultWatchScripts : IO (Array ByteArray) := pure #[]
-  /-- `vaultStore.apply(match:network:)`. -/
-  vaultApply : BlockMatch → IO Unit := fun _ => pure ()
-  /-- `vaultStore.rollBack(to:)`. -/
-  vaultRollBack : UInt32 → IO Unit := fun _ => pure ()
-  /-- `VaultStore.validate(bundle.vaults, network:)`. -/
-  validateBundleVaults : Array VaultRecord → WinnowApp.Network → IO Unit := fun _ _ => pure ()
-  /-- `vaultStore.restore(bundle.vaults)`. -/
-  restoreVaults : Array VaultRecord → IO Unit := fun _ => pure ()
-  /-- `vaultStore.backupRecords()` for an exported bundle (`none`: no vault section). -/
-  backupVaults : IO (Option (Array VaultRecord)) := pure none
   /-- `nextPaymentAddress(for:)` of a saved person: address, index, the review's recipient. -/
   personPayment : (personID : String) → IO (String × UInt32 × PreviewRecipient) :=
     fun _ => notPorted "Paying a saved person"
   /-- `advancePersonPaymentIndex(id:past:)` after a send to a person commits. -/
   advancePersonIndex : (personID : String) → UInt32 → IO Unit := fun _ _ => pure ()
-  /-- `ownedVaultScripts`: outputs paying a vault are not shown as payments to someone else. -/
-  ownedVaultScripts : IO (Array ByteArray) := pure #[]
-  /-- The vaults as `journalSnapshotIfChanged` summarizes them: id, balance, coins, confirmed coins. -/
-  vaultSummaries : IO (Array (String × Int64 × Nat × Nat)) := pure #[]
 
 instance : Inhabited Hooks := ⟨{}⟩
 
@@ -66,20 +51,14 @@ structure Deps where
   keyStore : Keys.KeyStore IO
   fetch : HttpFetch
   random : Randomness := .system
-  /-- Wall clock, seconds since 1970 (census freshness). -/
-  wallSeconds : IO Int := Winnow.IO.wallSeconds
   /-- `PeerPool(peerCount:)` (3 in the app). -/
   peerCount : Nat := 3
   /-- The sync loop's interval (45 s in the app). -/
   syncIntervalMs : Nat := 45_000
   /-- The phase ticker's interval (1 s). -/
   phaseIntervalMs : Nat := 1_000
-  /-- The census publisher keys. -/
-  censusKeys : List ByteArray := Keys.CensusPublisher.trustedKeys
-  /-- `CensusCatalogStore(minimumEntries:)`: 0 in test mode. -/
-  censusMinimumEntries : Nat := CensusCatalog.minimumClearnetEntries
-  /-- Where the census is downloaded from (test mode reads its control file each time). -/
-  censusURL : IO String := pure CensusCatalog.endpointURL
+  /-- `CensusCatalog.bundled`: the census list this build ships (mainnet only). -/
+  census : IO (Option CensusCatalog) := CensusCatalog.bundled
   /-- The sync stack's parameters in place of the network's (test mode's custom signet). -/
   networkParams : Option NetworkParams := none
   /-- Pinned wallet entropy (test mode); none draws it from `random`. -/
@@ -181,12 +160,6 @@ def importFailureText : ImportBundle.Failure → String
   | .wallet e => e.description
   | .decoding _ => "The data couldn’t be read because it isn’t in the correct format."
 
-/-- `CensusCatalogStore.replace` failures. -/
-def censusErrorText : CensusError → String
-  | .invalid e => s!"Invalid census peer list: {e.name}."
-  | .signature e => e.errorDescription
-  | .decoding _ => "The data couldn’t be read because it isn’t in the correct format."
-  | .io r => r
 
 /-! ## Rates and amounts -/
 
@@ -264,7 +237,6 @@ structure Core where
   nextWatchId : Nat := 0
   reviews : Array SendReview := #[]
   bumps : Array (String × Winnow.FeeBumpPreview) := #[]
-  refreshingCatalog : Bool := false
   peersToAvoid : Array PeerEndpoint := #[]
   http : RoutedHTTPClient
   /-- `lastE2EPeerFingerprint` / `lastE2ESnapshotFingerprint`: the last `peers.status` and

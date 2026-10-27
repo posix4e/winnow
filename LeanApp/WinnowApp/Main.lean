@@ -34,7 +34,7 @@ def e2eVariables : List String :=
   ["WINNOW_E2E", "WINNOW_E2E_ENTROPY", "WINNOW_E2E_MNEMONIC", "WINNOW_E2E_RUN", "WINNOW_E2E_PEER",
    "WINNOW_E2E_CHALLENGE", "WINNOW_E2E_RESET", "WINNOW_E2E_CLIPBOARD", "WINNOW_E2E_NETWORK", "WINNOW_E2E_TAB",
    "WINNOW_E2E_DEVICE_AUTH", "WINNOW_E2E_ADVANCED", "WINNOW_E2E_CONTROL_FILE", "WINNOW_E2E_PEER_COUNT",
-   "WINNOW_E2E_SYNC_INTERVAL", "WINNOW_E2E_CENSUS_URL", "WINNOW_E2E_CENSUS_KEYS"]
+   "WINNOW_E2E_SYNC_INTERVAL"]
 
 /-- `E2EMode.current` in a Debug build: inactive, active, or — without pinned entropy — a stop, because a
 capture run that generated a real seed would publish it. -/
@@ -111,9 +111,6 @@ def chooseBackend (fx : Effects Host) (mode : Option E2E.Mode := none) : IO Unit
         { deps with
           peerCount := m.peerCount.getD deps.peerCount
           syncIntervalMs := (m.syncIntervalSeconds.map fun s => (s * 1000).toUInt64.toNat).getD deps.syncIntervalMs
-          censusKeys := m.censusKeys.getD deps.censusKeys
-          censusMinimumEntries := 0
-          censusURL := do return (← m.currentCensusURL).getD Winnow.IO.CensusCatalog.endpointURL
           networkParams := m.networkParams
           entropy := m.entropy
           journal := fun n f => journal n f }
@@ -255,9 +252,6 @@ def perform (c : Cmd) (fx : Effects Host) : IO Unit := do
   | .sendPayment g inputs p =>
       authenticated fx g "send" s!"Send {satsText p.amount} to {p.destination}" do
         return .sent g (← b.sendPayment inputs p)
-  | .prepareVaultApproval g inputs p => background fx g "send" do
-      b.prepareVaultApproval inputs p
-      return .approvalPrepared g inputs
   | .rawTransaction g txid => background fx g "refresh" do return .rawTransaction g txid (← b.rawTransactionHex txid)
   | .watchRelay g txid => discard <| IO.asTask do
       try b.watchRelay txid (fun e => fx.post (.relay g txid e)) catch _ => pure ()
@@ -272,8 +266,6 @@ def perform (c : Cmd) (fx : Effects Host) : IO Unit := do
   | .bumpFee g txid p =>
       authenticated fx g "feeBump" "Replace this transaction with a higher fee" do
         return .bumped g txid (← b.bumpFee txid p)
-  | .refreshCatalog g => background fx g "catalog" do
-      return .catalogRefreshed g (← b.refreshCatalog (fun n => fx.post (.catalogProgress g n)))
   | .catalogStatus g => background fx g "catalog" do return .catalogStored g (← b.catalogStatus)
   | .connectedPeers g => background fx g "peers" do return .peers g (← b.connectedPeers)
   | .resetPeers g => background fx g "peers" do
@@ -302,12 +294,12 @@ def perform (c : Cmd) (fx : Effects Host) : IO Unit := do
         journal "backup.phraseRevealReady" [("deviceAuthenticationRequired", toString required)]
         return .revealed g e words
   | .ownCard g name => background fx g "card" do return .card g name (← b.ownCard name)
-  | .parsePaste g text _ => discard <| IO.asTask do
+  | .parsePaste g text => discard <| IO.asTask do
       try fx.post (.pasteParsed g text (.ok (← b.parsePaste text)))
       catch e => fx.post (.pasteParsed g text (.error (toString e)))
-  | .addPerson g name paste forSigning prov source labelTxid => background fx g "person" do
+  | .addPerson g name paste prov source labelTxid => background fx g "person" do
       return .updated g (if labelTxid.isSome then .senderLabeled else .personSaved)
-        (← b.addPerson name paste forSigning prov source labelTxid)
+        (← b.addPerson name paste prov source labelTxid)
   | .editPerson g pid name attach => background fx g "person" do
       if let some (paste, prov, source) := attach then discard <| b.attachDestination pid paste prov source
       return .updated g .personSaved (← b.updateRecipient pid (some name) true)
@@ -315,38 +307,6 @@ def perform (c : Cmd) (fx : Effects Host) : IO Unit := do
   | .labelSender g txid pid => background fx g "person" (records g .senderLabeled (b.labelSender txid pid))
   | .removeSenderLabel g txid => background fx g "payment" (records g .none (b.removeSenderLabel txid))
   | .lookupSender g txid base => background fx g "person" do return .senderLookup g txid base (← b.lookupSender txid base)
-  | .ownKeyExpression g multipath => background fx g "vaultCreate" do return .ownKey g (← b.ownKeyExpression multipath)
-  | .checkCosigner g role existing expr => background fx g "vaultCreate" do
-      b.checkCosigner role existing expr
-      return .cosignerChecked g expr
-  | .buildVault g role k cs => background fx g "vaultCreate" do return .vaultBuilt g cs (← b.buildVault role k cs)
-  | .addVault g name d => background fx g "vaultCreate" (records g .vaultSaved (b.addVault name d))
-  | .removeVault g id => background fx g "refresh" (records g (.vaultRemoved id) (b.removeVault id))
-  | .advanceVaultReceive g id => background fx g "refresh" (records g .none (b.advanceVaultReceive id))
-  | .createSharedSavings g name ids k => background fx g "savingsCreate" do
-      let (id, r) ← b.createSharedSavings name ids k
-      return .updated g (.savingsCreated id) r
-  | .addSharedSavings g card => background fx g "savingsAdd" (records g .savingsAdded (b.addSharedSavings card))
-  | .savingsCard g id => background fx g "savingsCreate" do return .savingsCard g id (← b.sharedSavingsCard id)
-  | .approvalAdd g id working text => background fx g "approval" do
-      return .approvalReviewed g id (← b.approvalAdd id working text) true
-  | .approvalRecheck g id working => background fx g "approval" do
-      return .approvalReviewed g id (← b.approvalRecheck id working) false
-  | .approvalApprove g id working =>
-      authenticated fx g "approval" "Approve this shared-savings payment" do
-        return .approvalReviewed g id (← b.approvalApprove id working) false
-  | .approvalFinish g id working => background fx g "approval" do return .approvalSent g id (← b.approvalFinish id working)
-  | .musigAdd g id working text => background fx g "musig" do return .musigReviewed g id (← b.musigAdd id working text) true
-  | .musigNonces g e id working =>
-      authenticated fx g "musig" "Start signing this MuSig2 vault transaction" do
-        return .musigNonces g e id (← b.musigNonces id working)
-  | .musigSign g e id working =>
-      authenticated fx g "musig" "Complete signing this MuSig2 vault transaction" do
-        return .musigSigned g e id (← b.musigSign id working)
-  | .musigBroadcast g e id working => background fx g "musig" do return .musigSent g e id (← b.musigBroadcast id working)
-  | .musigRestart g id working => background fx g "musig" do return .musigReviewed g id (← b.musigRestart id working) false
-  | .musigRecheck g id working => background fx g "musig" do return .musigReviewed g id (← b.musigRecheck id working) false
-  | .musigClear => discard <| IO.asTask b.musigClear
   | .journal name fields => journal name fields
   | .paste target => discard <| IO.asTask do
       -- `pasteboardText()`: the runner's control file under test mode, the pasteboard otherwise

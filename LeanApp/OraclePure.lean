@@ -9,8 +9,8 @@ line on stdin, one reply per line.
 Ops: `sync`, `history.order`, `history.row` (the entry decoded through `Real.historyItem`, the records
 built the way `Real.summaryOf` builds them), `explorer`, `url.host`, `loopback`, `settings.shows`,
 `peer.parse`, `label.normalize`, `fee.proportion`, `rate.parse`, `rate.suggest` (from the unrounded pending
-rate, as `Real.pendingFeeRate` computes it), `threshold`, `vault.rule`, `names.join`,
-`maturity`, `pay.title`, `approval`, `musig.labels`. -/
+rate, as `Real.pendingFeeRate` computes it). The vault, savings, approval and MuSig2 ops (`threshold`,
+`vault.rule`, `names.join`, `maturity`, `pay.title`, `approval`, `musig.labels`) went with vaults. -/
 
 open Lean Winnow WinnowApp
 
@@ -87,7 +87,7 @@ def historyRow (j : Json) : IO Json := do
       received := Int64.ofInt received, spent := Int64.ofInt spent,
       rawTransaction := (optS j "raw").bind ofHex?,
       fundingScripts := ((stringsJ j "fundingScripts").filterMap ofHex?).toArray }
-  let h := Real.historyItem entry (scriptSet (stringsJ j "owned")) (scriptSet (stringsJ j "vaultOwned")) txNet
+  let h := Real.historyItem entry (scriptSet (stringsJ j "owned")) txNet
   let people : List Person := (pairsJ j "people").map fun (id, name) => { id, name }
   -- `Real.summaryOf`: labels keyed by the address their script renders as
   let labels := (pairsJ j "labels").filterMap fun (s, note) =>
@@ -162,63 +162,11 @@ def rateSuggest (j : Json) : IO Json := do
   -- `Real.pendingFeeRate`: from the wallet's `Double(fee) / Double(vsize)`, before rounding to thousandths
   return ok (jstr (suggestedBumpText (Float.ofInt fee / vsize.toFloat)))
 
-/-! ## Vaults, savings, approvals -/
-
-def thresholdOp (j : Json) : IO Json := do
-  let t ← natJ j "threshold"
-  let keys ← natJ j "keyCount"
-  return ok (arr [jnat (clampThreshold t keys), jnat (reconcileThreshold t (← natJ j "previous") keys)])
-
-def vaultRuleOp (j : Json) : IO Json := do
-  let threshold ← natJ j "threshold"
-  let signerCount ← natJ j "signerCount"
-  let v : VaultSummary :=
-    { id := "", name := "", descriptor := "", balance := 0, threshold := threshold, signerCount := signerCount,
-      isScriptPath := boolJ j "isScriptPath", receiveAddress := none }
-  return ok (jstr (vaultRule v))
-
-def namesJoin (j : Json) : IO Json := do return ok (jstr (joinNames (stringsJ j "names") "your co-owners"))
-
-def maturityOp (j : Json) : IO Json := do
-  let height ← natJ j "height"
-  let u : VaultUtxo := { txid := "", vout := 0, amount := 1, height, isCoinbase := boolJ j "isCoinbase" }
-  return ok (jstr (maturityNote u (← natJ j "tip")))
-
-def payTitle (j : Json) : IO Json := do
-  let name := (optS j "name").getD ""
-  let label : PayLabel := match ← need (str j "kind") with
-    | "savings" => .savings name | "person" => .person name | "you" => .you | _ => .unknown
-  return ok (jstr label.title)
-
-def approvalOp (j : Json) : IO Json := do
-  let names := ((j.getObjValAs? (Array Json) "signerNames").toOption.getD #[]).toList.filterMap fun p =>
-    match p.getArrVal? 0, p.getArrVal? 1 with
-    | .ok i, .ok n => match i.getNat?, n.getStr? with
-      | .ok i, .ok n => some (i, n)
-      | _, _ => none
-    | _, _ => none
-  let threshold ← natJ j "threshold"
-  let r : ApprovalReview :=
-    { working := "", output := "", lines := if boolJ j "reviewed" then some [] else none,
-      threshold, approvals := ((j.getObjValAs? (Array Nat) "approvals").toOption.getD #[]).toList,
-      signerNames := names, ownPosition := (j.getObjValAs? Nat "ownPosition").toOption }
-  return ok (arr [.bool r.approvedByYou, .bool r.canFinish, jstr r.progressText])
-
-def musigLabels (j : Json) : IO Json := do
-  let (types, locktime, seqs) := match j.getObjVal? "review" with
-    | .ok v@(.obj _) =>
-      (((v.getObjValAs? (Array Nat) "sighashTypes").toOption.getD #[]).toList,
-       some ((v.getObjValAs? Nat "locktime").toOption.getD 0),
-       ((v.getObjValAs? (Array Nat) "sequences").toOption.getD #[]).toList)
-    | _ => ([], none, [])
-  return ok (arr [jstr (sighashLabel types), jstr (locktimeLabel locktime), jstr (sequenceLabel seqs)])
-
 def ops : Std.HashMap String (Json → IO Json) := Std.HashMap.ofList [
   ("sync", syncOp), ("history.order", historyOrder), ("history.row", historyRow), ("explorer", explorerOp),
   ("url.host", urlHostOp), ("loopback", loopbackOp), ("settings.shows", settingsShows), ("peer.parse", peerParse),
   ("label.normalize", labelNormalize), ("fee.proportion", feeProportion), ("rate.parse", rateParse),
-  ("rate.suggest", rateSuggest), ("threshold", thresholdOp), ("vault.rule", vaultRuleOp), ("names.join", namesJoin),
-  ("maturity", maturityOp), ("pay.title", payTitle), ("approval", approvalOp), ("musig.labels", musigLabels)]
+  ("rate.suggest", rateSuggest)]
 
 def answer (line : String) : IO Json := do
   match Json.parse line with

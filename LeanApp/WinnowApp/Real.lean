@@ -15,11 +15,11 @@ import WinnowApp.Real.Full
 | `Real/Stack.lean` | stack build/teardown, rollback marker, phase ticker, sync loop, `syncOnce` (:569–1006) |
 | `Real/Wallet.lean` | open, create, adopt, import, export, reveal, destroy, receive, `refresh` (:470–1476) |
 | `Real/Send.lean` | fee rate, previews, send, fee bump, payment details, mempool windows (:899, :1539–1892, :2191) |
-| `Real/Peers.lean` | scene phase start/stop, reconnect, retry, census refresh, peers, reset (:553, :2586–2665) |
+| `Real/Peers.lean` | scene phase start/stop, reconnect, retry, the census line, peers, reset (:553, :2586–2665) |
 | `Real/Shell.lean` | the shell's `keychain.*` and `http.get` capabilities as `KeyStore IO` and `HttpFetch` |
 | `Real/Assemble.lean` | the core fields of the `Backend` record (`Backend.coreWithEnv`) |
-| `Real/Records*.lean` | people, vaults, labels, shared savings, approvals, MuSig2 (VaultStore, PeopleStore, ReceiveAddressLabelStore, AppModel) |
-| `Real/Full.lean` | `Backend.real`: both halves joined through `Hooks`, and the vault send path |
+| `Real/Records*.lean` | people and labels (PeopleStore, ReceiveAddressLabelStore, AppModel) |
+| `Real/Full.lean` | `Backend.real`: both halves joined through `Hooks` |
 
 Differences from AppModel, all forced by the Lean app's shape:
 

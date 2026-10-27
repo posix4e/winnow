@@ -47,13 +47,12 @@ def SendReview.authorizes (r : SendReview) (built : BuiltTransaction) : Bool := 
   return r.change.isNone == r.changeAmount.isNone
 
 def sameSummary (a b : Preview) : Bool :=
-  a.source == b.source && a.destination == b.destination && a.amount == b.amount && a.fee == b.fee &&
+  a.destination == b.destination && a.amount == b.amount && a.fee == b.fee &&
     a.feeRateMilli == b.feeRateMilli && a.inputCount == b.inputCount && a.change == b.change &&
     a.recipient == b.recipient
 
 /-- `previewSend(destination:…)` / `previewSend(to:…)` for the everyday wallet. -/
 def previewSend (env : Env) (inputs : SendInputs) : IO Preview := do
-  if inputs.accountID.isSome then notPorted "Vault payments"
   let feeRate ← resolveRate env inputs.priority (parseRateMilli inputs.override)
   let (destination, recipient) ← match inputs.personID with
     | some id => do
@@ -102,7 +101,6 @@ def broadcastTx (env : Env) (tx : Transaction) (rate : Option Float) : IO ByteAr
 
 /-- `send(preview:)` after authentication: rebuild, sign, check `authorizes`, broadcast, commit. -/
 def sendPayment (env : Env) (inputs : SendInputs) (p : Preview) : IO String := exclusively env do
-  unless p.source == .wallet do failWith .sendReviewChanged
   let c ← env.get
   let some w := c.wallet | failWith .noWallet
   let some review := c.reviews.find? (fun r => r.inputs == inputs && sameSummary r.summary p) | failWith .sendReviewChanged

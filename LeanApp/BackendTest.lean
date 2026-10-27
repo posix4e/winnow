@@ -310,59 +310,41 @@ def flow (dir : String) (n : Node) : IO Unit := do
   let expected3 := expected2 + 100_000
   let (s7, _) ← syncUntil a 60_000 fun s _ => s.balance == expected3
   check "the watched payment confirms" (s7.balance == expected3) s!"{s7.balance}"
-  -- 7b. Shared savings with a second phone's key: funded from the wallet, credited by the sync loop.
+  -- 7b. A person from a second phone's card (pay-to only: signer keys went with vaults).
   let keysBob ← IO.mkRef ({} : Keys.InMemorySecrets)
   let bob ← match ← (Wallet.create .regtest (inMemoryKeyStore keysBob)).run with
     | .ok w => pure w
     | .error e => throw (IO.userError s!"Wallet.create: {e.name}")
   let cardBob ← RecordsReal.RM.toIO (do return (← RecordsReal.ownPersonCard bob "Bob").serialized)
   let r0 ← a.records
-  check "records: none yet, own signer known" (r0.people.isEmpty && r0.vaults.isEmpty && r0.ownSignerFingerprint.isSome)
-  let r1 ← a.addPerson "Bob" (some cardBob) true (some .supplied) none none
-  let some bobID := (r1.people.find? (·.name == "Bob")).map (·.id) | check "addPerson Bob" false; return
-  let (vaultID, r2) ← a.createSharedSavings "Joint" [bobID] 2
-  let some vault := r2.vaults.find? (·.id == vaultID) | check "createSharedSavings" false; return
-  check "createSharedSavings: 2 of 2, script path, a receive address"
-    (vault.threshold == 2 && vault.signerCount == 2 && vault.isScriptPath && (vault.receiveAddress.any (·.startsWith "bcrt1p")))
-    (reprStr vault)
-  let some vaultAddr := vault.receiveAddress | return
-  let toVault : SendInputs := { destination := vaultAddr, amount := "200000", network := .regtest }
-  let pv ← a.previewSend toVault
-  let fundTxid ← a.sendPayment toVault pv
-  check "the payment into the vault reaches the node's mempool" (← waitUntil 20_000 (do return (← n.mempool).contains fundTxid))
-  n.mine 1 mineAddr
-  n.waitFilterIndex
-  let vaultBalance : IO Nat := do return ((← a.records).vaults.find? (·.id == vaultID)).map (·.balance) |>.getD 0
-  let (s7v, _) ← syncUntil a 60_000 fun s _ => (history? s fundTxid).any (·.height > 0)
-  let credited ← waitUntil 30_000 (do return (← vaultBalance) == 200_000)
-  check "the sync loop credits the vault (vault watch scripts + apply)" credited s!"{← vaultBalance}"
-  let fundRow := history? s7v fundTxid
-  let recs ← a.records
-  check "the wallet's payment into the vault is marked vault-owned, not a payment to someone"
-    ((fundRow.bind (·.outputs)).any (·.any fun o => o.ownedByVault && o.amount == 200_000) &&
-     (fundRow.map fun h => (paymentRecipients recs h).isEmpty) == some true)
-  -- A vault payment is reviewed, then prepared for approval only as reviewed.
-  let fromVault : SendInputs := { destination := ← n.wallet #["getnewaddress"], amount := "50000", network := .regtest,
-                                  accountID := some vaultID }
-  let vp ← a.previewSend fromVault
-  check "previewSend from the vault: a vault source, amount, change"
-    (vp.amount == 50_000 && vp.change == some (200_000 - 50_000 - vp.fee) &&
-     (match vp.source with | .vault id _ _ sp th k => id == vaultID && sp && th == 2 && k == 2 | _ => false))
-  let forgedVault ← attempt (a.prepareVaultApproval fromVault { vp with amount := vp.amount + 1 })
-  check "prepareVaultApproval refuses a summary that was not reviewed" (forgedVault matches .error _)
-  let prepared ← attempt (a.prepareVaultApproval fromVault vp)
-  check "prepareVaultApproval accepts the reviewed vault spend" (prepared matches .ok _)
-  let s7 := s7v
+  check "records: no people yet" r0.people.isEmpty
+  let r1 ← a.addPerson "Bob" (some cardBob) (some .supplied) none none
+  check "addPerson Bob from his card: paid at fresh addresses"
+    ((r1.people.find? (·.name == "Bob")).any (·.payTo == some true))
   -- 8. Export, and import into a fresh directory.
   let bundle ← a.exportBundle false
   check "exportBundle (watch-only)" ((bundle.splitOn "\"regtest\"").length > 1 && (bundle.splitOn "mnemonic").length == 1)
-  check "exportBundle carries the vault" ((bundle.splitOn vaultID).length > 1)
+  check "exportBundle carries no accounts" ((bundle.splitOn "\"vaults\"").length == 1)
+  -- A bundle from the shared-account Winnow (accounts under "vaults") is refused, not restored without them.
+  -- a well-formed account record as the shared-account Winnow wrote it (a MuSig2 account: upstream refuses
+  -- it with unsupportedWalletData; a malformed record would be a decoding error there)
+  let account := "{\"id\":\"q9x7v2kd\",\"name\":\"Joint\",\"descriptor\":\"tr(musig([a1b2c3d4/86'/1'/0']tpubA,[0badcafe/86'/1'/0']tpubB)/<0;1>/*)#q9x7v2kd\"," ++
+    "\"createdAtHeight\":100,\"nextReceiveIndex\":0,\"nextChangeIndex\":0,\"utxos\":[]}"
+  let withAccounts := "{\"vaults\":[" ++ account ++ "]," ++ (bundle.drop 1).toString
+  let emptyAccounts := "{\"vaults\":[]," ++ (bundle.drop 1).toString
+  check "ImportBundle: an empty accounts list decodes" ((ImportBundle.decode emptyAccounts) matches .ok _)
+  check "ImportBundle: accounts are refused (unsupportedWalletData)"
+    (match ImportBundle.decode withAccounts with | .error (.wallet .unsupportedWalletData) => true | _ => false)
   let keysB ← IO.mkRef ({} : Keys.InMemorySecrets)
   let (bImp, envB) ← Backend.realWithEnv (deps keysB "B")
   let dirB := s!"{dir}/B/BTCSwift/regtest"
   IO.FS.createDirAll dirB
   discard <| bImp.openWallet .regtest dirB
   bImp.startNetworking settings
+  let refused ← attempt (bImp.importBundle .regtest dirB withAccounts)
+  check "importBundle refuses a bundle with accounts, with unsupportedWalletData's text"
+    (match refused with | .error e => toString e == WalletError.unsupportedWalletData.description | _ => false)
+    (match refused with | .error e => toString e | .ok _ => "imported")
   let report ← bImp.importBundle .regtest dirB bundle
   say s!"  import report: {report.replace "\n" " | "}"
   let (sb, _) ← bImp.snapshot
@@ -370,9 +352,6 @@ def flow (dir : String) (n : Node) : IO Unit := do
     s!"{sb.balance} vs {s7.balance}"
   check "import report: scanned and confirmed every claim" (report.startsWith "Scanned from block" &&
     (report.splitOn "Claimed but spent since: 0").length > 1)
-  let rb ← bImp.records
-  check "importBundle restores the vault and its coins" (((rb.vaults.find? (·.id == vaultID)).map (·.balance)) == some 200_000)
-    (reprStr (rb.vaults.map fun v => (v.id, v.balance)))
   bImp.stopNetworking
   -- 9. Stop networking: nothing keeps running.
   a.stopNetworking
@@ -432,13 +411,8 @@ def flow (dir : String) (n : Node) : IO Unit := do
     "its raw decodes to the sent txid"
   checkJournal "transaction.replaced" ["original", "replacement", "raw"]
     (fun f => field f "original" == txid2 && field f "replacement" == replacement && rawIsTxid (field f "raw") replacement)
-  checkJournal "vault.created" ["name", "descriptor", "height"] (fun f => field f "name" == "Joint" && field f "descriptor" == vault.descriptor)
-  checkJournal "savings.created" ["name", "descriptor", "coOwners"] (fun f => field f "name" == "Joint" && field f "coOwners" == "Bob")
-  checkJournal "person.added" ["name", "payToKind", "hasSignerKey"]
-    (fun f => field f "name" == "Bob" && field f "payToKind" == "descriptor" && field f "hasSignerKey" == "true")
-  checkJournal "psbt.generated" ["stage", "base64", "inputCount", "outputCount"]
-    (fun f => field f "stage" == "vault-spend-created" && field f "inputCount" == "1" && field f "outputCount" == "2")
-  checkJournal "approval.requested" ["base64", "vaultID"] (field · "vaultID" == vaultID)
+  checkJournal "person.added" ["name", "payToKind"]
+    (fun f => field f "name" == "Bob" && field f "payToKind" == "descriptor")
   checkJournal "wallet.exported" ["bundleVersion", "seedBearing", "lastKnownHeight", "utxoCount", "historyCount"]
     (fun f => field f "seedBearing" == "false" && field f "bundleVersion" == "2")
   checkJournal "import.started" ["bundleVersion", "seedBearing", "lastKnownHeight", "utxoCount", "historyCount"]
@@ -453,10 +427,9 @@ def flow (dir : String) (n : Node) : IO Unit := do
   checkJournal "peers.status" ["connected", "target", "dialing", "exhausted", "peers", "rejected"]
     (fun f => field f "connected" == "1" && field f "dialing" ∈ ["true", "false"] && (field f "peers").startsWith "127.0.0.1:")
   checkJournal "wallet.snapshot" ["walletID", "balance", "utxoCount", "historyCount", "nextScanHeight", "tipHeight",
-      "peerCount", "confirmedTransactions", "pendingTransactions", "replacements", "vaults"]
+      "peerCount", "confirmedTransactions", "pendingTransactions", "replacements"]
     (fun f => field f "walletID" == walletID && ((field f "confirmedTransactions").splitOn s!"{txid}@{sendHeight}").length > 1 &&
-       ((field f "replacements").splitOn s!"{txid2}>{replacement}").length > 1 &&
-       ((field f "vaults").splitOn s!"{vaultID}:200000:1:1").length > 1)
+       ((field f "replacements").splitOn s!"{txid2}>{replacement}").length > 1)
   let deduped (name : String) : IO Bool := do
     let es ← journaled name
     return ["A", "B", "C"].all fun tag =>

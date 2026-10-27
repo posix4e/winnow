@@ -8,21 +8,11 @@ wallet still fails with "still being ported". The data is made up (signet-style 
 namespace WinnowApp
 
 def sampleAlice : Person :=
-  { id := "p-alice", name := "Alice", payTo := some true, signerKey := some "[a1b2c3d4/86'/1'/0']tpubAlice/<0;1>/*",
-    signerFingerprint := some "a1b2 c3d4", nextPaymentIndex := 3, savedRecipient := some true }
+  { id := "p-alice", name := "Alice", payTo := some true, nextPaymentIndex := 3, savedRecipient := some true }
 def sampleBob : Person :=
   { id := "p-bob", name := "Bob", payTo := some false, savedRecipient := some true, provenance := some .localFunding }
 def sampleCarol : Person :=
-  { id := "p-carol", name := "Carol", signerKey := some "[0badcafe/86'/1'/0']tpubCarol/<0;1>/*", signerFingerprint := some "0bad cafe" }
-
-def sampleVault : VaultSummary :=
-  { id := "v-1", name := "Savings with Alice", descriptor := "tr(NUMS,multi_a(2,[a1b2c3d4/86'/1'/0']tpubAlice/<0;1>/*,[f00dbabe/86'/1'/0']tpubYou/<0;1>/*))",
-    balance := 250000, threshold := 2, signerCount := 2, isScriptPath := true,
-    receiveAddress := some "tb1pq7v5yd3k8u0x9sample0vault0address0000000000000000000qqqq",
-    utxos := [{ txid := "7a1f00c0ffee0000000000000000000000000000000000000000000000000001", vout := 0, amount := 250000, height := 214001 }],
-    coOwners := ["Alice"], includesYou := true,
-    signers := [{ fingerprint := "a1b2 c3d4", name := some "Alice", isYou := false },
-                { fingerprint := "f00d babe", name := none, isYou := true }] }
+  { id := "p-carol", name := "Carol" }
 
 def sampleHistory : List HistoryItem :=
   [ { txid := "c0ffee0000000000000000000000000000000000000000000000000000000003", height := 0,
@@ -41,11 +31,9 @@ def Backend.sample : Backend :=
     openWallet := fun _ _ => pure (.opened "sample-wallet")
     snapshot := pure ({ balance := 138000, utxoCount := 2, history := sampleHistory, feeBumpable := [sampleHistory[0]!.txid],
                         peerCount := 0, tipHeight := 214020, nextScanHeight := 214021, feeFloorMilli := some 1000 }, .peerDiscoveryFailed)
-    records := pure { people := [sampleAlice, sampleBob, sampleCarol], vaults := [sampleVault],
+    records := pure { people := [sampleAlice, sampleBob, sampleCarol],
                       senderByTxid := [(sampleHistory[2]!.txid, "p-alice")],
                       recipientByScript := [("0014b0b", "p-bob")],
-                      receiveLabels := [("tb1preceive00000000000000000000000000000000000000000000000", "Alice · invoice 12")],
-                      ownSignerFingerprint := some "f00d babe" }
-    catalogStatus := pure "Using bundled candidates. Downloaded catalogs expire after seven days." }
+                      receiveLabels := [("tb1preceive00000000000000000000000000000000000000000000000", "Alice · invoice 12")] } }
 
 end WinnowApp
