@@ -518,9 +518,9 @@ def serializeLeaf : Leaf → String
   | .pk k => s!"pk({serializeKey k})"
   | .multiA t ks => s!"multi_a({t},{",".intercalate (ks.toList.map serializeKey)})"
   | .sortedMultiA t ks => s!"sortedmulti_a({t},{",".intercalate (ks.toList.map serializeKey)})"
-  | .timelocked (.pk k) blocks => s!"and_v(v:pk({serializeKey k})),older({blocks}))"
+  | .timelocked (.pk k) blocks => s!"and_v(v:pk({serializeKey k}),older({blocks}))"
   | .timelocked (.multiA t ks) blocks =>
-    s!"and_v(v:multi_a({t},{",".intercalate (ks.toList.map serializeKey)})),older({blocks}))"
+    s!"and_v(v:multi_a({t},{",".intercalate (ks.toList.map serializeKey)}),older({blocks}))"
 
 partial def serializeTree : ScriptTree → String
   | .leaf l => serializeLeaf l

@@ -1,5 +1,6 @@
 import Winnow.Wallet.Types
 import Winnow.Wallet.Characters
+import Winnow.Wallet.MultisigAccount
 
 /-! # Import bundles (port of `Sources/WalletCore/Wallet/ImportBundle.swift`, data half)
 
@@ -34,6 +35,9 @@ structure ImportBundle.KnownTransaction where
   fee : Option Int64 := none
   replacedBy : Option String := none
   rawTransaction : Option ByteArray := none
+  outputs : Option HistoryEntry.Outputs := none
+  /-- The block the transaction confirmed in (display hex). -/
+  blockHash : Option String := none
   deriving Inhabited, BEq
 
 structure ImportBundle where
@@ -42,12 +46,13 @@ structure ImportBundle where
   descriptor : Option String := none
   mnemonic : Option String := none
   lastKnownHeight : UInt32
+  /-- The hash of block `lastKnownHeight` (display hex). -/
+  lastKnownBlockHash : Option String := none
   utxos : Array ImportBundle.UTXO := #[]
   transactions : Array ImportBundle.KnownTransaction := #[]
-  /-- The accounts a shared-account Winnow wrote under `vaults` (upstream: `[MultisigAccountRecord]`).
-  This build restores none, so a bundle that carries any is refused (`decodeData`) rather than restored
-  without their coins; the records are kept as raw JSON, never interpreted. -/
-  vaults : Option (Array JV) := none
+  /-- Multisig accounts, under the key the shared-account Winnow used for all its accounts. Script-path
+  k-of-n accounts restore; a bundle carrying any other kind (a MuSig2 one) is refused (`decodeData`). -/
+  vaults : Option (Array MultisigAccountRecord) := none
   nextReceiveIndex : Option UInt32 := none
   nextChangeIndex : Option UInt32 := none
   deriving Inhabited, BEq
@@ -89,7 +94,8 @@ namespace KnownTransaction
 def toJV (t : KnownTransaction) : JV :=
   obj [("txid", some (.str t.txid)), ("height", some (ofInt t.height.toNat)), ("received", some (ofInt t.received.toInt)),
     ("spent", some (ofInt t.spent.toInt)), ("fee", t.fee.map (ofInt ·.toInt)), ("replacedBy", t.replacedBy.map .str),
-    ("rawTransaction", t.rawTransaction.map ofData)]
+    ("rawTransaction", t.rawTransaction.map ofData), ("blockHash", t.blockHash.map .str),
+    ("outputs", t.outputs.map HistoryEntry.Outputs.toJV)]
 
 def ofJV (v : JV) : D KnownTransaction := do
   let kvs ← asObject v
@@ -100,15 +106,18 @@ def ofJV (v : JV) : D KnownTransaction := do
   let fee ← keyIfPresent kvs "fee" asInt64
   let replacedBy ← keyIfPresent kvs "replacedBy" asString
   let rawTransaction ← keyIfPresent kvs "rawTransaction" asData
-  return { txid, height, received, spent, fee, replacedBy, rawTransaction }
+  let outputs ← keyIfPresent kvs "outputs" HistoryEntry.Outputs.ofJV
+  let blockHash ← keyIfPresent kvs "blockHash" asString
+  return { txid, height, received, spent, fee, replacedBy, rawTransaction, outputs, blockHash }
 end KnownTransaction
 
 def toJV (b : ImportBundle) : JV :=
   obj [("version", some (ofInt b.version)),
     ("network", some (.str b.network)), ("descriptor", b.descriptor.map .str), ("mnemonic", b.mnemonic.map .str),
-    ("lastKnownHeight", some (ofInt b.lastKnownHeight.toNat)), ("utxos", some (.arr (b.utxos.map UTXO.toJV))),
+    ("lastKnownHeight", some (ofInt b.lastKnownHeight.toNat)), ("lastKnownBlockHash", b.lastKnownBlockHash.map .str),
+    ("utxos", some (.arr (b.utxos.map UTXO.toJV))),
     ("transactions", some (.arr (b.transactions.map KnownTransaction.toJV))),
-    ("nextReceiveIndex", b.nextReceiveIndex.map (ofInt ·.toNat)), ("nextChangeIndex", b.nextChangeIndex.map (ofInt ·.toNat)), ("vaults", b.vaults.map .arr)]
+    ("nextReceiveIndex", b.nextReceiveIndex.map (ofInt ·.toNat)), ("nextChangeIndex", b.nextChangeIndex.map (ofInt ·.toNat)), ("vaults", b.vaults.map (.arr ∘ Array.map MultisigAccountRecord.toJV))]
 
 def ofJV (v : JV) : D ImportBundle := do
   let kvs ← asObject v
@@ -117,12 +126,14 @@ def ofJV (v : JV) : D ImportBundle := do
   let descriptor ← keyIfPresent kvs "descriptor" asString
   let mnemonic ← keyIfPresent kvs "mnemonic" asString
   let lastKnownHeight ← key kvs "lastKnownHeight" asUInt32
+  let lastKnownBlockHash ← keyIfPresent kvs "lastKnownBlockHash" asString
   let utxos ← key kvs "utxos" (asArray UTXO.ofJV)
   let transactions ← key kvs "transactions" (asArray KnownTransaction.ofJV)
-  let vaults ← keyIfPresent kvs "vaults" (asArray pure)
+  let vaults ← keyIfPresent kvs "vaults" (asArray MultisigAccountRecord.ofJV)
   let nextReceiveIndex ← keyIfPresent kvs "nextReceiveIndex" asUInt32
   let nextChangeIndex ← keyIfPresent kvs "nextChangeIndex" asUInt32
-  return { version, network, descriptor, mnemonic, lastKnownHeight, utxos, transactions, vaults, nextReceiveIndex, nextChangeIndex }
+  return { version, network, descriptor, mnemonic, lastKnownHeight, lastKnownBlockHash, utxos, transactions, vaults,
+           nextReceiveIndex, nextChangeIndex }
 
 /-- Decoding failures: a `WalletError` (`invalidBundle`, `unsupportedWalletData`, …) or a
 `DecodingError` case name. -/
@@ -145,11 +156,14 @@ def decodeData (data : ByteArray) : Except Failure ImportBundle := do
   if b.transactions.size > maximumEntries then
     throw (.wallet (.invalidBundle s!"bundle declares {b.transactions.size} transactions, above the {maximumEntries} limit"))
   let vs := b.vaults.getD #[]
-  unless vs.size ≤ maximumVaults do
+  unless vs.size ≤ maximumVaults && vs.foldl (fun t r => t + r.allUtxos.size) 0 ≤ maximumEntries do
     throw (.wallet (.invalidBundle "too many multisig accounts or account coins"))
-  -- Accounts from the shared-account Winnow (MuSig2, vaults) have no home in this build; their coins
-  -- must not vanish from a restore, so the whole bundle is refused.
-  unless vs.isEmpty do throw (.wallet .unsupportedWalletData)
+  -- MuSig2 accounts from the shared-account Winnow have no home here; their coins must not vanish
+  -- from a restore, so a bundle with any account that is not a script-path multisig one is refused.
+  unless vs.isEmpty do
+    let some network := Tx.BitcoinNetwork.ofString? b.network | throw (.wallet .unsupportedWalletData)
+    unless vs.all (fun r => (MultisigAccount.parse r.descriptor network).toOption.isSome) do
+      throw (.wallet .unsupportedWalletData)
   return b
 
 /-- `decode(json:)`. -/
@@ -160,16 +174,18 @@ def serialized (b : ImportBundle) : String := writePretty "" b.toJV
 
 /-- The v2 writer: display-hex txids, coinbase flag only when set. -/
 def «export» (descriptor network : String) (lastKnownHeight : UInt32) (utxos : Array WalletUTXO)
-    (history : Array HistoryEntry) (nextReceiveIndex nextChangeIndex : UInt32) (mnemonic : Option String := none) :
-    ImportBundle :=
+    (history : Array HistoryEntry) (nextReceiveIndex nextChangeIndex : UInt32) (mnemonic : Option String := none)
+    (lastKnownBlockHash : Option ByteArray := none) : ImportBundle :=
   { network, descriptor := some descriptor, mnemonic, lastKnownHeight,
+    lastKnownBlockHash := lastKnownBlockHash.map displayHex,
     utxos := utxos.map fun u =>
       { txid := displayHex u.txid, vout := u.vout, amount := u.amount, scriptPubKey := hex u.scriptPubKey,
         chain := u.chain.rawValue, index := u.index, height := u.height,
         isCoinbase := if u.isCoinbase then some true else none },
     transactions := history.map fun e =>
       { txid := displayHex e.txid, height := e.height, received := e.received, spent := e.spent, fee := e.fee,
-        replacedBy := e.replacedBy.map displayHex, rawTransaction := e.rawTransaction },
+        replacedBy := e.replacedBy.map displayHex, rawTransaction := e.rawTransaction,
+        blockHash := e.blockHash.map displayHex, outputs := e.outputs },
     nextReceiveIndex := some nextReceiveIndex, nextChangeIndex := some nextChangeIndex }
 
 def parsedClaimedUTXO (u : UTXO) : Except WalletError WalletUTXO := do

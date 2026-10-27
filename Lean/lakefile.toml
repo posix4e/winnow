@@ -1,6 +1,6 @@
 # Winnow in Lean: the port of Sources/WalletCore and Sources/WinnowApp (see ../PORT.md).
 name = "winnow"
-defaultTargets = ["Secp", "Winnow", "oracle-crypto", "oracle-keys", "oracle-tx", "oracle-net", "oracle-wallet", "io-test"]
+defaultTargets = ["Secp", "Winnow", "oracle-crypto", "oracle-keys", "oracle-tx", "oracle-net", "oracle-wallet", "io-test", "multisig-test"]
 
 [[lean_lib]]
 name = "Secp"
@@ -37,3 +37,9 @@ root = "OracleWallet"
 [[lean_exe]]
 name = "io-test"
 root = "IOTest"
+
+# Upstream 1cf93fb's multisig tests ported (Taproot multisig accounts, timelocked recovery, history outputs,
+# script-path vectors in Vectors/). Run from Lean/.
+[[lean_exe]]
+name = "multisig-test"
+root = "MultisigTest"

@@ -9,6 +9,7 @@ import Winnow.Wallet.ExportStagingFile
 import Winnow.Wallet.Descriptor
 import Winnow.Wallet.Signer
 import Winnow.Wallet.PSBTRoles
+import Winnow.Wallet.MultisigAccount
 import Winnow.Wallet.Characters
 import Winnow.Wallet.ImportBundle
 import Winnow.Wallet.Wallet

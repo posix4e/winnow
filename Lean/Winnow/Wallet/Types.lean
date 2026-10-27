@@ -3,13 +3,15 @@ import Winnow.Tx.Transaction
 import Winnow.Tx.TransactionBuilder
 import Winnow.Tx.SighashBIP341
 import Winnow.Tx.PSBT
+import Winnow.Wallet.SilentPaymentAddress
 
 /-! # Wallet data types and the wallet file
 
 Port of the data half of `Sources/WalletCore/Wallet/Wallet.swift`: `WalletError`, `FeeBumpError`,
 `AddressChain`, `WalletUTXO` (+ `SpentMarker`), `HistoryEntry`, `MatchEffect`, `PendingSend`,
-`WalletState` with their hand-written `Codable` forms, `BuiltTransaction` and `FeeBumpPreview`. The
-`Wallet` actor itself is not here.
+`WalletState` with their hand-written `Codable` forms, `BuiltTransaction` and `FeeBumpPreview`, and
+`HistoryEntry.Outputs` (`Wallet/HistoryOutputs.swift`, upstream 1cf93fb: the recipient and change outputs
+of a locally prepared send). The `Wallet` actor itself is not here.
 
 JSON (see `SwiftJSON`): txids are display-order hex, scripts hex, `Data` fields that use the synthesized
 coding (`SpentMarker.spentBy`, `rawTransaction`, `fundingScripts`) base64. Decoders run in the Swift
@@ -23,6 +25,8 @@ open SwiftJSON
 inductive WalletError where
   | invalidDescriptor (s : String)
   | descriptorMismatch
+  /-- The loaded signing key does not belong to the descriptor's account. -/
+  | accountKeyMismatch
   | invalidBundle (reason : String)
   | noPayments
   | changeOutputMissing
@@ -37,6 +41,7 @@ inductive WalletError where
 namespace WalletError
 def name : WalletError → String
   | .invalidDescriptor _ => "invalidDescriptor" | .descriptorMismatch => "descriptorMismatch"
+  | .accountKeyMismatch => "accountKeyMismatch"
   | .invalidBundle _ => "invalidBundle" | .noPayments => "noPayments"
   | .changeOutputMissing => "changeOutputMissing" | .transactionTooLarge .. => "transactionTooLarge"
   | .mnemonicUnavailable => "mnemonicUnavailable" | .exportWhilePending => "exportWhilePending"
@@ -49,6 +54,7 @@ def description : WalletError → String
     "That wallet descriptor could not be parsed. It is not repeated here, " ++
       "because a descriptor can carry key material."
   | .descriptorMismatch => "Bundle descriptor does not match the mnemonic."
+  | .accountKeyMismatch => "The signing key does not match this wallet's account."
   | .invalidBundle reason => s!"Invalid import bundle: {reason}"
   | .noPayments => "Nothing to send."
   | .changeOutputMissing => "The built transaction lost its change output."
@@ -124,6 +130,23 @@ def outpoint (u : WalletUTXO) : Transaction.Outpoint := ⟨u.txid, u.vout⟩
 def spentOutput (u : WalletUTXO) : SighashBIP341.SpentOutput := { amount := u.amount, scriptPubKey := u.scriptPubKey }
 end WalletUTXO
 
+/-- A recipient of a locally prepared send. -/
+structure HistoryEntry.ExternalOutput where
+  vout : UInt32
+  amount : Int64
+  /-- JSON uses hexadecimal, matching wallet coin scripts. -/
+  scriptPubKey : ByteArray
+  /-- The BIP352 silent payment code this output was derived for, when the send paid one. -/
+  silentPaymentAddress : Option String := none
+  deriving Inhabited, BEq
+
+/-- A known output breakdown: wallet-owned receive outputs are omitted; `change` holds vouts and
+`external` the recipients in transaction order. -/
+structure HistoryEntry.Outputs where
+  external : Array HistoryEntry.ExternalOutput := #[]
+  change : Array UInt32 := #[]
+  deriving Inhabited, BEq
+
 structure HistoryEntry where
   txid : ByteArray
   height : UInt32
@@ -133,6 +156,10 @@ structure HistoryEntry where
   replacedBy : Option ByteArray := none
   rawTransaction : Option ByteArray := none
   fundingScripts : Array ByteArray := #[]
+  /-- The block this payment confirmed in (internal byte order); recorded, not yet verified. -/
+  blockHash : Option ByteArray := none
+  /-- Known recipient and change outputs from a locally prepared send; `none` means unavailable. -/
+  outputs : Option HistoryEntry.Outputs := none
   deriving Inhabited, BEq
 
 /-- What applying one matched block changed. -/
@@ -165,6 +192,8 @@ structure WalletState where
   nextReceiveIndex : UInt32 := 0
   nextChangeIndex : UInt32 := 0
   nextScanHeight : UInt32
+  /-- The hash of block `nextScanHeight - 1` (internal byte order); recorded, not yet checked. -/
+  scannedThroughHash : Option ByteArray := none
   allUtxos : Array WalletUTXO := #[]
   history : Array HistoryEntry := #[]
   observedFeeRates : Array Float := #[]
@@ -202,6 +231,24 @@ def FeeBumpPreview.authorizes (p : FeeBumpPreview) (built : BuiltTransaction) : 
   else
     let vsize := TransactionBuilder.vsize actual
     vsize > 0 && Float.ofInt built.fee.toInt / vsize.toFloat == p.feeRateSatPerVByte
+
+/-! ## Wallet constants other modules share (`Wallet.coinbaseMaturity`, `Wallet.checkStandardSize`) -/
+
+namespace Wallet
+
+/-- The receive/change lookahead past the last used index. -/
+def gapLimit : UInt32 := 20
+
+/-- Blocks a coinbase output must wait before it can be spent. -/
+def coinbaseMaturity : UInt32 := 100
+
+/-- Refuses a transaction past Bitcoin Core's standard size limit, measured on the signed bytes. -/
+def checkStandardSize (tx : Transaction) : Except WalletError Unit := do
+  let vsize := TransactionBuilder.vsize tx
+  if vsize > TransactionBuilder.maximumStandardVSize then
+    throw (.transactionTooLarge vsize TransactionBuilder.maximumStandardVSize)
+
+end Wallet
 
 /-! ## JSON -/
 
@@ -256,24 +303,98 @@ end WalletUTXO
 
 namespace HistoryEntry
 
-/-- `transaction()`: the stored payment, checked against the txid and the monetary range. -/
-def transaction (h : HistoryEntry) : Except String (Option Transaction) := do
+/-! ### Outputs (`HistoryOutputs.swift`) -/
+
+def strictlyIncreasing (xs : Array UInt32) : Bool := Id.run do
+  for h : i in [1:xs.size] do
+    if !(xs[i - 1]! < xs[i]!) then return false
+  return true
+
+/-- The breakdown's own consistency: increasing, disjoint indices; positive amounts within the supply;
+non-empty scripts; any silent payment code one that parses. -/
+def Outputs.validate (o : Outputs) : Except WalletError Unit := do
+  let vouts := o.external.map (·.vout)
+  unless strictlyIncreasing vouts && strictlyIncreasing o.change && !vouts.any o.change.contains do
+    throw (.invalidBundle "history output indices contradict each other")
+  let mut total : Int64 := 0
+  for output in o.external do
+    unless output.amount > 0 && output.amount ≤ bitcoinAmountMaximum - total && !output.scriptPubKey.isEmpty do
+      throw (.invalidBundle "history output has an invalid amount or script")
+    total := total + output.amount
+    if let some code := output.silentPaymentAddress then
+      unless (SilentPaymentAddress.parse code).toOption.isSome do
+        throw (.invalidBundle "history output names an invalid silent payment code")
+
+/-- A breakdown with transaction bytes must describe those exact outputs. -/
+def Outputs.validateAgainst (o : Outputs) (tx : Transaction) : Except WalletError Unit := do
+  for output in o.external do
+    let ok := match tx.outputs[output.vout.toNat]? with
+      | some t => t.value == output.amount && t.scriptPubKey == output.scriptPubKey
+      | none => false
+    unless ok do throw (.invalidBundle "history outputs do not match the transaction")
+  unless o.change.all (·.toNat < tx.outputs.size) do
+    throw (.invalidBundle "history change index is outside the transaction")
+
+/-- Copies silent payment codes from a replaced transaction's outputs onto the outputs of its replacement
+that carry the same script. -/
+def Outputs.inheritSilentPayments (o : Outputs) (previous : Outputs) : Outputs :=
+  let codes := previous.external.filterMap fun e => e.silentPaymentAddress.map (e.scriptPubKey, ·)
+  -- A dictionary by script: the last code per script wins.
+  { o with external := o.external.map fun e =>
+      { e with silentPaymentAddress := ((codes.reverse.find? (·.1 == e.scriptPubKey)).map (·.2)) } }
+
+def ExternalOutput.toJV (e : ExternalOutput) : JV :=
+  obj [("vout", some (ofInt e.vout.toNat)), ("amount", some (ofInt e.amount.toInt)),
+    ("scriptPubKey", some (.str (hex e.scriptPubKey))), ("silentPaymentAddress", e.silentPaymentAddress.map .str)]
+
+def ExternalOutput.ofJV (v : JV) : D ExternalOutput := do
+  let kvs ← asObject v
+  let scriptPubKey ← hexField kvs "scriptPubKey"
+  let vout ← key kvs "vout" asUInt32
+  let amount ← key kvs "amount" asInt64
+  let silentPaymentAddress ← keyIfPresent kvs "silentPaymentAddress" asString
+  return { vout, amount, scriptPubKey, silentPaymentAddress }
+
+def Outputs.toJV (o : Outputs) : JV :=
+  obj [("external", some (.arr (o.external.map ExternalOutput.toJV))), ("change", some (.arr (o.change.map (ofInt ·.toNat))))]
+
+/-- Decodes, then validates (an invalid breakdown is `invalidBundle`, thrown through the decoder). -/
+def Outputs.ofJV (v : JV) : D Outputs := do
+  let kvs ← asObject v
+  let external := (← keyIfPresent kvs "external" (asArray ExternalOutput.ofJV)).getD #[]
+  let change := (← keyIfPresent kvs "change" (asArray asUInt32)).getD #[]
+  let o : Outputs := { external, change }
+  match o.validate with
+  | .ok () => return o
+  | .error e => throw e.name
+
+/-- `transaction()` with its errors whole: a `WalletError` (`.inl`, reasons included) or the transaction
+decoder's case name (`.inr`). The breakdown is checked, then the stored payment against the txid, the
+monetary range and the breakdown. -/
+def checkedTransaction (h : HistoryEntry) : Except (WalletError ⊕ String) (Option Transaction) := do
+  if let some o := h.outputs then o.validate.mapError .inl
   let some raw := h.rawTransaction | return none
-  let tx ← (Transaction.decode raw).mapError (·.name)
-  unless tx.txid == h.txid do throw "invalidBundle"
+  let tx ← (Transaction.decode raw).mapError (.inr ·.name)
+  unless tx.txid == h.txid do throw (.inl (.invalidBundle "payment details do not match the transaction ID"))
   let mut total : Int64 := 0
   for o in tx.outputs do
     unless 0 ≤ o.value && o.value ≤ bitcoinAmountMaximum && o.value ≤ bitcoinAmountMaximum - total do
-      throw "invalidTransactionAmounts"
+      throw (.inl .invalidTransactionAmounts)
     total := total + o.value
+  if let some o := h.outputs then (o.validateAgainst tx).mapError .inl
   return some tx
+
+/-- `transaction()`, failing with the error's case name. -/
+def transaction (h : HistoryEntry) : Except String (Option Transaction) :=
+  h.checkedTransaction.mapError fun | .inl e => e.name | .inr n => n
 
 def toJV (h : HistoryEntry) : JV :=
   obj [("txid", some (.str (displayHex h.txid))), ("height", some (ofInt h.height.toNat)),
     ("received", some (ofInt h.received.toInt)), ("spent", some (ofInt h.spent.toInt)),
     ("fee", h.fee.map (ofInt ·.toInt)), ("replacedBy", h.replacedBy.map (.str ∘ displayHex)),
     ("rawTransaction", h.rawTransaction.map ofData),
-    ("fundingScripts", if h.fundingScripts.isEmpty then none else some (.arr (h.fundingScripts.map ofData)))]
+    ("fundingScripts", if h.fundingScripts.isEmpty then none else some (.arr (h.fundingScripts.map ofData))),
+    ("blockHash", h.blockHash.map (.str ∘ displayHex)), ("outputs", h.outputs.map Outputs.toJV)]
 
 def ofJV (v : JV) : D HistoryEntry := do
   let kvs ← asObject v
@@ -284,12 +405,19 @@ def ofJV (v : JV) : D HistoryEntry := do
       | some b => pure (some (ByteArray.reverse b))
       | none => dataCorrupted
   let height ← key kvs "height" asUInt32
+  let blockHash ← match ← keyIfPresent kvs "blockHash" asString with
+    | none => pure none
+    | some s => match Wire.dataOfHex? s with
+      | some b => if b.size == 32 && height > 0 then pure (some (ByteArray.reverse b)) else dataCorrupted
+      | none => dataCorrupted
   let received ← key kvs "received" asInt64
   let spent ← key kvs "spent" asInt64
   let fee ← keyIfPresent kvs "fee" asInt64
   let rawTransaction ← keyIfPresent kvs "rawTransaction" asData
   let fundingScripts := (← keyIfPresent kvs "fundingScripts" (asArray asData)).getD #[]
-  let h : HistoryEntry := { txid := ByteArray.reverse txid, height, received, spent, fee, replacedBy, rawTransaction, fundingScripts }
+  let outputs ← keyIfPresent kvs "outputs" Outputs.ofJV
+  let h : HistoryEntry := { txid := ByteArray.reverse txid, height, received, spent, fee, replacedBy, rawTransaction,
+                            fundingScripts, blockHash, outputs }
   discard h.transaction
   return h
 end HistoryEntry
@@ -319,6 +447,7 @@ def toJV (s : WalletState) : JV :=
   obj [("descriptor", some (.str s.descriptor)), ("network", some (.str s.network)),
     ("creationHeight", some (ofInt s.creationHeight.toNat)), ("nextReceiveIndex", some (ofInt s.nextReceiveIndex.toNat)),
     ("nextChangeIndex", some (ofInt s.nextChangeIndex.toNat)), ("nextScanHeight", some (ofInt s.nextScanHeight.toNat)),
+    ("scannedThroughHash", s.scannedThroughHash.map (.str ∘ displayHex)),
     ("utxos", some (.arr (s.allUtxos.map WalletUTXO.toJV))), ("history", some (.arr (s.history.map HistoryEntry.toJV))),
     ("observedFeeRates", some (.arr (s.observedFeeRates.map ofDouble))),
     ("pendingSends", some (.arr (s.pendingSends.map PendingSend.toJV)))]
@@ -345,7 +474,15 @@ def ofJV (v : JV) : D WalletState := do
   let creationHeight ← key kvs "creationHeight" asUInt32
   let nextReceiveIndex ← key kvs "nextReceiveIndex" asUInt32
   let nextChangeIndex ← key kvs "nextChangeIndex" asUInt32
+  -- A cursor the gap-limit lookahead cannot derive from is damage, not a loop to trap in.
+  let maximum : UInt32 := 0x8000_0000 - Wallet.gapLimit
+  unless nextReceiveIndex ≤ maximum && nextChangeIndex ≤ maximum do dataCorrupted
   let nextScanHeight ← key kvs "nextScanHeight" asUInt32
+  let scannedThroughHash ← match ← keyIfPresent kvs "scannedThroughHash" asString with
+    | none => pure none
+    | some s => match Wire.dataOfHex? s with
+      | some b => if b.size == 32 && nextScanHeight > 0 then pure (some (ByteArray.reverse b)) else dataCorrupted
+      | none => dataCorrupted
   let allUtxos ← key kvs "utxos" (asArray WalletUTXO.ofJV)
   let history ← key kvs "history" (asArray HistoryEntry.ofJV)
   let observedFeeRates := (← keyIfPresent kvs "observedFeeRates" (asArray asDouble)).getD #[]
@@ -353,7 +490,7 @@ def ofJV (v : JV) : D WalletState := do
   let s : WalletState :=
     { descriptor := descriptor, network := network, creationHeight := creationHeight,
       nextReceiveIndex := nextReceiveIndex, nextChangeIndex := nextChangeIndex, nextScanHeight := nextScanHeight,
-      allUtxos := allUtxos, history := history, observedFeeRates := observedFeeRates, pendingSends := pendingSends }
+      scannedThroughHash := scannedThroughHash, allUtxos := allUtxos, history := history, observedFeeRates := observedFeeRates, pendingSends := pendingSends }
   validateCoins allUtxos (countingTotal := false)
   validateCoins s.utxos
   for p in pendingSends do

@@ -141,8 +141,6 @@ structure ScanSource where
 
 namespace Wallet
 
-def gapLimit : UInt32 := 20
-def coinbaseMaturity : UInt32 := 100
 def spentCoinHorizon : UInt32 := 100
 def maximumStateBytes : Nat := 64 * 1024 * 1024
 def incrementalRelayFeeSatPerVByte : Float := 1.0
@@ -223,6 +221,27 @@ def create (network : BitcoinNetwork) (keyStore : KeyStore IO) (storagePath : Op
                                nextScanHeight := creationHeight }
   let w ← make network descriptor accountKey.neutered keyStore storagePath random state
   WM.keys (keyStore.store (.mnemonic mnemonic) w.id)
+  tryCatchThe WalletFailure (persistState storagePath state) fun e => do
+    discard <| WM.io (keyStore.delete w.id).run
+    throw e
+  return w
+
+/-- `create(accountKey:masterFingerprint:…)`: a wallet from the private key at m/86'/coin'/account' and its
+master fingerprint, without a root key or recovery words. The key's shape is checked (private, as deep as
+the path, ending at its last step); a child key alone cannot prove the claimed ancestry. -/
+def createFromAccountKey (accountKey : HDKey) (masterFingerprint : UInt32) (network : BitcoinNetwork)
+    (keyStore : KeyStore IO) (storagePath : Option System.FilePath := none) (creationHeight : UInt32 := 0)
+    (account : UInt32 := 0) (random : Randomness := .system) : WM Wallet := do
+  unless account < HDKey.hardenedOffset do throw (.named "invalidPath")
+  let path := #[86, coinType network, account].map (· + HDKey.hardenedOffset)
+  unless accountKey.isPrivate && accountKey.depth.toNat == path.size && some accountKey.childIndex == path.back? do
+    throw (.wallet .accountKeyMismatch)
+  let o : Descriptor.KeyOrigin := { fingerprint := masterFingerprint, path }
+  let descriptor := makeDescriptor accountKey o network
+  let state : WalletState := { descriptor := descriptor.serialized, network := networkName network, creationHeight,
+                               nextScanHeight := creationHeight }
+  let w ← make network descriptor accountKey.neutered keyStore storagePath random state
+  WM.keys (keyStore.store (.accountKey (accountKey.serialized (hdNetwork network)) masterFingerprint) w.id)
   tryCatchThe WalletFailure (persistState storagePath state) fun e => do
     discard <| WM.io (keyStore.delete w.id).run
     throw e
@@ -337,10 +356,28 @@ def pruneSpentCoins (s : WalletState) (nextScanHeight : UInt32) : WalletState :=
         | some { height := some h, .. } => !(h < cutoff)
         | _ => true }
 
-/-- Mirrors FilterSync's frontier into the persisted state (mutates, then persists — as Swift). -/
-def recordScanHeight (w : Wallet) (nextScanHeight : UInt32) : WM Unit := do
-  w.stateRef.modify fun s => pruneSpentCoins { s with nextScanHeight } nextScanHeight
+/-- Mirrors FilterSync's frontier into the persisted state (mutates, then persists — as Swift).
+`scannedThroughHash` is the hash of block `nextScanHeight - 1`; without it the stored hash is cleared,
+never left describing another height. (Swift's precondition — 32 bytes and a positive height — is a
+trap there; here such a hash is not recorded.) -/
+def recordScanHeight (w : Wallet) (nextScanHeight : UInt32) (scannedThroughHash : Option ByteArray := none) : WM Unit := do
+  let hash := scannedThroughHash.filter fun h => h.size == 32 && nextScanHeight > 0
+  w.stateRef.modify fun s => pruneSpentCoins { s with nextScanHeight, scannedThroughHash := hash } nextScanHeight
   w.persist (← w.state)
+
+def scannedThroughHash (w : Wallet) : IO (Option ByteArray) := return (← w.state).scannedThroughHash
+
+/-- Reserves every address below the supplied cursors (neither moves backwards), persisting both before
+the live state changes. Cursors must leave room for the gap-limit lookahead (`invalidPath`). -/
+def advanceCursors (w : Wallet) (nextReceiveIndex nextChangeIndex : Option UInt32 := none) : WM Unit := do
+  let s ← w.state
+  let candidate := { s with nextReceiveIndex := max s.nextReceiveIndex (nextReceiveIndex.getD 0),
+                            nextChangeIndex := max s.nextChangeIndex (nextChangeIndex.getD 0) }
+  let maximum := HDKey.hardenedOffset - gapLimit
+  unless candidate.nextReceiveIndex ≤ maximum && candidate.nextChangeIndex ≤ maximum do throw (.named "invalidPath")
+  if candidate.nextReceiveIndex == s.nextReceiveIndex && candidate.nextChangeIndex == s.nextChangeIndex then return
+  w.persist candidate
+  w.stateRef.set candidate
 
 /-- The wallet's history entry index for `txid`. -/
 def historyIndex (s : WalletState) (txid : ByteArray) : Option Nat := s.history.findIdx? (·.txid == txid)
@@ -454,8 +491,12 @@ def applyOutputs (s : WalletState) (tx : Transaction) (txid : ByteArray) (map : 
       if chain == .change && index ≥ s.nextChangeIndex then s := { s with nextChangeIndex := index + 1 }
   return (s, effect, received)
 
+/-- The breakdown an entry may keep once its bytes are known: one the transaction contradicts is dropped. -/
+def outputsAgreeing (outputs : Option HistoryEntry.Outputs) (tx : Transaction) : Option HistoryEntry.Outputs :=
+  outputs.filter fun o => (o.validateAgainst tx).toOption.isSome
+
 /-- Confirms the transaction into history and samples its feerate when the fee is exact. -/
-def recordConfirmedHistory (s : WalletState) (tx : Transaction) (txid : ByteArray) (height : UInt32)
+def recordConfirmedHistory (s : WalletState) (tx : Transaction) (txid : ByteArray) (height : UInt32) (blockHash : ByteArray)
     (received spent : Int64) (feeIsExact : Bool) : WalletState := Id.run do
   let mut s := s
   let mut fee : Option Int64 := none
@@ -471,9 +512,12 @@ def recordConfirmedHistory (s : WalletState) (tx : Transaction) (txid : ByteArra
   let funding := FundingSources.fundingScripts tx
   match historyIndex s txid with
   | some k =>
-    s := { s with history := s.history.modify k fun e => { e with height, rawTransaction := some raw, fundingScripts := funding } }
+    s := { s with history := s.history.modify k fun e =>
+      { e with height, blockHash := some blockHash, rawTransaction := some raw, fundingScripts := funding,
+               outputs := outputsAgreeing e.outputs tx } }
   | none =>
-    s := { s with history := s.history.push { txid := txid, height := height, received := received, spent := spent, fee := fee, rawTransaction := some raw, fundingScripts := funding } }
+    s := { s with history := s.history.push { txid := txid, height := height, received := received, spent := spent, fee := fee,
+                                              rawTransaction := some raw, fundingScripts := funding, blockHash := some blockHash } }
   return { s with pendingSends := s.pendingSends.filter fun p => pendingTxid p != some txid }
 
 def checkWalletTotalInvariant (s : WalletState) : Except WalletError Unit := do
@@ -519,7 +563,7 @@ def apply (w : Wallet) (m : Net.BlockMatch) : WM MatchEffect := do
       | none => spentAmount
     let touches := spentAmount > 0 || received > 0 || conflicting.isSome || s.history.any (·.txid == txid)
     if !touches then continue
-    s := recordConfirmedHistory s tx txid m.height received accounted allOurs
+    s := recordConfirmedHistory s tx txid m.height m.blockHash received accounted allOurs
   WM.wallet (checkWalletTotalInvariant s)
   w.persist s
   w.stateRef.set s
@@ -546,17 +590,34 @@ def taprootKey (w : Wallet) (chain : AddressChain) (index : UInt32) (fingerprint
   return { internalKey := BIP86.xonlyPublicKey key, masterFingerprint := fingerprint,
            path := originPath ++ #[chain.rawValue.toUInt32, index] }
 
-/-- The master key from the key store, loaded for one signing operation. -/
-def masterKey (w : Wallet) : WM HDKey := do
-  match ← WM.keys (w.keyStore.load w.id) with
-  | .mnemonic words => WM.liftE (·.name) (HDKey.ofSeed (BIP39.seed words))
-  | .masterKey xprv => WM.liftE (·.name) (HDKey.deserialize xprv)
-
-def tweakedPrivateKey (w : Wallet) (chain : AddressChain) (index : UInt32) (master : HDKey) : WM ByteArray := do
+/-- The account private key, loaded for one signing operation: a root secret walked down the descriptor
+origin, or an account secret at that origin (not derived again). Either way it must be private and its
+public half this wallet's account key (`accountKeyMismatch`). -/
+def accountPrivateKey (w : Wallet) : WM HDKey := do
   let o ← WM.wallet (origin w.descriptor)
-  let mut key := master
-  for step in o.path do key ← WM.liftE (·.name) (key.child step)
-  key ← WM.liftE (·.name) (do (← key.child chain.rawValue.toUInt32).child index)
+  let resolved ← match ← WM.keys (w.keyStore.load w.id) with
+    | .mnemonic words => WM.liftE (·.name) (do (← HDKey.ofSeed (BIP39.seed words)).derivedPath o.path)
+    | .masterKey xprv => do WM.liftE (·.name) ((← WM.liftE (·.name) (HDKey.deserialize xprv)).derivedPath o.path)
+    | .accountKey xprv fingerprint =>
+      let key ← WM.liftE (·.name) (HDKey.deserialize xprv)
+      unless fingerprint == o.fingerprint && key.depth.toNat == o.path.size && o.path.back? == some key.childIndex do
+        throw (.wallet .accountKeyMismatch)
+      pure key
+  let neutered := resolved.neutered
+  unless resolved.isPrivate && neutered.publicKey == w.accountKey.publicKey && neutered.chainCode == w.accountKey.chainCode &&
+      neutered.depth == w.accountKey.depth && neutered.parentFingerprint == w.accountKey.parentFingerprint &&
+      neutered.childIndex == w.accountKey.childIndex do
+    throw (.wallet .accountKeyMismatch)
+  return resolved
+
+/-- The account private key, checked against this wallet's descriptor, for signing as a multisig signer
+(`multisigSigningKey()`): the account xpub is the signer key the wallet shares, so one key signs whether
+the wallet holds a seed, a master key or only its account key. -/
+def multisigSigningKey (w : Wallet) : WM HDKey := w.accountPrivateKey
+
+/-- BIP86 key-path secret below the account key already checked for this wallet. -/
+def tweakedPrivateKey (_w : Wallet) (chain : AddressChain) (index : UInt32) (account : HDKey) : WM ByteArray := do
+  let key ← WM.liftE (·.name) (do (← account.child chain.rawValue.toUInt32).child index)
   let some secret := key.privateKey | throw (.wallet (.invalidDescriptor "neutered key in signing path"))
   WM.liftE (·.name) (BIP86.tweakedPrivateKey secret)
 
@@ -575,20 +636,15 @@ def sign (w : Wallet) (tx : Transaction) (selected : Array WalletUTXO) (changeIn
         continue
     outputInfo := outputInfo.push {}
   let mut psbt ← WM.liftE (·.name) (PSBT.create tx inputInfo outputInfo)
-  let master ← w.masterKey
+  let signingAccount ← w.accountPrivateKey
   for h : k in [0:selected.size] do
     let u := selected[k]
-    let secret ← w.tweakedPrivateKey u.chain u.index master
+    let secret ← w.tweakedPrivateKey u.chain u.index signingAccount
     let aux ← WM.io w.random.auxRand
     psbt ← WM.liftE (·.name) (psbt.signKeyPath k secret aux)
   psbt ← WM.liftE (·.name) psbt.finalize
   let signed ← WM.liftE (·.name) psbt.extractedTransaction
   return (psbt, signed)
-
-def checkStandardSize (tx : Transaction) : Except WalletError Unit := do
-  let vsize := TransactionBuilder.vsize tx
-  if vsize > TransactionBuilder.maximumStandardVSize then
-    throw (.transactionTooLarge vsize TransactionBuilder.maximumStandardVSize)
 
 /-- The anti-fee-sniping locktime, drawing a second value only when the first takes the lookback branch. -/
 def locktime (tip : UInt32) (draw : IO Float) : WM UInt32 := do
@@ -621,6 +677,20 @@ def buildSend (w : Wallet) (payments : Array Payment) (feeRateSatPerVByte : Floa
            selected := selection.selected, change, changeIndex,
            changeOutputIndex := changeOutputIndex.map (·.toUInt32), fee := selection.fee }
 
+/-- The send's positive outputs by the watch map: change vouts, and every unwatched output as a recipient
+(outputs to the wallet's own receive addresses are neither). -/
+def classifyOutputs (w : Wallet) (s : WalletState) (tx : Transaction) : WM HistoryEntry.Outputs := do
+  let map ← w.watchMap s
+  let mut result : HistoryEntry.Outputs := {}
+  for h : vout in [0:tx.outputs.size] do
+    let o := tx.outputs[vout]
+    if !(o.value > 0) then continue
+    match map[o.scriptPubKey]? with
+    | some (.change, _) => result := { result with change := result.change.push vout.toUInt32 }
+    | some (.receive, _) => continue
+    | none => result := { result with external := result.external.push { vout := vout.toUInt32, amount := o.value, scriptPubKey := o.scriptPubKey } }
+  return result
+
 def tombstonePending (selected : Array WalletUTXO) (txid : ByteArray) (u : WalletUTXO) : WalletUTXO :=
   if selected.any (fun c => c.outpoint == u.outpoint) then { u with spent := some { spentBy := txid, height := none } } else u
 
@@ -638,11 +708,13 @@ def commit (w : Wallet) (prepared : PreparedSend) : WM Unit := do
       allUtxos := updated.allUtxos.push { txid := txid, vout := vout, amount := change.amount, scriptPubKey := change.scriptPubKey,
                                           chain := .change, index := prepared.changeIndex, height := 0 }
       nextChangeIndex := updated.nextChangeIndex + 1 }
+  let outputs ← w.classifyOutputs updated signed
   updated := { updated with
     history := updated.history.push {
       txid := txid, height := 0, received := (prepared.change.map (·.amount)).getD 0,
       spent := prepared.selected.foldl (fun a u => a + u.amount) 0, fee := some prepared.fee,
-      rawTransaction := some (signed.serialized false), fundingScripts := FundingSources.fundingScripts signed }
+      rawTransaction := some (signed.serialized false), fundingScripts := FundingSources.fundingScripts signed,
+      outputs := some outputs }
     pendingSends := updated.pendingSends.push {
       rawTransaction := signed.serialized true, selected := prepared.selected,
       changeIndex := if prepared.change.isNone then none else some prepared.changeIndex,
@@ -773,11 +845,14 @@ def commitFeeBump (w : Wallet) (prepared : PreparedFeeBump) : WM Unit := do
       txid := txid, vout := vout, amount := change.amount,
       scriptPubKey := change.scriptPubKey, chain := .change, index := prepared.changeIndex, height := 0 } }
   updated := { updated with history := updated.history.modify historyIdx fun e => { e with replacedBy := some txid } }
+  let mut outputs ← w.classifyOutputs updated signed
+  if let some previous := updated.history[historyIdx]!.outputs then outputs := outputs.inheritSilentPayments previous
   updated := { updated with
     history := updated.history.push {
       txid := txid, height := 0, received := (prepared.change.map (·.amount)).getD 0,
       spent := prepared.selected.foldl (fun a u => a + u.amount) 0, fee := some prepared.built.fee,
-      rawTransaction := some (signed.serialized false), fundingScripts := FundingSources.fundingScripts signed }
+      rawTransaction := some (signed.serialized false), fundingScripts := FundingSources.fundingScripts signed,
+      outputs := some outputs }
     pendingSends := (updated.pendingSends.eraseIdx! pendingIndex).push {
       rawTransaction := signed.serialized true,
       selected := prepared.selected, changeIndex := if prepared.change.isNone then none else some prepared.changeIndex,
@@ -795,12 +870,12 @@ def exportBundle (w : Wallet) (includeMnemonic : Bool := false) : WM ImportBundl
   let mnemonic ← if includeMnemonic then do
       match ← WM.io (w.keyStore.load w.id).run with
       | .ok (.mnemonic words) => pure (some words)
-      | .ok (.masterKey _) => throw (.wallet .mnemonicUnavailable)
+      | .ok (.masterKey _) | .ok (.accountKey ..) => throw (.wallet .mnemonicUnavailable)
       | .error (.notFound _) => throw (.wallet .mnemonicUnavailable)
       | .error e => throw (.named e.name)
     else pure none
   return ImportBundle.«export» w.descriptor.serialized (networkName w.network) lastKnownHeight s.utxos s.history
-    s.nextReceiveIndex s.nextChangeIndex mnemonic
+    s.nextReceiveIndex s.nextChangeIndex mnemonic s.scannedThroughHash
 
 /-! ### Rollback -/
 
@@ -820,7 +895,7 @@ def rollBack (w : Wallet) (forkHeight : UInt32) : WM Unit := do
     let e := history[k]!
     if e.height > forkHeight && e.spent > 0 then
       repended := repended.insert e.txid
-      history := history.set! k { e with height := 0 }
+      history := history.set! k { e with height := 0, blockHash := none }
   let allUtxos := s.allUtxos.map fun u => match u.spent with
     | some m => match m.height with
       | some h => if h > forkHeight then
@@ -828,10 +903,12 @@ def rollBack (w : Wallet) (forkHeight : UInt32) : WM Unit := do
         else u
       | none => u
     | none => u
-  let candidate := { s with
+  let mut candidate := { s with
     allUtxos := rewindCoins forkHeight allUtxos
     history := history.filter fun e => !(e.height > forkHeight)
     nextScanHeight := min s.nextScanHeight (if forkHeight == 0xFFFF_FFFF then forkHeight else forkHeight + 1) }
+  -- A frontier that moved back names a block this rewind just doubted.
+  if candidate.nextScanHeight != s.nextScanHeight then candidate := { candidate with scannedThroughHash := none }
   if candidate == s then return
   w.persist candidate
   w.stateRef.set candidate
@@ -875,6 +952,16 @@ def validatedClaimedUTXOs (bundle : ImportBundle) (descriptor : Descriptor) (net
       throw (.wallet (.invalidBundle s!"utxo {displayHex u.txid}:{u.vout} scriptPubKey does not match the descriptor"))
   return utxos
 
+/-- A claimed block hash in internal byte order, or `none` when the bundle names none; a pending entry
+has no block to name. -/
+def claimedBlockHash (hex? : Option String) (confirmed : Bool) : Except WalletError (Option ByteArray) := do
+  let some text := hex? | return none
+  let bad : WalletError := .invalidBundle s!"bad block hash {ImportBundle.excerpt text}"
+  unless confirmed do throw bad
+  let some hash := Wire.dataOfHex? text | throw bad
+  unless hash.size == 32 do throw bad
+  return some (ByteArray.reverse hash)
+
 def validatedHistory (bundle : ImportBundle) : WM (Array HistoryEntry) :=
   bundle.transactions.mapM fun known => do
     let some txid := Wire.dataOfHex? known.txid | throw (.wallet (.invalidBundle s!"bad txid {known.txid}"))
@@ -886,13 +973,15 @@ def validatedHistory (bundle : ImportBundle) : WM (Array HistoryEntry) :=
       | none => pure none
     unless WalletState.inMoney known.received && WalletState.inMoney known.spent && (known.fee.map WalletState.inMoney).getD true do
       throw (.wallet (.invalidBundle "transaction history has invalid amounts"))
+    let blockHash ← WM.wallet (claimedBlockHash known.blockHash (known.height > 0))
     let entry : HistoryEntry := {
       txid := ByteArray.reverse txid, height := known.height, received := known.received,
-      spent := known.spent, fee := known.fee, replacedBy := replacedBy, rawTransaction := known.rawTransaction }
-    match entry.transaction with
+      spent := known.spent, fee := known.fee, replacedBy := replacedBy, rawTransaction := known.rawTransaction,
+      blockHash, outputs := known.outputs }
+    match entry.checkedTransaction with
     | .ok _ => pure entry
-    | .error e => throw (if e == "invalidBundle" then .wallet (.invalidBundle "payment details do not match the transaction ID")
-        else if e == "invalidTransactionAmounts" then .wallet .invalidTransactionAmounts else .named e)
+    | .error (.inl e) => throw (.wallet e)
+    | .error (.inr e) => throw (.named e)
 
 /-- `max(index) + 1` over the coins on `chain`, or 0. -/
 def nextIndexAfter (utxos : Array WalletUTXO) (chain : AddressChain) : UInt32 :=
@@ -913,12 +1002,19 @@ def importing (bundle : ImportBundle) (keyStore : KeyStore IO) (storagePath : Op
   let utxos ← validatedClaimedUTXOs bundle descriptor network
   let history ← validatedHistory bundle
   let maxIndex (chain : AddressChain) : UInt32 := nextIndexAfter utxos chain
+  let receive := max (bundle.nextReceiveIndex.getD 0) (maxIndex .receive)
+  let change := max (bundle.nextChangeIndex.getD 0) (maxIndex .change)
+  let maximum := HDKey.hardenedOffset - gapLimit
+  unless receive ≤ maximum && change ≤ maximum do
+    throw (.wallet (.invalidBundle "address cursors leave no room for the gap-limit window"))
+  unless bundle.lastKnownHeight < 0xFFFF_FFFF do
+    throw (.wallet (.invalidBundle s!"last known height {bundle.lastKnownHeight} is out of range"))
+  let scannedThroughHash ← WM.wallet (claimedBlockHash bundle.lastKnownBlockHash true)
   let state : WalletState := {
     descriptor := descriptor.serialized, network := networkName network,
     creationHeight := bundle.lastKnownHeight,
-    nextReceiveIndex := max (bundle.nextReceiveIndex.getD 0) (maxIndex .receive),
-    nextChangeIndex := max (bundle.nextChangeIndex.getD 0) (maxIndex .change),
-    nextScanHeight := bundle.lastKnownHeight + 1, allUtxos := utxos, history }
+    nextReceiveIndex := receive, nextChangeIndex := change,
+    nextScanHeight := bundle.lastKnownHeight + 1, scannedThroughHash, allUtxos := utxos, history }
   let w ← make network descriptor accountKey keyStore storagePath random state
   persistState storagePath state
   return w
