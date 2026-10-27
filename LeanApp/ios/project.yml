@@ -1,6 +1,7 @@
-# The Winnow app in Lean (ElmLean native mode): no Winnow Swift. The generic ElmLean shell (renderer, C
-# shim, capabilities) plus the C that Lean generated for WinnowApp, the Lean WalletCore port and ElmLean
-# (build/lean-c, from ios_lean_sources.sh), linked with Lean's runtime retargeted to iOS (build/lib).
+# The Winnow app in Lean (ElmLean native mode): no Swift source at all. The generic ElmLean shell (renderer,
+# capabilities: Swift printed by `lake exe elmshell` into build/native-shell, never checked in; and the C
+# shim) plus the C that Lean generated for WinnowApp, the Lean WalletCore port and ElmLean (build/lean-c);
+# both from ios_lean_sources.sh. Linked with Lean's runtime retargeted to iOS (build/lib).
 name: WinnowLean
 options:
   bundleIdPrefix: art.fralex
@@ -17,7 +18,7 @@ targets:
     type: application
     platform: iOS
     sources:
-      - { path: "/Users/posix4e/Library/Application Support/Claude/scratch-workspaces/3be3d554-5020-49f1-ad41-8efd1840c16b/cebe0e70-dc78-4056-bf9c-b964bd14e320/scratch-2026-10-25-93255d/framework/native/swift", name: ElmLeanShell }
+      - { path: build/native-shell, name: ElmLeanShell }
       - { path: "/Users/posix4e/Library/Application Support/Claude/scratch-workspaces/3be3d554-5020-49f1-ad41-8efd1840c16b/cebe0e70-dc78-4056-bf9c-b964bd14e320/scratch-2026-10-25-93255d/framework/native/c", name: ElmLeanShim }
       - { path: build/lean-c, name: LeanC, compilerFlags: [-w] }
       # the design papers, bundled as the Swift app bundles them (shown by the `page` node)
@@ -41,7 +42,7 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: art.fralex.winnow.lean
         PRODUCT_NAME: WinnowLean
         GENERATE_INFOPLIST_FILE: NO
-        SWIFT_OBJC_BRIDGING_HEADER: "/Users/posix4e/Library/Application Support/Claude/scratch-workspaces/3be3d554-5020-49f1-ad41-8efd1840c16b/cebe0e70-dc78-4056-bf9c-b964bd14e320/scratch-2026-10-25-93255d/framework/native/swift/ElmLeanNative-Bridging-Header.h"
+        SWIFT_OBJC_BRIDGING_HEADER: "/Users/posix4e/Library/Application Support/Claude/scratch-workspaces/3be3d554-5020-49f1-ad41-8efd1840c16b/cebe0e70-dc78-4056-bf9c-b964bd14e320/scratch-2026-10-25-93255d/framework/native/c/ElmLeanNative-Bridging-Header.h"
         HEADER_SEARCH_PATHS: ["/Users/posix4e/.elan/toolchains/leanprover--lean4---v4.35.0/include"]
         LIBRARY_SEARCH_PATHS: ["$(PROJECT_DIR)/build/lib"]
         OTHER_LDFLAGS: [-lLean, -lStd, -lInit, -lleanrt, -luv, -lgmp, -lc++]

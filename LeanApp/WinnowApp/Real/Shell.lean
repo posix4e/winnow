@@ -4,7 +4,7 @@ import Winnow.Keys.KeyStore
 
 /-! # The iOS shell's capabilities as the WalletCore interfaces
 
-ElmLean's native shell (framework/native/swift/Capabilities.swift) offers `keychain.get/set/delete`
+ElmLean's native shell (its capabilities, framework/lean/ElmShell/Capabilities.lean) offers `keychain.get/set/delete`
 (`key`, `value`; answers `{"value":…|null}` / `{"ok":…}`) and `http.get` (`url`, `maxBytes`,
 `timeout`; answers `{"status":…,"body":hex}` or `{"error":…}`). `ask name args` is the app's
 `Effects.ask`, which may be called from any thread.
