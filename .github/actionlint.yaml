@@ -1,3 +1,0 @@
-self-hosted-runner:
-  labels:
-    - warp-macos-26-arm64-12x

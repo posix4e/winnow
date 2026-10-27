@@ -3,12 +3,21 @@
 Winnow is a Bitcoin wallet for iPhone and iPad, also available on Apple silicon
 Mac as an iPad app. It receives and sends bitcoin and saves recipients. This
 build signs with this phone's key, alone or as one signer of a k-of-n multisig
-account, and the curve arithmetic behind every signature is Winnow's own Swift.
+account. It is written in Lean 4: the wallet, the networking and the app's
+model, update and view, compiled to C and rendered by ElmLean's generic native
+shell; the curve arithmetic behind every signature is the proven secp256k1 in
+`Lean/Secp`.
 
 [App Store](https://apps.apple.com/app/id6801502501) ·
 [TestFlight](https://testflight.apple.com/join/83djpNE7) ·
 [User guides](https://winnowwallet.com) ·
 [Report a bug](https://github.com/winnowwallet/winnow/issues)
+
+> **Port status.** This branch brings the Lean port up to upstream 0.8.13 and the
+> Ledger signer (winnowwallet/winnow#255). The sections below describe that
+> version; [PORT.md](PORT.md) lists what the Lean code has reached so far and how
+> each part is verified.
+
 
 ## Using the wallet
 
@@ -61,38 +70,42 @@ successful save date confirms an upload. Keep the manual file and words as
 well. The
 [backup guide](docs/import.html) explains the formats and their limits.
 
-## Development
+## Layout
 
-Start with the [architecture guide](docs/architecture.md) for source ownership,
-module dependencies and directory links. The [testing guide](docs/testing.md)
-explains local checks, CI evidence and what still needs physical-device testing.
-[Release operations](.github/internal/ci-release.md) covers TestFlight and
-App Store Connect.
+- `Lean/`: the wallet in Lean 4 (`Winnow/`): keys, transactions, PSBTs, descriptors, vaults and
+  MuSig2, the wallet, compact-filter sync, peers, mempool windows and the broadcaster, over libuv TCP.
+  `Secp/` is the proven secp256k1. `IOTest.lean` (`io-test`) runs the network layer against a disposable
+  regtest bitcoind.
+- `LeanApp/`: the app: `WinnowApp/` holds the model, update, views and commands (Elm-style, ElmLean),
+  `WinnowApp/Real/` the backend, `WinnowApp/E2E.lean` the Debug-only test mode. `ios/` is the XcodeGen
+  project that links the Lean-generated C with ElmLean's native shell (renderer, C shim, capabilities:
+  Keychain, device authentication, clipboard, HTTPS, paths). The shell's Swift is printed from Lean at
+  build time into `ios/build/native-shell/` and is not checked in.
+- `docs/`: the website and the papers the app bundles.
+- [PORT.md](PORT.md): how the port was done and verified, and what differs from the Swift original
+  (removed from this tree; it remains in the history before this port).
 
-For package tests on a Mac with the Swift toolchain installed:
+## Build & test
 
 ```sh
-swift test
+scripts/import-census                       # the census peer list the app ships (build/census)
+cd LeanApp
+lake build backend-test records-test        # Lean toolchain leanprover/lean4:v4.35.0 (elan)
+./.lake/build/bin/backend-test               # end to end against a fresh regtest bitcoind
+./.lake/build/bin/records-test
+<framework>/native/scripts/ios_lean_sources.sh . WinnowApp ios/build iossim
+cd ios && xcodegen generate && xcodebuild -scheme WinnowLean -destination 'platform=iOS Simulator,id=<udid>' build
 ```
 
-For the app, install Xcode and use the pinned XcodeGen 2.46.0. From the repository
-root, fetch the public peer census before generating the project:
-
-```sh
-scripts/import-census
-scripts/install-xcodegen
-"${RUNNER_TEMP:-${TMPDIR:-/tmp}}/winnow-xcodegen-2.46.0/xcodegen/bin/xcodegen"
-open WinnowApp.xcodeproj
-```
-
-The generated project and build products are ignored. Select the WinnowApp
-scheme and an iPhone simulator. [App test commands](docs/testing.md#run-locally)
-and [debugging tools](Tools/Debug/README.md) cover the next steps.
+`backend-test --fixture <dir>` leaves a funded regtest node running for manual simulator runs.
+`scripts/install-xcodegen` installs XcodeGen 2.46.0. Simulator builds are ad-hoc signed (an unsigned
+app has no Keychain entitlement).
 
 The public website is maintained in
 [winnowwallet/website](https://github.com/winnowwallet/website). This repository
-contains the app's offline guides and engineering records; wallet CI retains
-test evidence without deploying the site. The [roadmap](https://winnowwallet.com/roadmap)
-tracks proposed work separately from current behavior.
+contains the app's offline guides and engineering records. The
+[roadmap](https://winnowwallet.com/roadmap) tracks proposed work separately from current behavior.
+
+## License
 
 Winnow is available under the [MIT License](LICENSE).

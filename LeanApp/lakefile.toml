@@ -1,0 +1,40 @@
+# The Winnow app in Lean (ElmLean native mode): Model, Msg, update, view, commands; the wallet is the
+# Lean port in ../Lean. Built into the iOS app by ElmLean's framework/native (see ../PORT.md).
+name = "winnowapp"
+defaultTargets = ["WinnowApp"]
+
+[[require]]
+name = "winnow"
+path = "../Lean"
+
+[[require]]
+name = "elmlean"
+path = "/Users/posix4e/Library/Application Support/Claude/scratch-workspaces/3be3d554-5020-49f1-ad41-8efd1840c16b/cebe0e70-dc78-4056-bf9c-b964bd14e320/scratch-2026-10-25-93255d/framework/lean"
+
+[[lean_lib]]
+name = "WinnowApp"
+
+# `Backend.real` end to end against a disposable regtest bitcoind (BackendTest.lean).
+[[lean_exe]]
+name = "backend-test"
+root = "BackendTest"
+
+# The records side of the backend, headless (WinnowApp/Real/Records*.lean).
+[[lean_exe]]
+name = "records-test"
+root = "RecordsTest"
+
+# The Lean side of the records lockstep (LeanOracle/gen/f_records.py; Swift: oracle-records).
+[[lean_exe]]
+name = "oracle-records"
+root = "OracleRecords"
+
+# The Lean side of the pure-helpers lockstep (LeanOracle/gen/f_pure.py; Swift: oracle-pure).
+[[lean_exe]]
+name = "oracle-pure"
+root = "OraclePure"
+
+# The Lean side of the test-mode lockstep (LeanOracle/gen/f_e2e.py; Swift: oracle-e2e).
+[[lean_exe]]
+name = "oracle-e2e"
+root = "OracleE2E"

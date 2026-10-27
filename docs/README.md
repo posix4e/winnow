@@ -14,6 +14,9 @@ Developer guides in this repository:
   validation still needed on devices.
 - [Security records](security/README.md): dated reports, claims and evidence.
 
+The architecture, testing and CI guides were written for the Swift app; for the Lean port's
+layout, checks and status see [PORT.md](../PORT.md).
+
 The app bundles `mobile.html`, `read-side.html`, `write-side.html`,
 `import.html` and `site.css` for offline use. Changes here affect that app copy.
 

@@ -1,0 +1,136 @@
+import ElmLean.Html
+import WinnowApp.Model
+import WinnowApp.Pure
+
+/-! What every area shares: routing a failure to the screen that asked, closing sheets (each sheet
+forgets its state, sensitive ones bump the epoch), and the small view pieces Winnow's Components.swift
+provides (copyable identifiers and text blocks, warned explorer links, technical disclosures). -/
+
+namespace WinnowApp
+open ElmLean
+
+abbrev H := Html Msg
+
+/-- The staged file goes whenever the export is reset (`staging.remove()`): toggling the phrase, closing the
+sheet, a new export, the app leaving the foreground. -/
+def Model.discardExport (m : Model) : List Cmd :=
+  match m.exportState.file with
+  | some f => [.removeExport f]
+  | none => []
+
+def caption (s : String) : H := .text s .caption
+def body (s : String) : H := .text s .body
+def errorRows : Option String → List H
+  | some e => [.row [.icon "exclamationmark.triangle", body e]]
+  | none => []
+
+/-! ## Failures -/
+
+/-- Route a backend failure to the state of the screen that asked (`context`). -/
+def Model.fail (m : Model) (context message : String) : Model :=
+  -- a cancelled authentication prompt: revealing the phrase treats it as a decision (no error)
+  if context == "create.cancelled" || context == "import.cancelled" then { m with onboarding := { m.onboarding with busy := false, error := none } } else
+  if context == "reveal.cancelled" then { m with reveal := { m.reveal with revealing := false, error := none } } else
+  let context := if context.endsWith ".cancelled" then (context.dropEnd 10).copy else context
+  match context with
+  | "onboarding" | "create" | "import" => { m with onboarding := { m.onboarding with busy := false, error := some message } }
+  | "receive" => { m with receive := { m.receive with error := some message, changing := false } }
+  | "label" => { m with labelEditor := { m.labelEditor with saving := false, error := some message } }
+  | "send" => { m with send := { m.send with error := some message, reviewing := false, sending := false }, spendingInFlight := false }
+  | "rate" => { m with send := { m.send with resolvedRateMilli := none } }
+  | "settings" | "peers" => { m with settingsDraft := { m.settingsDraft with error := some message, resettingPeers := false } }
+  | "delete" => { m with confirm := some (.deleteFailed message) }
+  | "catalog" =>
+    let c := m.settingsDraft.catalog
+    { m with settingsDraft := { m.settingsDraft with catalog := { c with refreshing := false, error := some message } } }
+  | "payment" => { m with payment := { loading := false, error := some message } }
+  | "feeBump" => { m with feeBump := { m.feeBump with error := some message, bumping := false }, spendingInFlight := false }
+  | "export" => { m with exportState := { m.exportState with busy := false, error := some message, file := none } }
+  | "reveal" => { m with reveal := { m.reveal with revealing := false, error := some message } }
+  | "card" => { m with shareCard := { card := none, error := some message } }
+  | "person" => { m with person := { m.person with saving := false, inferring := false, error := some message } }
+  | "recipients" => { m with recipientsError := some message }
+  | "vaultCreate" => { m with vaultCreate := { m.vaultCreate with saving := false, built := none, error := some message } }
+  | "savingsCreate" => { m with savingsCreate := { m.savingsCreate with creating := false, error := some message } }
+  | "savingsAdd" => { m with savingsAdd := { m.savingsAdd with adding := false, error := some message } }
+  | "approval" => { m with approval := { m.approval with busy := false, error := some message }, spendingInFlight := false }
+  | "musig" => { m with musig := { m.musig with authorizing := false, broadcasting := false, error := some message }, spendingInFlight := false }
+  | _ => { m with status := { m.status with lastSyncError := some message } }
+
+/-! ## Sheets -/
+
+/-- SendView resets when the approval it continued to is dismissed (`.sheet(item:onDismiss: reset)`). -/
+def Model.resetVaultSend (m : Model) (vaultID : String) : Model :=
+  match m.send.preview with
+  | some { source := .vault id .., .. } => if id == vaultID then { m with send := { inputs := { network := m.settings.network } } } else m
+  | _ => m
+
+/-- Forget what a sheet held when it goes away (the SwiftUI view's @State dies with it). -/
+def Model.forgetSheet (m : Model) : Sheet → Model × List Cmd
+  | .receive => ({ m with receive := {}, labelEditor := {} }, [.stopWatchingAddress])
+  | .send => ({ m with send := {} }, [])
+  | .feeBump => ({ m with feeBump := {} }, [])
+  | .addPerson => ({ m with person := {} }, [])
+  | .labelEditor => ({ m with labelEditor := {} }, [])
+  | .exportBundle => ({ m with exportState := {}, epoch := m.epoch + 1 }, m.discardExport)
+  | .revealPhrase => ({ m with reveal := {}, epoch := m.epoch + 1 }, [])
+  | .papers => ({ m with paper := none }, [])
+  | .shareCard => ({ m with shareCard := {} }, [])
+  | .savedRecipients => ({ m with recipientsError := none }, [])
+  | .vaultCreate => ({ m with vaultCreate := {} }, [])
+  | .sharedSavingsCreate => ({ m with savingsCreate := {} }, [])
+  | .addSharedSavings => ({ m with savingsAdd := {} }, [])
+  | .savingsChooser => ({ m with savingsCreate := {}, savingsAdd := {} }, [])
+  | .approval => ({ m.resetVaultSend m.approval.vaultID with approval := {} }, [])
+  | .musig => ({ m.resetVaultSend m.musig.vaultID with musig := {}, epoch := m.epoch + 1 }, [.musigClear])
+  | .importWallet => ({ m with onboarding := { m.onboarding with importText := "", importReport := none } }, [])
+  | .mnemonic | .readSide | .savingsShare _ => (m, [])
+
+/-- Close the sheets from index `i` up (an outer sheet takes the ones it presented with it). -/
+def Model.closeFrom (m : Model) (i : Nat) : Model × List Cmd :=
+  let closing := m.sheets.drop i
+  let m0 := { m with sheets := m.sheets.take i, confirm := none }
+  closing.reverse.foldl (fun (acc : Model × List Cmd) s =>
+    let (m', cs) := acc.1.forgetSheet s
+    (m', acc.2 ++ cs)) (m0, [])
+
+/-- Close `s` (and whatever it presented). -/
+def Model.closeSheet (m : Model) (s : Sheet) : Model × List Cmd :=
+  match m.sheets.idxOf? s with
+  | some i => m.closeFrom i
+  | none => (m, [])
+
+def Model.closeTop (m : Model) : Model × List Cmd :=
+  if m.sheets.isEmpty then (m, []) else m.closeFrom (m.sheets.length - 1)
+
+/-- Sheets that never survive a background transition (BackupSection, ExportBundleView,
+RevealPhraseView, ApprovalView, MuSig2SignView, the onboarding phrase and import sheets). -/
+def Sheet.isSensitive : Sheet → Bool
+  | .mnemonic | .importWallet | .exportBundle | .revealPhrase | .approval | .musig => true
+  | _ => false
+
+/-! ## View pieces (Components.swift) -/
+
+/-- `CopyableIdentifier`: shown short when asked, copied whole; "Copied" for two seconds. -/
+def copyableIdentifier (m : Model) (key value : String) (abbreviated := false) (label := "Copy") : H :=
+  let shown := if abbreviated && value.length > 20 then String.ofList (value.toList.take 16) ++ "…" else value
+  .row [caption shown, .spacer, .button (if m.copied == some key then "Copied" else label) .plain (some (.copy key value))]
+
+/-- `CopyableTextBlock`: the text, Copy and Share. -/
+def copyableBlock (m : Model) (key text : String) : H :=
+  .col [caption text,
+        .row [.button (if m.copied == some key then "Copied" else "Copy") .plain (some (.copy key text)), .share "Share" text]]
+
+/-- `WarnedExplorerLink`: the warning comes before anything is opened. -/
+def explorerButton (title url exposedItem : String) : H :=
+  .button title .plain (some (.openExplorer url exposedItem))
+
+/-- A raw address or id: in full for Advanced mode, folded behind a title for a beginner. -/
+def technical (m : Model) (key title : String) (content : List H) : List H :=
+  if m.settings.advancedMode then content
+  else [.disclosure title (m.isExpanded key) (Msg.setExpanded key) content]
+
+/-- A sheet's own close control (SwiftUI's cancellation toolbar item). -/
+def closeRow (label : String) : H := .row [.spacer, .button label .plain (some .closeSheet)]
+
+end WinnowApp

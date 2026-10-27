@@ -100,7 +100,7 @@ case "${1:-up}" in
     fi
     ensure_miner_wallet
     echo "fixture up: rpc=$RPC_PORT p2p=$P2P_PORT height=$(cli getblockcount)"
-    echo "configure the simulator node connection as in UITests/README.md, then run scripts/ci-ui-journey <fresh-results-directory>"
+    echo "set it as the app's manual peer (Settings → Manual peers, or WINNOW_E2E_PEER in test mode)"
     ;;
   down)
     cli stop >/dev/null 2>&1 || true

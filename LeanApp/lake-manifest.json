@@ -1,0 +1,23 @@
+{"version": "1.3.0",
+ "packagesDir": ".lake/packages",
+ "packages":
+ [{"type": "path",
+   "scope": "",
+   "name": "elmlean",
+   "manifestFile": "lake-manifest.json",
+   "inherited": false,
+   "dir":
+   "/Users/posix4e/Library/Application Support/Claude/scratch-workspaces/3be3d554-5020-49f1-ad41-8efd1840c16b/cebe0e70-dc78-4056-bf9c-b964bd14e320/scratch-2026-10-25-93255d/framework/lean",
+   "copy": false,
+   "configFile": "lakefile.toml"},
+  {"type": "path",
+   "scope": "",
+   "name": "winnow",
+   "manifestFile": "lake-manifest.json",
+   "inherited": false,
+   "dir": "../Lean",
+   "copy": false,
+   "configFile": "lakefile.toml"}],
+ "name": "winnowapp",
+ "lakeDir": ".lake",
+ "fixedToolchain": false}
